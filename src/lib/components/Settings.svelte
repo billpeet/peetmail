@@ -1,0 +1,77 @@
+<script lang="ts">
+  import { api } from "$lib/api";
+  import { mail } from "$lib/mail.svelte";
+  import ClientIdForm from "./ClientIdForm.svelte";
+
+  let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
+  let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
+  let error = $state<string | null>(null);
+
+  let first: HTMLInputElement | undefined = $state();
+  $effect(() => first?.focus());
+
+  async function save(e: SubmitEvent) {
+    e.preventDefault();
+    try {
+      await api.setCacheLimits({ cacheDays, bodyCacheMb });
+      await mail.init();
+      mail.overlay = null;
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  async function signOut() {
+    if (!mail.account) return;
+    await api.signOut(mail.account.id);
+    mail.overlay = null;
+    mail.threads = [];
+    mail.folder = null;
+    await mail.init();
+  }
+</script>
+
+<div class="fixed inset-0 z-20 grid place-items-center bg-black/60">
+    <div class="w-[480px] space-y-6 rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
+    <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft account</h3>
+      <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
+      <ClientIdForm onsaved={() => (mail.overlay = null)} />
+    </section>
+
+    <form onsubmit={save} class="space-y-5">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Offline cache</h3>
+
+      <label class="block space-y-1">
+        <span class="text-sm text-ink-300">Keep mail from the last</span>
+        <span class="flex items-center gap-2">
+          <input bind:this={first} type="number" min="7" max="3650" bind:value={cacheDays}
+            class="w-24 rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent" />
+          <span class="text-sm text-ink-500">days</span>
+        </span>
+        <span class="block text-xs text-ink-500">Older mail stays on the server. Widening the window triggers a full resync.</span>
+      </label>
+
+      <label class="block space-y-1">
+        <span class="text-sm text-ink-300">Message body cache</span>
+        <span class="flex items-center gap-2">
+          <input type="number" min="50" max="20000" step="50" bind:value={bodyCacheMb}
+            class="w-24 rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent" />
+          <span class="text-sm text-ink-500">MB</span>
+        </span>
+        <span class="block text-xs text-ink-500">Least recently read bodies are evicted first.</span>
+      </label>
+
+    {#if error}<p class="text-sm text-red-300">{error}</p>{/if}
+
+    <div class="flex items-center justify-between pt-2">
+      <button type="button" onclick={signOut} class="text-sm text-ink-500 hover:text-red-300">
+        Sign out {mail.account?.email}
+      </button>
+      <button class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">Save <kbd class="ml-1">Enter</kbd></button>
+    </div>
+  </form>
+  </div>
+</div>

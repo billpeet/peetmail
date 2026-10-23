@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --color-ink-950: #0e0e11;
+  --color-ink-900: #141418;
+  --color-ink-800: #1c1c22;
+  --color-ink-700: #2a2a32;
+  --color-ink-500: #6b6b78;
+  --color-ink-300: #a9a9b6;
+  --color-ink-100: #e7e7ea;
+  --color-accent: #7c8cff;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+kbd {
+  @apply inline-flex min-w-5 items-center justify-center rounded border border-ink-700 bg-ink-800 px-1 font-sans text-[11px] text-ink-300;
+}

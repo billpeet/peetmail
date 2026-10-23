@@ -1,0 +1,172 @@
+# PeetMail plan
+
+A Superhuman-style mail and calendar client for Windows. Personal use, Microsoft 365 and Outlook.com first, Gmail later.
+
+## Principles
+
+1. **Fast.** No interaction waits on the network. Reads come from a local SQLite cache, writes are optimistic, and the next likely thread is already rendered.
+2. **Minimal.** Every feature has to earn its place. When unsure, leave it out.
+3. **Keyboard first.** Every action has a shortcut and shows up in the command palette. The mouse works but is never required.
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Shell | Tauri 2 | Email bodies need a web engine anyway. Tauri gives WebView2 plus a Rust core, without the weight of Electron. |
+| UI | SvelteKit SPA (adapter-static), Svelte 5 runes, Tailwind 4 | Fine-grained reactivity, small runtime, matches the usual stack. |
+| Storage | SQLite via `rusqlite` in the Rust process | Sync, search and caching never cross IPC. Drizzle doesn't fit because the DB lives in Rust, not JS. |
+| Providers | Microsoft Graph first, Gmail API second | M365 + Outlook.com are the daily drivers. |
+| Auth | Entra public client, auth code + PKCE, loopback redirect | No client secret in the binary. Works for both work and personal accounts via the `common` authority. |
+| Token storage | DPAPI-encrypted blob in SQLite | Credential Manager caps blobs at 2.5KB, and Microsoft refresh tokens can be bigger. |
+| Message IDs | Graph immutable IDs (`Prefer: IdType="ImmutableId"`) | IDs survive folder moves, so archive and undo don't orphan cache rows. |
+| Sync | Delta queries, polled every 60s | Graph push notifications need a public webhook. Delta polls cost one request per folder when nothing changed. |
+| Platform | Windows only for now | Tauri keeps macOS open later at low cost. |
+| IPC types | Hand-written TS types in `src/lib/api.ts` | Command count is small. Revisit `tauri-specta` once it passes ~25 commands. |
+
+## Architecture
+
+```
+┌──────────────── Svelte UI (WebView2) ─────────────────┐
+│ keymap registry · views · virtual list · body LRU     │
+│ sandboxed iframe for message bodies                   │
+└──────────── invoke() commands + emitted events ───────┘
+┌──────────────────── Rust core ────────────────────────┐
+│ auth.rs     PKCE sign-in, token refresh               │
+│ graph.rs    Graph HTTP client, 429/503 backoff        │
+│ mail.rs     delta sync, body fetch                    │
+│ db.rs       SQLite schema, queries, cache eviction    │
+│ sanitize.rs ammonia HTML cleaning                     │
+│ secure.rs   DPAPI                                     │
+│ state.rs    app state, settings, token cache          │
+└───────────────────────────────────────────────────────┘
+```
+
+Events from Rust to UI:
+- `mail-changed {accountId, folderId}` after each committed sync page. The UI debounces it and reloads what it has loaded.
+- `sync-status {state, message}` drives the footer indicator.
+
+### Data model
+
+- `accounts` holds provider, email and the encrypted token blob.
+- `folders` holds the Graph folder id, a role (inbox, sentitems, ...) and the delta link.
+- `messages` holds metadata only. Threads are `conversation_id` groups.
+- `message_bodies` holds sanitized HTML, with `size` and `accessed_at` for LRU eviction.
+- `settings` is key/value.
+
+Migrations are numbered SQL files in `src-tauri/migrations`, applied in order and tracked in `PRAGMA user_version`.
+
+### Cache limits
+
+Both are in settings (`Ctrl+,`):
+- **Mail window** (default 90 days). The initial delta request filters on `receivedDateTime ge <cutoff>`. After each sync, messages older than the cutoff are pruned. Widening the window clears delta links and resyncs. If Graph rejects the filter, sync falls back to filtering locally.
+- **Body cache** (default 500 MB). Bodies are fetched on demand and prefetched around the cursor. After each insert, the least recently read bodies are evicted until the total fits.
+
+Metadata for 90 days of a busy inbox is a few MB, so it isn't capped separately.
+
+### Rendering email safely
+
+Three layers:
+1. `ammonia` strips scripts, event handlers and `javascript:` URLs, and keeps layout markup and inline styles.
+2. The body renders in an iframe with `sandbox="allow-same-origin"`, so no script inside it can run.
+3. The srcdoc iframe inherits the app CSP. `img-src 'self' data:` blocks remote images and tracking pixels by default.
+
+The parent page handles link clicks, opening them in the system browser, and forwards keydowns from the iframe so shortcuts keep working after you click into a message.
+
+## Keyboard map
+
+Phase 0 bindings are marked ✓. The rest follow Superhuman's defaults.
+
+| Keys | Action | |
+|---|---|---|
+| `j` / `k`, `↓` / `↑` | Next / previous conversation | ✓ |
+| `Enter` | Open conversation | ✓ |
+| `Esc` | Back to list, close dialog | ✓ |
+| `g g` / `G` | Top / bottom of list | ✓ |
+| `g i` | Go to inbox | ✓ |
+| `Ctrl+R` | Sync now | ✓ |
+| `Ctrl+,` | Settings | ✓ |
+| `?` | Shortcut overlay | ✓ |
+| `Ctrl+K` | Command palette | 1 |
+| `e` | Archive (mark done) | 1 |
+| `#` | Delete | 1 |
+| `u` | Toggle read | 1 |
+| `s` | Flag | 1 |
+| `h` | Snooze / remind | 3 |
+| `r` / `a` / `f` | Reply / reply all / forward | 1 |
+| `c` | Compose | 1 |
+| `/` | Search | 1 |
+| `Tab` / `Shift+Tab` | Next / previous split | 1 |
+| `z` | Undo last action | 1 |
+| `g c` | Calendar | 2 |
+| `0` | Toggle calendar side panel | 2 |
+
+Every binding lives in one registry (`src/lib/keys.svelte.ts`) with an id, label, group and `when` condition. The shortcut overlay reads from it today, and the command palette will too.
+
+## Phases
+
+### Phase 0: skeleton (done)
+
+- [x] Tauri 2 + SvelteKit + Tailwind 4 scaffold, CSP configured
+- [x] Entra sign-in with PKCE over loopback, DPAPI token storage, silent refresh
+- [x] SQLite schema and migrations
+- [x] Inbox delta sync with date window, removal handling, 410 resync, throttling backoff
+- [x] Background sync every 60s, `Ctrl+R` to sync now
+- [x] Virtualized conversation list with keyset pagination
+- [x] Thread reader with sanitized bodies in a sandboxed iframe
+- [x] Body prefetch around the cursor, JS-side LRU over the SQLite body cache
+- [x] Keymap registry with sequences (`g i`), shortcut overlay
+- [x] Configurable cache limits
+- [ ] First real sign-in and sync against your mailbox (needs your Entra app, see below)
+
+### Phase 1: the core loop
+
+- Outbox table: every mutation (archive, delete, read, flag, move) applies locally first, then a worker replays it to Graph with retry. Undo (`z`) removes the pending row or enqueues the inverse.
+- Archive, delete, read/unread, flag
+- Compose, reply, reply all, forward. Plain-ish editor with Markdown shortcuts, sent through `/me/sendMail` or a draft with `send`.
+- Split inboxes: saved queries over local data (sender domain, VIP list, Focused/Other, has-invite, Graph categories). `Tab` cycles. Defaults: Important (Focused), Other, VIP, Calendar.
+- Search: SQLite FTS5 over subject, sender and preview, plus bodies once cached. Server search (`$search`) as a fallback for mail outside the window.
+- Command palette (`Ctrl+K`) over the keymap registry
+- Sync more folders: Sent, Archive, Drafts
+- "Load images" per message: Rust fetches remote images and inlines them as data URIs, so the CSP stays strict
+- Inline `cid:` attachments, attachment list and download
+
+### Phase 2: calendar
+
+- Calendar sync via `/me/calendarView/delta`
+- Day view side panel next to the inbox, plus a full calendar view (`g c`)
+- RSVP to invites inline in the message
+- Quick add in natural language ("lunch with Sam fri 1pm")
+
+### Phase 3: polish
+
+- Snooze and reminders (local scheduler; on the server, move to a hidden folder)
+- Undo send (delay window), scheduled send
+- Snippets
+- Multiple accounts in one unified view
+- Windows notifications, start with Windows, tray icon
+- Gmail provider behind the same provider interface
+
+## Entra app registration
+
+Because PeetMail is for personal use, you register your own Entra app. It takes about five minutes.
+
+1. Open the [Entra admin center](https://entra.microsoft.com) and go to **App registrations → New registration**.
+   - Name: `PeetMail`
+   - Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**
+   - Redirect URI: platform **Public client/native (mobile & desktop)**, value `http://localhost`. On an existing app, this is **Authentication → Add a platform → Mobile and desktop applications → Custom redirect URIs**. Use exactly `http://localhost`, with no port or path, and don't also register it under Web or SPA.
+2. Under **API permissions**, add these Microsoft Graph delegated permissions: `offline_access`, `openid`, `profile`, `email`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`. PeetMail requests them all at first sign-in, so later phases don't prompt again.
+3. Copy the **Application (client) ID** from the Overview page and paste it into PeetMail's setup screen. You can also bake it in at build time with the env var `PEETMAIL_MS_CLIENT_ID`. To change it later, press `c` on the sign-in screen or open Settings (`Ctrl+,`). Changing it signs you out, because refresh tokens only work with the client ID that issued them. Cached mail is kept.
+
+Things that can trip you up:
+- If you sign in to Entra with only an outlook.com account, it may ask you to create a tenant first. A free tenant works.
+- If your M365 tenant blocks user consent for third-party apps, an admin has to approve the app once.
+- Entra accepts any port on a registered `http://localhost` redirect for desktop apps. PeetMail picks a random free port each time.
+- `AADSTS7000218` (asks for a client secret) means the redirect is registered under Web. `AADSTS9002327` means it's registered under SPA. Move it to Mobile and desktop applications.
+- If the client ID is wrong, the browser shows an error and never redirects back. Press `Esc` in PeetMail to cancel, then `c` to fix the ID.
+
+## Risks and open questions
+
+- **Delta and the date filter.** It's unverified whether Graph accepts a `receivedDateTime ge` filter on message delta for both M365 and Outlook.com accounts. If it returns 400, sync falls back to fetching everything and filtering locally, which is correct but slower on the first sync. Check the logs on first sync.
+- **WebView2 memory.** Expect roughly 100 to 150 MB. Watch it as features land, and keep the DOM small (the virtual list, collapsed messages).
+- **Single DB mutex.** Fine while queries take microseconds. If sync writes ever cause visible UI stalls, split into a writer connection and a read pool.
+- **Calendar scope.** Outlook-style calendars get feature-heavy fast. Hold the line on minimal.
