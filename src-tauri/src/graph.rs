@@ -8,7 +8,16 @@ use serde_json::Value;
 
 use crate::error::{AppError, Result};
 
-pub const BASE: &str = "https://graph.microsoft.com/v1.0";
+const DEFAULT_BASE: &str = "https://graph.microsoft.com/v1.0";
+
+static BASE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::testenv::get("PEETMAIL_GRAPH_URL").unwrap_or_else(|| DEFAULT_BASE.to_string())
+});
+
+/// Graph base URL. Overridable in debug builds so tests can use the fake server.
+pub fn base() -> &'static str {
+    &BASE
+}
 
 /// Immutable IDs survive moves between folders, so an archived message keeps its id.
 pub const PREFER_IMMUTABLE: &str = r#"IdType="ImmutableId""#;

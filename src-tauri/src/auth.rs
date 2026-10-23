@@ -17,7 +17,11 @@ use url::Url;
 use crate::error::{AppError, Result};
 
 /// `common` accepts both work/school (M365) and personal (outlook.com) accounts.
-const AUTHORITY: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
+const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
+
+static AUTHORITY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::testenv::get("PEETMAIL_AUTHORITY_URL").unwrap_or_else(|| DEFAULT_AUTHORITY.to_string())
+});
 
 /// Requested up front so later phases (send, calendar) don't need a second consent prompt.
 pub const SCOPES: &str =
@@ -78,7 +82,7 @@ pub async fn sign_in(
     let state = random_b64(16);
 
     let auth_url = Url::parse_with_params(
-        &format!("{AUTHORITY}/authorize"),
+        &format!("{}/authorize", *AUTHORITY),
         &[
             ("client_id", client_id),
             ("response_type", "code"),
@@ -93,9 +97,20 @@ pub async fn sign_in(
     )
     .map_err(|e| AppError::Auth(e.to_string()))?;
 
-    app.opener()
-        .open_url(auth_url.as_str(), None::<&str>)
-        .map_err(|e| AppError::Auth(format!("could not open browser: {e}")))?;
+    if crate::testenv::flag("PEETMAIL_AUTH_AUTOFOLLOW") {
+        // Test harness: the fake authority redirects straight back to the loopback listener.
+        let http = http.clone();
+        let url = auth_url.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = http.get(url).send().await {
+                log::error!("auth autofollow failed: {e}");
+            }
+        });
+    } else {
+        app.opener()
+            .open_url(auth_url.as_str(), None::<&str>)
+            .map_err(|e| AppError::Auth(format!("could not open browser: {e}")))?;
+    }
 
     // A wrong client ID shows an error page in the browser and never redirects back,
     // so cancellation is the only way out short of the timeout.
@@ -129,7 +144,7 @@ pub async fn refresh(http: &reqwest::Client, client_id: &str, refresh_token: &st
 
 async fn token_request(http: &reqwest::Client, form: &[(&str, &str)], old_refresh: Option<&str>) -> Result<TokenSet> {
     // No Origin header here: Entra treats requests with one as SPA traffic and rejects them.
-    let res = http.post(format!("{AUTHORITY}/token")).form(form).send().await?;
+    let res = http.post(format!("{}/token", *AUTHORITY)).form(form).send().await?;
     if !res.status().is_success() {
         let err: TokenError = res.json().await?;
         return Err(AppError::Auth(format!(

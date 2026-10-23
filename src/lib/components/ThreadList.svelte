@@ -30,9 +30,9 @@
   }
 </script>
 
-<div bind:this={viewport} bind:clientHeight={height} onscroll={onScroll} class="h-full overflow-y-auto">
+<div bind:this={viewport} bind:clientHeight={height} onscroll={onScroll} data-testid="thread-list" class="h-full overflow-y-auto">
   {#if mail.threads.length === 0}
-    <div class="grid h-full place-items-center text-sm text-ink-500">
+    <div data-testid="thread-list-empty" class="grid h-full place-items-center text-sm text-ink-500">
       {mail.sync.state === "syncing" ? "Syncing your inbox…" : "Inbox zero."}
     </div>
   {:else}
@@ -44,6 +44,9 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           role="option"
+          data-testid="thread-row"
+          data-conversation-id={t.conversationId}
+          data-unread={unread}
           tabindex="-1"
           aria-selected={selected}
           onclick={() => mail.select(index)}

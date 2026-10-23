@@ -1,13 +1,18 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
-// @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://v2.tauri.app/start/frontend/sveltekit/
 export default defineConfig(() => ({
   plugins: [tailwindcss(), sveltekit()],
+
+  // Unit tests for pure TS modules. E2E lives in tests/e2e (Playwright).
+  test: {
+    include: ["src/**/*.test.ts"],
+    environment: "node",
+  },
 
   // Don't hide Rust errors behind Vite's screen clearing.
   clearScreen: false,

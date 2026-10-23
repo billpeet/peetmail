@@ -1,0 +1,91 @@
+// Playwright fixtures: every test gets a fresh fake Graph server and a fresh app
+// instance with its own data dir and WebView2 profile.
+//
+//   fake   the in-process fake server (control API: fake.control("deliver", {...}))
+//   app    launched app handle ({ page, dataDir, logPath, ... }), not signed in
+//   page   the app's WebView2 page (overrides Playwright's built-in browser page)
+//   inbox  the page after signing in and finishing the first sync
+//
+// After each test a final screenshot and the app log are attached to the report.
+
+import { test as base, expect, type Page, type TestInfo } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { startFakeGraph } from "../harness/fake-graph.ts";
+import { launchApp, signIn } from "../harness/app.ts";
+import { defaultMailbox } from "../harness/fixtures.ts";
+
+type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
+type App = Awaited<ReturnType<typeof launchApp>>;
+
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page }>({
+  // eslint-disable-next-line no-empty-pattern
+  fake: async ({}, use) => {
+    const fake = await startFakeGraph();
+    await use(fake);
+    await fake.close();
+  },
+
+  app: async ({ fake }, use, testInfo) => {
+    const app = await launchApp({ fake });
+    const consoleLines: string[] = [];
+    app.page.on("console", (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));
+    app.page.on("pageerror", (e) => consoleLines.push(`[pageerror] ${e.stack ?? e.message}`));
+    await use(app);
+    if (consoleLines.length) await testInfo.attach("console.log", { body: consoleLines.join("\n"), contentType: "text/plain" });
+    const shot = await app.page.screenshot().catch(() => null);
+    if (shot) await testInfo.attach("final-screen.png", { body: shot, contentType: "image/png" });
+    const log = await readFile(app.logPath, "utf8").catch(() => "");
+    if (log) await testInfo.attach("app.log", { body: log, contentType: "text/plain" });
+    await app.close();
+  },
+
+  page: async ({ app }, use) => {
+    await use(app.page);
+  },
+
+  inbox: async ({ app, fake }, use) => {
+    await signIn(app.page, fake.clientId);
+    await waitForSyncIdle(app.page);
+    await use(app.page);
+  },
+});
+
+export { expect };
+
+/** Default cache window in the app (state.rs DEFAULT_CACHE_DAYS). */
+export const CACHE_DAYS = 90;
+
+/** Conversations a fresh sync of the default fixture mailbox should show (inside the cache window). */
+export const DEFAULT_CONVERSATIONS = (() => {
+  const cutoff = new Date(Date.now() - CACHE_DAYS * 86_400_000).toISOString();
+  return new Set(defaultMailbox().filter((m) => m.receivedDateTime >= cutoff).map((m) => m.conversationId)).size;
+})();
+
+export async function waitForSyncIdle(page: Page) {
+  await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });
+}
+
+/** Presses Ctrl+R and waits until the app has made a delta request and gone idle again. */
+export async function syncNow(page: Page, fake: Fake) {
+  const before = fake.state.requests.length;
+  await page.keyboard.press("Control+r");
+  await expect.poll(() => fake.requestsSince(before).some((r) => r.path.endsWith("/delta") && r.status === 200)).toBe(true);
+  await waitForSyncIdle(page);
+}
+
+export function row(page: Page, conversationId: string) {
+  return page.locator(`[data-testid=thread-row][data-conversation-id="${conversationId}"]`);
+}
+
+export function selectedRow(page: Page) {
+  return page.locator("[data-testid=thread-row][aria-selected=true]");
+}
+
+export function messageBody(page: Page, nth = 0) {
+  return page.frameLocator("[data-testid=message-body]").nth(nth);
+}
+
+/** Attaches a named screenshot to the report mid-test. */
+export async function snap(page: Page, testInfo: TestInfo, name: string) {
+  await testInfo.attach(`${name}.png`, { body: await page.screenshot(), contentType: "image/png" });
+}

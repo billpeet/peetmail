@@ -43,7 +43,7 @@
   );
 </script>
 
-<div class="grid h-full place-items-center">
+<div data-testid="setup" class="grid h-full place-items-center">
   <div class="w-[460px] space-y-6">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight text-ink-100">PeetMail</h1>
@@ -59,7 +59,7 @@
     {:else}
       <div class="space-y-3">
         {#if busy}
-          <div class="flex w-full items-center justify-between rounded-md bg-ink-800 px-4 py-2.5 text-sm text-ink-300">
+          <div data-testid="sign-in-waiting" class="flex w-full items-center justify-between rounded-md bg-ink-800 px-4 py-2.5 text-sm text-ink-300">
             <span>Waiting for the browser…</span>
             <button onclick={() => api.cancelSignIn()} class="flex items-center gap-1.5 text-ink-500 hover:text-ink-100">
               Cancel <kbd>Esc</kbd>
@@ -70,6 +70,7 @@
           </p>
         {:else}
           <button
+            data-testid="sign-in"
             onclick={signIn}
             class="flex w-full items-center justify-between rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-ink-950"
           >
@@ -80,13 +81,13 @@
 
         <div class="flex items-center justify-between text-xs text-ink-500">
           <span class="truncate">Client ID <span class="font-mono text-ink-300 select-text">{clientId}</span></span>
-          <button onclick={edit} class="flex shrink-0 items-center gap-1.5 hover:text-ink-100">Change <kbd>c</kbd></button>
+          <button data-testid="change-client-id" onclick={edit} class="flex shrink-0 items-center gap-1.5 hover:text-ink-100">Change <kbd>c</kbd></button>
         </div>
       </div>
     {/if}
 
     {#if error}
-      <p class="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300 select-text">{error}</p>
+      <p data-testid="setup-error" class="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300 select-text">{error}</p>
     {/if}
   </div>
 </div>

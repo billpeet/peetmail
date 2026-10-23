@@ -29,7 +29,7 @@ export function normalizeKey(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "altKey"
 }
 
 function isTypingTarget(t: EventTarget | null) {
-  if (!(t instanceof Element)) return false;
+  if (typeof Element === "undefined" || !(t instanceof Element)) return false;
   const el = t as HTMLElement;
   return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
 }

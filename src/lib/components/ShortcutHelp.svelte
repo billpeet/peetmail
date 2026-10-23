@@ -8,7 +8,7 @@
   });
 </script>
 
-<div class="fixed inset-0 z-20 grid place-items-center bg-black/60">
+<div data-testid="shortcut-help" class="fixed inset-0 z-20 grid place-items-center bg-black/60">
   <div class="w-[560px] rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
     <h2 class="mb-4 text-sm font-semibold text-ink-100">Keyboard shortcuts</h2>
     <div class="grid grid-cols-2 gap-x-8 gap-y-5">

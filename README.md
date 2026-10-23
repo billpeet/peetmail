@@ -23,9 +23,11 @@ On first launch, paste your Entra Application (client) ID, then press Enter to s
 ## Test and check
 
 ```sh
-pnpm check                         # svelte-check + TypeScript
-cargo test --manifest-path src-tauri/Cargo.toml
+pnpm verify                        # types, unit (TS + Rust), headless E2E
+pnpm drive start                   # explore a test instance step by step
 ```
+
+How the test system works, including the fake Microsoft server and the drive CLI: [tests/README.md](tests/README.md).
 
 ## Build
 

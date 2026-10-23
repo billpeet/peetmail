@@ -51,6 +51,7 @@
   <div class="flex gap-2">
     <input
       id="client-id"
+      data-testid="client-id-input"
       bind:this={input}
       bind:value
       {onkeydown}
@@ -69,5 +70,5 @@
       {#if oncancel}<kbd>Esc</kbd> to cancel.{/if}
     </p>
   {/if}
-  {#if error}<p class="text-sm text-red-300 select-text">{error}</p>{/if}
+  {#if error}<p data-testid="client-id-error" class="text-sm text-red-300 select-text">{error}</p>{/if}
 </form>

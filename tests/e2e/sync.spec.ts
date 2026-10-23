@@ -1,0 +1,65 @@
+import { signIn } from "../harness/app.ts";
+import { test, expect, DEFAULT_CONVERSATIONS, row, syncNow, waitForSyncIdle } from "./fixtures";
+
+test("new mail appears after Ctrl+R", async ({ inbox: page, fake }) => {
+  await fake.control("deliver", { subject: "Hot off the press", from: ["Priya Nair", "priya@fabrikam.io"] });
+  await syncNow(page, fake);
+  await expect(page.getByTestId("thread-row").first()).toContainText("Hot off the press");
+  await expect(page.getByTestId("thread-count")).toHaveText(`${DEFAULT_CONVERSATIONS + 1} conversations`);
+});
+
+test("remote read-state changes and deletions sync through delta", async ({ inbox: page, fake }) => {
+  await expect(row(page, "conv-hostile")).toHaveAttribute("data-unread", "true");
+  await fake.control("update", { id: "msg-hostile", fields: { isRead: true } });
+  await fake.control("remove", { id: "msg-newsletter" });
+  await syncNow(page, fake);
+  await expect(row(page, "conv-hostile")).toHaveAttribute("data-unread", "false");
+  await expect(row(page, "conv-newsletter")).toHaveCount(0);
+});
+
+test("a sync with no changes costs one request", async ({ inbox: page, fake }) => {
+  const before = fake.state.requests.length;
+  await syncNow(page, fake);
+  const reqs = fake.requestsSince(before);
+  expect(reqs).toHaveLength(1);
+  expect(reqs[0].query).toContain("deltatoken");
+});
+
+test("429 throttling is retried after Retry-After", async ({ inbox: page, fake }) => {
+  await fake.control("throttle", { count: 1, retryAfter: 1 });
+  await fake.control("deliver", { subject: "Worth the wait" });
+  await syncNow(page, fake);
+  await expect(page.getByTestId("thread-row").first()).toContainText("Worth the wait");
+  expect(fake.state.requests.some((r) => r.status === 429)).toBe(true);
+});
+
+test("an expired delta link triggers a full resync", async ({ inbox: page, fake }) => {
+  await fake.control("config", { expireDelta: true });
+  await fake.control("deliver", { subject: "After the resync" });
+  await syncNow(page, fake);
+  await expect(page.getByTestId("thread-row").first()).toContainText("After the resync");
+  expect(fake.state.requests.some((r) => r.status === 410)).toBe(true);
+  await expect(page.getByTestId("thread-count")).toHaveText(`${DEFAULT_CONVERSATIONS + 1} conversations`);
+});
+
+test("a revoked access token is refreshed and the request retried", async ({ inbox: page, fake }) => {
+  await fake.control("expire-tokens");
+  await fake.control("deliver", { subject: "Fresh token" });
+  const before = fake.state.requests.length;
+  await syncNow(page, fake);
+  await expect(page.getByTestId("thread-row").first()).toContainText("Fresh token");
+  const seq = fake.requestsSince(before).map((r) => `${r.status} ${r.path}`);
+  expect(seq).toContain("401 /v1.0/me/mailFolders/AAMkAGI2-inbox/messages/delta");
+  expect(seq).toContain("200 /oauth/token");
+  await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle");
+});
+
+test("if Graph rejects the delta date filter, sync falls back to local filtering", async ({ page, fake }) => {
+  await fake.control("config", { rejectDeltaFilter: true });
+  await signIn(page, fake.clientId);
+  await waitForSyncIdle(page);
+  await expect(page.getByTestId("thread-count")).toHaveText(`${DEFAULT_CONVERSATIONS} conversations`);
+  const deltas = fake.state.requests.filter((r) => r.path.endsWith("/delta"));
+  expect(deltas[0].status).toBe(400);
+  expect(deltas[1].query).not.toContain("filter");
+});

@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::db::{self, Account, Folder, MessageUpsert};
 use crate::error::{AppError, Result};
-use crate::graph::{self, BASE, PREFER_IMMUTABLE};
+use crate::graph::{self, PREFER_IMMUTABLE};
 use crate::sanitize;
 use crate::state::AppState;
 
@@ -35,13 +35,28 @@ struct MailChanged {
 }
 
 pub async fn fetch_profile(http: &reqwest::Client, token: &str) -> Result<(String, Option<String>)> {
-    let me = graph::get(http, token, &format!("{BASE}/me?$select=displayName,mail,userPrincipalName"), &[]).await?;
+    let me = graph::get(http, token, &format!("{}/me?$select=displayName,mail,userPrincipalName", graph::base()), &[]).await?;
     let email = me["mail"]
         .as_str()
         .or_else(|| me["userPrincipalName"].as_str())
         .ok_or_else(|| AppError::Other("profile has no email address".into()))?
         .to_lowercase();
     Ok((email, me["displayName"].as_str().map(String::from)))
+}
+
+/// GET with the account's token. A 401 means the token was revoked or expired early
+/// (password change, admin action, clock skew), so drop it, refresh, and retry once.
+async fn graph_get(state: &AppState, account_id: i64, url: &str, prefer: &[&str]) -> Result<Value> {
+    let token = state.access_token(account_id).await?;
+    match graph::get(&state.http, &token, url, prefer).await {
+        Err(AppError::Graph { status: 401, .. }) => {
+            log::warn!("graph returned 401 for account {account_id}, refreshing token");
+            state.invalidate_access_token(account_id).await;
+            let token = state.access_token(account_id).await?;
+            graph::get(&state.http, &token, url, prefer).await
+        }
+        other => other,
+    }
 }
 
 /// Syncs every account. Errors are reported per account and don't stop the others.
@@ -76,11 +91,10 @@ async fn ensure_inbox(state: &AppState, account_id: i64) -> Result<Folder> {
     if let Some(f) = state.db.with(|c| db::folder_by_role(c, account_id, "inbox"))? {
         return Ok(f);
     }
-    let token = state.access_token(account_id).await?;
-    let f = graph::get(
-        &state.http,
-        &token,
-        &format!("{BASE}/me/mailFolders/inbox?$select=id,displayName"),
+    let f = graph_get(
+        state,
+        account_id,
+        &format!("{}/me/mailFolders/inbox?$select=id,displayName", graph::base()),
         &[PREFER_IMMUTABLE],
     )
     .await?;
@@ -90,7 +104,7 @@ async fn ensure_inbox(state: &AppState, account_id: i64) -> Result<Folder> {
 }
 
 fn initial_delta_url(folder: &Folder, since: Option<&str>) -> String {
-    let base = format!("{BASE}/me/mailFolders/{}/messages/delta", folder.remote_id);
+    let base = format!("{}/me/mailFolders/{}/messages/delta", graph::base(), folder.remote_id);
     let mut params = vec![("$select", MESSAGE_FIELDS.to_string())];
     if let Some(since) = since {
         params.push(("$filter", format!("receivedDateTime ge {since}")));
@@ -110,8 +124,7 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
     let mut first_page = true;
 
     loop {
-        let token = state.access_token(account_id).await?;
-        let page = match graph::get(&state.http, &token, &url, &[PREFER_IMMUTABLE, PAGE_SIZE]).await {
+        let page = match graph_get(state, account_id, &url, &[PREFER_IMMUTABLE, PAGE_SIZE]).await {
             Ok(p) => p,
             Err(AppError::Graph { status: 400, message }) if first_page && full_sync && !filter_locally => {
                 log::warn!("delta $filter rejected ({message}), filtering locally");
@@ -211,11 +224,10 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
         .db
         .with(|c| db::message_remote(c, message_id))?
         .ok_or_else(|| AppError::Other("message not found".into()))?;
-    let token = state.access_token(account_id).await?;
-    let v = graph::get(
-        &state.http,
-        &token,
-        &format!("{BASE}/me/messages/{remote_id}?$select=body"),
+    let v = graph_get(
+        state,
+        account_id,
+        &format!("{}/me/messages/{remote_id}?$select=body", graph::base()),
         &[PREFER_IMMUTABLE, r#"outlook.body-content-type="html""#],
     )
     .await?;

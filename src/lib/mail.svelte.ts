@@ -22,6 +22,8 @@ class MailStore {
   view = $state<View>("list");
   overlay = $state<Overlay>(null);
   thread = $state.raw<MessageRow[]>([]);
+  /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
+  threadFor = $state<string | null>(null);
 
   sync = $state<SyncStatus>({ state: "idle", message: null });
   error = $state<string | null>(null);
@@ -71,8 +73,10 @@ class MailStore {
     this.#exhausted = rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
-    if (this.view === "reader" && this.current) {
-      this.thread = await api.getThread(this.current.accountId, this.current.conversationId);
+    const cur = this.current;
+    if (this.view === "reader" && cur) {
+      this.thread = await api.getThread(cur.accountId, cur.conversationId);
+      this.threadFor = cur.conversationId;
     }
   }
 
@@ -107,7 +111,10 @@ class MailStore {
     if (!t) return;
     this.view = "reader";
     const rows = await api.getThread(t.accountId, t.conversationId);
-    if (this.current?.conversationId === t.conversationId) this.thread = rows;
+    if (this.current?.conversationId === t.conversationId) {
+      this.thread = rows;
+      this.threadFor = t.conversationId;
+    }
   }
 
   back() {

@@ -80,6 +80,20 @@ impl AppState {
         self.tokens.lock().await.insert(account_id, tokens);
     }
 
+    /// Marks the cached access token as expired so the next call refreshes it.
+    /// Loads from the DB first so the refresh token survives.
+    pub async fn invalidate_access_token(&self, account_id: i64) {
+        let mut cache = self.tokens.lock().await;
+        if let Some(t) = cache.get_mut(&account_id) {
+            t.expires_at = 0;
+        } else if let Ok(Some(blob)) = self.db.with(|c| db::get_token_blob(c, account_id)) {
+            if let Ok(mut t) = secure::unprotect(&blob).and_then(|b| Ok(serde_json::from_slice::<TokenSet>(&b)?)) {
+                t.expires_at = 0;
+                cache.insert(account_id, t);
+            }
+        }
+    }
+
     pub async fn forget_all_tokens(&self) {
         self.tokens.lock().await.clear();
     }

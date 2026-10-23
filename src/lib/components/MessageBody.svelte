@@ -55,13 +55,14 @@
 </script>
 
 {#if error}
-  <p class="px-6 py-4 text-sm text-red-300 select-text">Couldn't load this message: {error}</p>
+  <p data-testid="message-body-error" class="px-6 py-4 text-sm text-red-300 select-text">Couldn't load this message: {error}</p>
 {:else if html === null}
-  <div class="h-16 animate-pulse rounded bg-white/90"></div>
+  <div data-testid="message-body-loading" class="h-16 animate-pulse rounded bg-white/90"></div>
 {:else}
   <iframe
     bind:this={frame}
     title="Message body"
+    data-testid="message-body"
     sandbox="allow-same-origin"
     {srcdoc}
     {onload}

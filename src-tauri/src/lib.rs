@@ -7,6 +7,7 @@ mod mail;
 mod sanitize;
 mod secure;
 mod state;
+mod testenv;
 
 use std::time::Duration;
 
@@ -14,22 +15,61 @@ use tauri::Manager;
 
 /// Delta polls are cheap; Graph change notifications need a public webhook,
 /// which a desktop app doesn't have.
-const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_SYNC_INTERVAL_SECS: u64 = 60;
+
+/// The main window is built in code (not tauri.conf.json) so the test harness can
+/// run it headless: off-screen, out of the taskbar, and never stealing focus.
+fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
+    let headless = testenv::flag("PEETMAIL_HEADLESS");
+    let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+        .title("PeetMail")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 560.0)
+        .background_color(tauri::window::Color(14, 14, 17, 255));
+    builder = if headless {
+        // Never shown: WebView2 keeps rendering (screenshots, input over CDP) for a
+        // hidden window, and nothing flashes up or steals focus.
+        builder.visible(false).focused(false).skip_taskbar(true)
+    } else {
+        builder.center()
+    };
+    builder.build()?;
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let data_dir_override = testenv::get("PEETMAIL_DATA_DIR").map(std::path::PathBuf::from);
+    let sync_interval = Duration::from_secs(
+        testenv::get("PEETMAIL_SYNC_INTERVAL_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_SYNC_INTERVAL_SECS),
+    );
+
+    let mut log = tauri_plugin_log::Builder::new().level(log::LevelFilter::Info);
+    if let Some(dir) = &data_dir_override {
+        // Keep test logs next to the test database instead of mixing them with the real app's.
+        log = log.clear_targets().targets([
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                path: dir.join("logs"),
+                file_name: Some("PeetMail".into()),
+            }),
+        ]);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Info)
-                .build(),
-        )
-        .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+        .plugin(log.build())
+        .setup(move |app| {
+            let dir = match data_dir_override {
+                Some(dir) => dir,
+                None => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&dir)?;
             let db = db::Db::open(&dir.join("peetmail.db"))?;
             app.manage(state::AppState::new(db));
+            create_main_window(app)?;
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -37,7 +77,7 @@ pub fn run() {
                     if let Err(e) = mail::sync_all(&handle).await {
                         log::error!("background sync: {e}");
                     }
-                    tokio::time::sleep(SYNC_INTERVAL).await;
+                    tokio::time::sleep(sync_interval).await;
                 }
             });
             Ok(())

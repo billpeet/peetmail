@@ -10,18 +10,7 @@
     "frontendDist": "../build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "PeetMail",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 900,
-        "minHeight": 560,
-        "backgroundColor": "#0e0e11",
-        "center": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": {
         "default-src": "'self' ipc: http://ipc.localhost",

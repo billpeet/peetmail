@@ -31,7 +31,7 @@
   }
 </script>
 
-<div class="fixed inset-0 z-20 grid place-items-center bg-black/60">
+<div data-testid="settings" class="fixed inset-0 z-20 grid place-items-center bg-black/60">
     <div class="w-[480px] space-y-6 rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
     <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
 

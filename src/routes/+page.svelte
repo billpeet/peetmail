@@ -50,9 +50,9 @@
   {:else if !mail.account}
     <Setup />
   {:else}
-    <header class="flex h-11 shrink-0 items-center gap-6 border-b border-ink-800 px-5 text-sm">
+    <header data-testid="inbox" class="flex h-11 shrink-0 items-center gap-6 border-b border-ink-800 px-5 text-sm">
       <span class="font-semibold">Inbox</span>
-      <span class="text-ink-500">{mail.threads.length} conversations</span>
+      <span data-testid="thread-count" class="text-ink-500">{mail.threads.length} conversations</span>
       <span class="ml-auto text-xs text-ink-500">{mail.account.email}</span>
     </header>
 
@@ -65,14 +65,14 @@
     </main>
 
     <footer class="flex h-7 shrink-0 items-center gap-4 border-t border-ink-800 px-5 text-xs text-ink-500">
-      <span class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>
+      <span data-testid="sync-status" data-state={mail.sync.state} class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>
       {#if keymap.pending.length}<span class="text-ink-300">{keymap.pending.join(" ")} …</span>{/if}
       <span class="ml-auto"><kbd>?</kbd> shortcuts</span>
     </footer>
   {/if}
 
   {#if mail.error}
-    <div class="fixed right-4 bottom-10 max-w-md rounded-md border border-red-900/60 bg-red-950/80 px-3 py-2 text-sm text-red-200 select-text">
+    <div data-testid="app-error" class="fixed right-4 bottom-10 max-w-md rounded-md border border-red-900/60 bg-red-950/80 px-3 py-2 text-sm text-red-200 select-text">
       {mail.error}
     </div>
   {/if}
