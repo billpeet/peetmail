@@ -166,11 +166,12 @@ class MailStore {
   async open() {
     const t = this.current;
     if (!t) return;
-    this.view = "reader";
+    // Load the thread first (a local query) so the reader never flashes empty or stale.
     const rows = await api.getThread(t.accountId, t.conversationId);
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
+    this.view = "reader";
     // Opening a conversation reads it, like every mail client; not worth an undo entry.
     if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
   }

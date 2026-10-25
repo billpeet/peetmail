@@ -1,27 +1,46 @@
+<script lang="ts" module>
+  /** Last measured content height per message, so reopening reserves the right space at once. */
+  const measured = new Map<number, number>();
+</script>
+
 <script lang="ts">
   // Renders sanitized HTML in a sandboxed iframe: no scripts (sandbox), no remote
   // loads (CSP inherited by srcdoc), no IPC access. The parent still handles link
   // clicks and forwards keystrokes so shortcuts keep working after clicking into mail.
+  import { untrack } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api } from "$lib/api";
-  import { getBody } from "$lib/bodies";
+  import { getBody, peekBody } from "$lib/bodies";
   import { keymap } from "$lib/keys.svelte";
 
   // `images`: fetch remote images through Rust and inline them (press i in the reader).
   let { messageId, images = false }: { messageId: number; images?: boolean } = $props();
 
-  let html = $state<string | null>(null);
+  // The iframe stays invisible until its content has been measured, then appears at full
+  // height in one step. Cached bodies are read synchronously, so they skip the placeholder.
+  let html = $state<string | null>(untrack(() => peekBody(messageId) ?? null));
   let error = $state<string | null>(null);
   let frame: HTMLIFrameElement | undefined = $state();
-  let height = $state(60);
+  let height = $state(untrack(() => measured.get(messageId) ?? 0));
+  let ready = $state(false);
+  let shownFor: number | null = null;
 
   $effect(() => {
     const id = messageId;
     const withImages = images;
-    html = null;
     error = null;
+    if (shownFor !== id) {
+      // A different message: drop the old content. Toggling images on the same message keeps
+      // showing it until the version with images arrives, so nothing collapses.
+      html = withImages ? null : (peekBody(id) ?? null);
+      height = measured.get(id) ?? 0;
+      ready = false;
+    }
     (withImages ? api.getMessageBodyWithImages(id) : getBody(id)).then(
-      (h) => id === messageId && withImages === images && (html = h),
+      (h) => {
+        if (id !== messageId || withImages !== images || h === html) return;
+        html = h;
+      },
       (e) => id === messageId && (error = String(e)),
     );
   });
@@ -42,8 +61,14 @@
   function onload() {
     const doc = frame?.contentDocument;
     if (!doc?.body) return;
-    const fit = () => (height = doc.documentElement.scrollHeight);
+    const id = messageId;
+    const fit = () => {
+      height = doc.documentElement.scrollHeight;
+      measured.set(id, height);
+    };
     fit();
+    ready = true;
+    shownFor = id;
     new ResizeObserver(fit).observe(doc.body);
 
     doc.addEventListener("click", (e) => {
@@ -60,7 +85,7 @@
 {#if error}
   <p data-testid="message-body-error" class="px-6 py-4 text-sm text-red-300 select-text">Couldn't load this message: {error}</p>
 {:else if html === null}
-  <div data-testid="message-body-loading" class="h-16 animate-pulse rounded bg-white/90"></div>
+  <div data-testid="message-body-loading" style:height="{height || 64}px" class="animate-pulse rounded bg-white/90"></div>
 {:else}
   {#if !images && /src="https?:/i.test(html)}
     <p data-testid="images-blocked" class="mb-1 px-1 text-xs text-ink-500">Remote images hidden. Press <kbd>i</kbd> to load them.</p>
@@ -73,6 +98,8 @@
     {srcdoc}
     {onload}
     style:height="{height}px"
+    style:visibility={ready ? "visible" : "hidden"}
+    data-ready={ready}
     class="block w-full rounded border-0 bg-white"
   ></iframe>
 {/if}
