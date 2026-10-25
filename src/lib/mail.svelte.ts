@@ -124,6 +124,7 @@ class MailStore {
     this.#exhausted = rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
+    this.#schedulePrefetch();
     const cur = this.current;
     if (this.view === "reader") {
       if (!cur) {
@@ -311,11 +312,16 @@ class MailStore {
 
   // ---------- misc ----------
 
-  /** Warm the bodies around the cursor so opening (or j/k in the reader) is instant. */
+  /**
+   * Pull the bodies around the cursor into the in-memory cache so opening (or j/k in the
+   * reader) skips even the IPC round trip. Rust's background prefetch has usually put them
+   * in SQLite already; this covers older mail and anything it hasn't reached yet.
+   */
   #schedulePrefetch() {
     clearTimeout(this.#prefetchTimer);
     this.#prefetchTimer = setTimeout(() => {
-      for (const i of [this.selected, this.selected + 1, this.selected - 1]) {
+      const s = this.selected;
+      for (const i of [s, s + 1, s + 2, s + 3, s - 1]) {
         const t = this.threads[i];
         if (t) prefetchBody(t.messageId);
       }

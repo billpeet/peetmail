@@ -38,17 +38,10 @@ test("Enter moves from the search box to the results", async ({ inbox: page }) =
   await expect(page.getByTestId("reader").locator("h1")).toContainText("Offsite agenda");
 });
 
-test("message bodies become searchable once fetched", async ({ inbox: page }) => {
-  await search(page, "chart below");
-  await expect(page.getByTestId("thread-row")).toHaveCount(0);
-  await page.getByTestId("search-input").press("Escape");
-
-  await row(page, "conv-attach").click();
-  await page.keyboard.press("Enter");
-  await expect(page.frameLocator("[data-testid=message-body]").first().locator("body")).toContainText("Chart below");
-  await page.keyboard.press("Escape");
-
-  await search(page, "chart below");
+test("prefetched bodies are searchable without opening them", async ({ inbox: page }) => {
+  // "Chart below" is only in msg-attach's body, not its subject or preview.
+  await search(page, '"chart below"');
+  await expect(page.getByTestId("thread-row")).toHaveCount(1);
   await expect(row(page, "conv-attach")).toHaveCount(1);
 });
 

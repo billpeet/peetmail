@@ -76,12 +76,13 @@ struct Row {
 // ---------- storage ----------
 
 pub fn enqueue(conn: &Connection, account_id: i64, remote_id: Option<&str>, op: &Op, delay: Duration) -> Result<i64> {
-    let not_before = (chrono::Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default())
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string();
+    // Use SQLite's clock, the same one `take_due` compares against. Rust's clock can run
+    // ~15ms ahead of it on Windows, which made zero-delay ops look not-yet-due.
+    let offset = format!("+{:.3} seconds", delay.as_secs_f64());
     Ok(conn.query_row(
-        "INSERT INTO outbox (account_id, remote_id, op, not_before) VALUES (?1, ?2, ?3, ?4) RETURNING id",
-        params![account_id, remote_id, serde_json::to_string(op)?, not_before],
+        "INSERT INTO outbox (account_id, remote_id, op, not_before)
+         VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4)) RETURNING id",
+        params![account_id, remote_id, serde_json::to_string(op)?, offset],
         |r| r.get(0),
     )?)
 }

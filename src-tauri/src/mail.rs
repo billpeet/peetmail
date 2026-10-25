@@ -103,7 +103,42 @@ pub async fn sync_all(app: &AppHandle) -> Result<()> {
         None => SyncStatus { state: "idle", message: None },
     };
     let _ = app.emit(EVENT_SYNC_STATUS, status);
+    tauri::async_runtime::spawn(prefetch_bodies(app.clone()));
     Ok(())
+}
+
+/// Bodies kept warm: the newest inbox messages plus every unread one.
+const PREFETCH_NEWEST: i64 = 60;
+const PREFETCH_MAX: i64 = 200;
+const PREFETCH_CONCURRENCY: usize = 4;
+
+/// Downloads bodies the user is likely to open next into the SQLite cache, so opening a
+/// message never waits on the network. Runs after each sync; already-cached bodies are skipped.
+pub async fn prefetch_bodies(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let Ok(_guard) = state.prefetch_lock.try_lock() else { return };
+    let ids = match state.db.with(|c| db::bodies_to_prefetch(c, PREFETCH_NEWEST, PREFETCH_MAX)) {
+        Ok(ids) => ids,
+        Err(e) => return log::error!("prefetch query: {e}"),
+    };
+    if ids.is_empty() {
+        return;
+    }
+    log::info!("prefetching {} message bodies", ids.len());
+    let mut tasks = tokio::task::JoinSet::new();
+    for id in ids {
+        while tasks.len() >= PREFETCH_CONCURRENCY {
+            tasks.join_next().await;
+        }
+        let app = app.clone();
+        tasks.spawn(async move {
+            let state = app.state::<AppState>();
+            if let Err(e) = message_body(&state, id).await {
+                log::info!("prefetch body {id}: {e}");
+            }
+        });
+    }
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Folders kept in sync. Sent is synced so threads show your replies; Archive and

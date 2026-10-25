@@ -598,6 +598,24 @@ pub fn put_body(conn: &Connection, message_id: i64, html: &str, text: &str) -> R
     Ok(())
 }
 
+/// Inbox messages whose body isn't cached yet: the newest `newest` plus any unread,
+/// newest first, at most `limit`.
+pub fn bodies_to_prefetch(conn: &Connection, newest: i64, limit: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM (
+           SELECT m.id, m.received_at, m.is_read,
+                  ROW_NUMBER() OVER (ORDER BY m.received_at DESC, m.id DESC) AS rank
+           FROM messages m JOIN folders f ON f.id = m.folder_id
+           WHERE f.role = 'inbox'
+         )
+         WHERE (rank <= ?1 OR is_read = 0) AND id NOT IN (SELECT message_id FROM message_bodies)
+         ORDER BY received_at DESC
+         LIMIT ?2",
+    )?;
+    let ids = stmt.query_map(params![newest, limit], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Evicts least-recently-read bodies until the cache fits in `max_bytes`.
 pub fn evict_bodies(conn: &Connection, max_bytes: i64) -> Result<usize> {
     let total: i64 = conn.query_row("SELECT COALESCE(SUM(size), 0) FROM message_bodies", [], |r| r.get(0))?;
@@ -699,6 +717,23 @@ mod tests {
             assert_eq!(again.id, a);
             assert!(list_accounts(c)?[0].signed_in);
             assert_eq!(list_threads(c, Scope::Folder(f), &crate::query::compile(""), None, 10)?.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn prefetch_picks_newest_and_unread_without_cached_bodies() {
+        let (db, a, f) = seed();
+        db.with(|c| {
+            for i in 1..=6 {
+                // m1 (oldest) and m2 are unread; the rest are read.
+                upsert_message(c, a, f, &msg(&format!("m{i}"), &format!("c{i}"), &format!("2026-10-0{i}T10:00:00Z"), i > 2))?;
+            }
+            put_body(c, 6, "cached", "")?; // m6 is newest but already cached
+            // newest 2 = m6 (cached, skipped), m5; plus unread m2, m1
+            assert_eq!(bodies_to_prefetch(c, 2, 10)?, vec![5, 2, 1]);
+            assert_eq!(bodies_to_prefetch(c, 2, 2)?, vec![5, 2]);
             Ok(())
         })
         .unwrap();

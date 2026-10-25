@@ -1,4 +1,4 @@
-import { test, expect, messageBody, row, selectedRow, snap, syncNow } from "./fixtures";
+import { test, expect, bodyRequests, messageBody, row, selectedRow, snap, syncNow, waitForQuiet } from "./fixtures";
 
 test("j/k move the selection and Enter/Esc open and close the reader", async ({ inbox: page }) => {
   const rows = page.getByTestId("thread-row");
@@ -110,8 +110,28 @@ test("the ? overlay lists registered shortcuts", async ({ inbox: page }, testInf
 });
 
 test("a failed body fetch shows an error instead of hanging", async ({ inbox: page, fake }) => {
+  // New mail whose body the server refuses to hand over, so prefetch can't cache it either.
+  const { ids } = await fake.control("deliver", { subject: "Unlucky" });
   await fake.control("config", { failBody: true });
-  await row(page, "conv-plain").click();
+  await syncNow(page, fake);
+  await row(page, `conv-${ids[0]}`).click();
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("message-body-error")).toContainText("Body fetch failed");
+});
+
+test("bodies are prefetched after sync, so opening needs no network", async ({ inbox: page, fake }) => {
+  // The first sync already pulled the newest bodies.
+  expect(bodyRequests(fake, "msg-hostile")).toHaveLength(1);
+
+  // New mail gets prefetched on the sync that brings it in.
+  const { ids } = await fake.control("deliver", { subject: "Fresh off the press" });
+  await syncNow(page, fake);
+  await waitForQuiet(fake);
+  expect(bodyRequests(fake, ids[0])).toHaveLength(1);
+
+  const before = fake.state.requests.length;
+  await row(page, `conv-${ids[0]}`).click();
+  await page.keyboard.press("Enter");
+  await expect(messageBody(page).locator("body")).toContainText("Just landed in your inbox.");
+  expect(bodyRequests(fake, ids[0], before)).toEqual([]);
 });

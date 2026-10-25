@@ -46,6 +46,9 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page 
   inbox: async ({ app, fake }, use) => {
     await signIn(app.page, fake.clientId);
     await waitForSyncIdle(app.page);
+    // Background body prefetch runs after the first sync; let it finish so tests that
+    // count requests see only their own traffic.
+    await waitForQuiet(fake);
     await use(app.page);
   },
 });
@@ -70,6 +73,29 @@ export const DEFAULT_CONVERSATIONS = inboxConversations((m) => m.inferenceClassi
 
 export async function waitForSyncIdle(page: Page) {
   await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });
+}
+
+/** Waits until the fake has received no requests for `quietMs`. */
+export async function waitForQuiet(fake: Fake, quietMs = 400, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = fake.state.requests.length;
+  let since = Date.now();
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+    const n = fake.state.requests.length;
+    if (n !== last) {
+      last = n;
+      since = Date.now();
+    } else if (Date.now() - since >= quietMs) {
+      return;
+    }
+  }
+  throw new Error(`fake server still busy after ${timeoutMs}ms`);
+}
+
+/** GETs of one message's body. */
+export function bodyRequests(fake: Fake, messageId: string, since = 0) {
+  return fake.requestsSince(since).filter((r) => r.method === "GET" && r.path === `/v1.0/me/messages/${messageId}`);
 }
 
 /** Presses Ctrl+R and waits until the app has made a delta request and gone idle again. */

@@ -28,6 +28,8 @@ pub struct AppState {
     pub outbox_lock: tokio::sync::Mutex<()>,
     /// Most recent undoable actions, newest last.
     pub undo: std::sync::Mutex<Vec<crate::actions::UndoEntry>>,
+    /// Held while bodies are prefetched in the background, so runs don't pile up.
+    pub prefetch_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +55,7 @@ impl AppState {
             sign_in_cancel: Default::default(),
             outbox_lock: Default::default(),
             undo: Default::default(),
+            prefetch_lock: Default::default(),
         }
     }
 
