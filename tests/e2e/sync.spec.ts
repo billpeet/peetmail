@@ -11,18 +11,21 @@ test("new mail appears after Ctrl+R", async ({ inbox: page, fake }) => {
 test("remote read-state changes and deletions sync through delta", async ({ inbox: page, fake }) => {
   await expect(row(page, "conv-hostile")).toHaveAttribute("data-unread", "true");
   await fake.control("update", { id: "msg-hostile", fields: { isRead: true } });
-  await fake.control("remove", { id: "msg-newsletter" });
+  await fake.control("remove", { id: "msg-plain" });
   await syncNow(page, fake);
   await expect(row(page, "conv-hostile")).toHaveAttribute("data-unread", "false");
-  await expect(row(page, "conv-newsletter")).toHaveCount(0);
+  await expect(row(page, "conv-plain")).toHaveCount(0);
 });
 
-test("a sync with no changes costs one request", async ({ inbox: page, fake }) => {
+test("a sync with no changes costs one request per synced folder", async ({ inbox: page, fake }) => {
   const before = fake.state.requests.length;
   await syncNow(page, fake);
   const reqs = fake.requestsSince(before);
-  expect(reqs).toHaveLength(1);
-  expect(reqs[0].query).toContain("deltatoken");
+  expect(reqs.map((r) => r.path)).toEqual([
+    "/v1.0/me/mailFolders/AAMkAGI2-inbox/messages/delta",
+    "/v1.0/me/mailFolders/AAMkAGI2-sent/messages/delta",
+  ]);
+  expect(reqs.every((r) => r.query.includes("deltatoken"))).toBe(true);
 });
 
 test("429 throttling is retried after Retry-After", async ({ inbox: page, fake }) => {

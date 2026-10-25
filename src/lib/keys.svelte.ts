@@ -22,8 +22,8 @@ export function normalizeKey(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "altKey"
   if (e.ctrlKey) mods.push("ctrl");
   if (e.altKey) mods.push("alt");
   if (e.metaKey) mods.push("meta");
-  // Printable keys already encode shift ("J", "?", "#"); named keys need it spelled out.
-  if (e.shiftKey && key.length > 1) mods.push("shift");
+  // Printable keys already encode shift ("J", "?", "#"); named keys and chords spell it out.
+  if (e.shiftKey && (key.length > 1 || mods.length)) mods.push("shift");
   if (mods.length && key.length === 1) key = key.toLowerCase();
   return [...mods, key].join("+");
 }

@@ -113,6 +113,7 @@ export function testEnv({
     PEETMAIL_AUTHORITY_URL: fake.authorityUrl,
     PEETMAIL_AUTH_AUTOFOLLOW: "1",
     PEETMAIL_SYNC_INTERVAL_SECS: String(syncIntervalSecs),
+    PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort}${headed ? "" : " " + HEADLESS_BROWSER_ARGS}`,

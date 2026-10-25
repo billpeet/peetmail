@@ -11,6 +11,8 @@ pub const KEY_CLIENT_ID: &str = "ms_client_id";
 pub const KEY_CACHE_DAYS: &str = "cache_days";
 pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 
+pub const KEY_SPLITS: &str = "splits";
+
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
 
@@ -22,6 +24,10 @@ pub struct AppState {
     pub sync_lock: tokio::sync::Mutex<()>,
     /// Cancels the sign-in currently waiting on the browser, if any.
     pub sign_in_cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Held while the outbox worker drains, so only one drain runs.
+    pub outbox_lock: tokio::sync::Mutex<()>,
+    /// Most recent undoable actions, newest last.
+    pub undo: std::sync::Mutex<Vec<crate::actions::UndoEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +51,8 @@ impl AppState {
             tokens: Default::default(),
             sync_lock: Default::default(),
             sign_in_cancel: Default::default(),
+            outbox_lock: Default::default(),
+            undo: Default::default(),
         }
     }
 

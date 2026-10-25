@@ -11,7 +11,9 @@ describe("normalizeKey", () => {
     expect(normalizeKey(ev("?", { shiftKey: true }))).toBe("?");
   });
   it("prefixes modifiers and lowercases chord letters", () => {
-    expect(normalizeKey(ev("R", { ctrlKey: true, shiftKey: true }))).toBe("ctrl+r");
+    expect(normalizeKey(ev("r", { ctrlKey: true }))).toBe("ctrl+r");
+    expect(normalizeKey(ev("C", { ctrlKey: true, shiftKey: true }))).toBe("ctrl+shift+c");
+    expect(normalizeKey(ev("Enter", { ctrlKey: true }))).toBe("ctrl+Enter");
     expect(normalizeKey(ev(",", { ctrlKey: true }))).toBe("ctrl+,");
     expect(normalizeKey(ev("Tab", { shiftKey: true }))).toBe("shift+Tab");
   });

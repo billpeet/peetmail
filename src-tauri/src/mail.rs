@@ -2,6 +2,7 @@
 //! polls are one cheap request per folder.
 
 use chrono::{Duration, Utc};
+use reqwest::Method;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -10,7 +11,7 @@ use url::Url;
 use crate::db::{self, Account, Folder, MessageUpsert};
 use crate::error::{AppError, Result};
 use crate::graph::{self, PREFER_IMMUTABLE};
-use crate::sanitize;
+use crate::{outbox, sanitize};
 use crate::state::AppState;
 
 const MESSAGE_FIELDS: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,\
@@ -44,16 +45,39 @@ pub async fn fetch_profile(http: &reqwest::Client, token: &str) -> Result<(Strin
     Ok((email, me["displayName"].as_str().map(String::from)))
 }
 
-/// GET with the account's token. A 401 means the token was revoked or expired early
-/// (password change, admin action, clock skew), so drop it, refresh, and retry once.
-async fn graph_get(state: &AppState, account_id: i64, url: &str, prefer: &[&str]) -> Result<Value> {
+/// Graph request with the account's token. A 401 means the token was revoked or expired
+/// early (password change, admin action, clock skew), so drop it, refresh, and retry once.
+pub async fn graph_call(
+    state: &AppState,
+    account_id: i64,
+    method: Method,
+    url: &str,
+    body: Option<&Value>,
+    prefer: &[&str],
+) -> Result<Value> {
     let token = state.access_token(account_id).await?;
-    match graph::get(&state.http, &token, url, prefer).await {
+    match graph::request(&state.http, &token, method.clone(), url, body, prefer).await {
         Err(AppError::Graph { status: 401, .. }) => {
             log::warn!("graph returned 401 for account {account_id}, refreshing token");
             state.invalidate_access_token(account_id).await;
             let token = state.access_token(account_id).await?;
-            graph::get(&state.http, &token, url, prefer).await
+            graph::request(&state.http, &token, method, url, body, prefer).await
+        }
+        other => other,
+    }
+}
+
+async fn graph_get(state: &AppState, account_id: i64, url: &str, prefer: &[&str]) -> Result<Value> {
+    graph_call(state, account_id, Method::GET, url, None, prefer).await
+}
+
+async fn graph_bytes(state: &AppState, account_id: i64, url: &str) -> Result<Vec<u8>> {
+    let token = state.access_token(account_id).await?;
+    match graph::get_bytes(&state.http, &token, url).await {
+        Err(AppError::Graph { status: 401, .. }) => {
+            state.invalidate_access_token(account_id).await;
+            let token = state.access_token(account_id).await?;
+            graph::get_bytes(&state.http, &token, url).await
         }
         other => other,
     }
@@ -82,25 +106,33 @@ pub async fn sync_all(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
+/// Folders kept in sync. Sent is synced so threads show your replies; Archive and
+/// Deleted Items only exist locally as move targets.
+const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sent Items")];
+
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
-    let inbox = ensure_inbox(state, account.id).await?;
-    sync_folder(app, state, account.id, &inbox).await
+    for (role, name) in SYNCED_FOLDERS {
+        let folder = ensure_folder(state, account.id, role, name).await?;
+        sync_folder(app, state, account.id, &folder).await?;
+    }
+    Ok(())
 }
 
-async fn ensure_inbox(state: &AppState, account_id: i64) -> Result<Folder> {
-    if let Some(f) = state.db.with(|c| db::folder_by_role(c, account_id, "inbox"))? {
+/// The folder row for a well-known Graph folder, fetching its id on first use.
+async fn ensure_folder(state: &AppState, account_id: i64, role: &str, default_name: &str) -> Result<Folder> {
+    if let Some(f) = state.db.with(|c| db::folder_by_role(c, account_id, role))? {
         return Ok(f);
     }
     let f = graph_get(
         state,
         account_id,
-        &format!("{}/me/mailFolders/inbox?$select=id,displayName", graph::base()),
+        &format!("{}/me/mailFolders/{role}?$select=id,displayName", graph::base()),
         &[PREFER_IMMUTABLE],
     )
     .await?;
-    let remote_id = f["id"].as_str().ok_or_else(|| AppError::Other("inbox has no id".into()))?;
-    let name = f["displayName"].as_str().unwrap_or("Inbox");
-    state.db.with(|c| db::insert_folder(c, account_id, remote_id, "inbox", name))
+    let remote_id = f["id"].as_str().ok_or_else(|| AppError::Other(format!("{role} folder has no id")))?;
+    let name = f["displayName"].as_str().unwrap_or(default_name);
+    state.db.with(|c| db::insert_folder(c, account_id, remote_id, role, name))
 }
 
 fn initial_delta_url(folder: &Folder, since: Option<&str>) -> String {
@@ -146,11 +178,17 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
         let items = page["value"].as_array().cloned().unwrap_or_default();
         if !items.is_empty() {
             state.db.with(|c| {
+                // Messages with unsent local changes keep their local state until the outbox
+                // catches up; the next delta after that reflects the server's truth.
+                let busy = outbox::busy_remote_ids(c, account_id)?;
                 let tx = c.transaction()?;
                 for item in &items {
                     let Some(remote_id) = item["id"].as_str() else { continue };
+                    if busy.contains(remote_id) {
+                        continue;
+                    }
                     if item.get("@removed").is_some() {
-                        db::delete_message(&tx, account_id, remote_id)?;
+                        db::delete_message_in_folder(&tx, account_id, folder.id, remote_id)?;
                         continue;
                     }
                     let m = parse_message(item);
@@ -212,6 +250,11 @@ pub fn parse_message(v: &Value) -> MessageUpsert {
         has_attachments: v.get("hasAttachments").and_then(Value::as_bool),
         importance: str_field(v, "importance"),
         inference: str_field(v, "inferenceClassification"),
+        // Meeting invites and responses arrive as #microsoft.graph.eventMessage.
+        message_type: v
+            .get("@odata.type")
+            .and_then(Value::as_str)
+            .map(|t| if t.contains("eventMessage") { "eventMessage" } else { "message" }.to_string()),
     }
 }
 
@@ -232,22 +275,182 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
     )
     .await?;
     let content = v.pointer("/body/content").and_then(Value::as_str).unwrap_or_default();
-    let html = match v.pointer("/body/contentType").and_then(Value::as_str) {
+    let mut html = match v.pointer("/body/contentType").and_then(Value::as_str) {
         Some("text") => sanitize::text_to_html(content),
         _ => sanitize::clean_html(content),
     };
+    if html.contains("src=\"cid:") {
+        match inline_cid_images(state, account_id, &remote_id, &html).await {
+            Ok(h) => html = h,
+            Err(e) => log::warn!("inline images for message {message_id}: {e}"),
+        }
+    }
+    let text = sanitize::html_to_text(&html);
     let max_bytes = state.cache_limits()?.body_cache_mb * 1024 * 1024;
     state.db.with(|c| {
-        db::put_body(c, message_id, &html)?;
+        db::put_body(c, message_id, &html, &text)?;
         db::evict_bodies(c, max_bytes)?;
         Ok(())
     })?;
     Ok(html)
 }
 
+const MAX_INLINE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Replaces `cid:` image references with data URIs from the message's inline attachments.
+async fn inline_cid_images(state: &AppState, account_id: i64, remote_id: &str, html: &str) -> Result<String> {
+    let list = graph_get(
+        state,
+        account_id,
+        &format!("{}/me/messages/{remote_id}/attachments?$filter=isInline eq true", graph::base()),
+        &[PREFER_IMMUTABLE],
+    )
+    .await?;
+    let mut by_cid = std::collections::HashMap::new();
+    for a in list["value"].as_array().into_iter().flatten() {
+        let (Some(cid), Some(ct), Some(bytes)) = (a["contentId"].as_str(), a["contentType"].as_str(), a["contentBytes"].as_str())
+        else {
+            continue;
+        };
+        if ct.starts_with("image/") && bytes.len() <= MAX_INLINE_BYTES * 4 / 3 {
+            by_cid.insert(cid.trim_matches(['<', '>']).to_string(), format!("data:{ct};base64,{bytes}"));
+        }
+    }
+    Ok(sanitize::rewrite_img_src(html, |src| src.strip_prefix("cid:").and_then(|cid| by_cid.get(cid).cloned())))
+}
+
+/// The cached body with remote images fetched by Rust and inlined as data URIs, so the
+/// WebView never contacts the sender's servers and the CSP stays strict. Not cached.
+pub async fn message_body_with_images(state: &AppState, message_id: i64) -> Result<String> {
+    use base64::Engine;
+    let html = message_body(state, message_id).await?;
+    let mut fetched = std::collections::HashMap::new();
+    for url in sanitize::remote_images(&html).iter().take(60) {
+        match fetch_image(&state.http, url).await {
+            Ok((ct, bytes)) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                fetched.insert(url.clone(), format!("data:{ct};base64,{data}"));
+            }
+            Err(e) => log::info!("image {url}: {e}"),
+        }
+    }
+    Ok(sanitize::rewrite_img_src(&html, |src| fetched.get(&src.replace("&amp;", "&")).cloned()))
+}
+
+async fn fetch_image(http: &reqwest::Client, url: &str) -> Result<(String, Vec<u8>)> {
+    let res = http.get(url).timeout(std::time::Duration::from_secs(10)).send().await?.error_for_status()?;
+    let ct = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    // SVG can carry script; only raster formats go into the page.
+    if !ct.starts_with("image/") || ct.contains("svg") {
+        return Err(AppError::Other(format!("not a raster image ({ct})")));
+    }
+    let bytes = res.bytes().await?;
+    if bytes.len() > MAX_INLINE_BYTES {
+        return Err(AppError::Other("image too large".into()));
+    }
+    Ok((ct, bytes.to_vec()))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+}
+
+fn remote_of(state: &AppState, message_id: i64) -> Result<(i64, String)> {
+    state
+        .db
+        .with(|c| db::message_remote(c, message_id))?
+        .ok_or_else(|| AppError::Other("message not found".into()))
+}
+
+/// Non-inline attachments of a message.
+pub async fn list_attachments(state: &AppState, message_id: i64) -> Result<Vec<Attachment>> {
+    let (account_id, remote_id) = remote_of(state, message_id)?;
+    let v = graph_get(
+        state,
+        account_id,
+        &format!("{}/me/messages/{remote_id}/attachments?$select=id,name,contentType,size,isInline", graph::base()),
+        &[PREFER_IMMUTABLE],
+    )
+    .await?;
+    Ok(v["value"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| !a["isInline"].as_bool().unwrap_or(false))
+        .map(|a| Attachment {
+            id: a["id"].as_str().unwrap_or_default().into(),
+            name: a["name"].as_str().unwrap_or("attachment").into(),
+            content_type: a["contentType"].as_str().unwrap_or_default().into(),
+            size: a["size"].as_i64().unwrap_or(0),
+        })
+        .collect())
+}
+
+/// Downloads an attachment into `dir` under a free, sanitized file name. Returns the path.
+pub async fn download_attachment(
+    state: &AppState,
+    message_id: i64,
+    attachment_id: &str,
+    name: &str,
+    dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let (account_id, remote_id) = remote_of(state, message_id)?;
+    let bytes = graph_bytes(
+        state,
+        account_id,
+        &format!("{}/me/messages/{remote_id}/attachments/{attachment_id}/$value", graph::base()),
+    )
+    .await?;
+    std::fs::create_dir_all(dir)?;
+    let path = unique_path(dir, &safe_file_name(name));
+    std::fs::write(&path, bytes)?;
+    Ok(path)
+}
+
+fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() { "attachment".into() } else { trimmed }
+}
+
+fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let p = dir.join(name);
+    if !p.exists() {
+        return p;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    (1..).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists()).expect("a free file name")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_names_are_made_safe() {
+        assert_eq!(safe_file_name(r#"..\..\evil:name?.exe"#), "_.._evil_name_.exe");
+        assert_eq!(safe_file_name("   "), "attachment");
+    }
 
     #[test]
     fn parses_full_and_partial_messages() {

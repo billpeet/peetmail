@@ -51,7 +51,28 @@ export type MessageRow = {
   preview: string;
   isRead: boolean;
   hasAttachments: boolean;
+  isFlagged: boolean;
+  /** Folder holding this copy: inbox, sentitems, archive, ... */
+  folderRole: string;
 };
+
+export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
+export type ActionOutcome = { label: string | null; changed: number };
+export type DraftKind = "new" | "reply" | "replyAll" | "forward";
+export type SendInput = {
+  accountId: number;
+  kind: DraftKind;
+  referenceMessageId: number | null;
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+};
+export type Contact = { name: string | null; address: string };
+export type Split = { name: string; query: string };
+export type SplitInfo = Split & { count: number; unread: number };
+export type Attachment = { id: string; name: string; contentType: string; size: number };
+export type OutboxStatus = { pending: number; failed: number; lastError: string | null };
 
 export type CacheLimits = { cacheDays: number; bodyCacheMb: number };
 
@@ -68,17 +89,33 @@ export const api = {
   cancelSignIn: () => invoke<void>("cancel_sign_in"),
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),
   listFolders: (accountId: number) => invoke<Folder[]>("list_folders", { accountId }),
-  listThreads: (folderId: number, cursor: Cursor | null, limit: number) =>
-    invoke<ThreadRow[]>("list_threads", { folderId, cursor, limit }),
+  /** `folderId` null searches all mail. `query` uses the query language (src-tauri/src/query.rs). */
+  listThreads: (folderId: number | null, query: string, cursor: Cursor | null, limit: number) =>
+    invoke<ThreadRow[]>("list_threads", { folderId, query, cursor, limit }),
   getThread: (accountId: number, conversationId: string) =>
     invoke<MessageRow[]>("get_thread", { accountId, conversationId }),
   getMessageBody: (messageId: number) => invoke<string>("get_message_body", { messageId }),
   syncNow: () => invoke<void>("sync_now"),
   setCacheLimits: (limits: CacheLimits) => invoke<void>("set_cache_limits", { limits }),
+  threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
+    invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
+  undo: () => invoke<string | null>("undo"),
+  outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
+  sendMessage: (input: SendInput) => invoke<void>("send_message", { input }),
+  suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
+  listSplits: (folderId: number) => invoke<SplitInfo[]>("list_splits", { folderId }),
+  setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
+  getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
+  listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),
+  downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
+    invoke<string>("download_attachment", { messageId, attachmentId, name }),
 };
 
 export const onMailChanged = (cb: (p: { accountId: number; folderId: number }) => void): Promise<UnlistenFn> =>
   listen<{ accountId: number; folderId: number }>("mail-changed", (e) => cb(e.payload));
+
+export const onOutbox = (cb: (s: OutboxStatus) => void): Promise<UnlistenFn> =>
+  listen<OutboxStatus>("outbox-changed", (e) => cb(e.payload));
 
 export const onSyncStatus = (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
   listen<SyncStatus>("sync-status", (e) => cb(e.payload));

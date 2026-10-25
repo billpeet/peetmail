@@ -197,7 +197,18 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     killTree(s.appPid);
     killTree(s.fakePid);
     rmSync(SESSION, { force: true });
-    if (clean) rmSync(s.dataDir, { recursive: true, force: true });
+    if (clean) {
+      // WebView2 child processes release the profile a moment after the app dies.
+      for (let i = 0; ; i++) {
+        try {
+          rmSync(s.dataDir, { recursive: true, force: true });
+          break;
+        } catch (e) {
+          if (i >= 20) throw e;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+    }
     console.log("stopped");
   },
 

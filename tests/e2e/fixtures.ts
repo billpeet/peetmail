@@ -12,7 +12,7 @@ import { test as base, expect, type Page, type TestInfo } from "@playwright/test
 import { readFile } from "node:fs/promises";
 import { startFakeGraph } from "../harness/fake-graph.ts";
 import { launchApp, signIn } from "../harness/app.ts";
-import { defaultMailbox } from "../harness/fixtures.ts";
+import { defaultMailbox, FOLDER_IDS } from "../harness/fixtures.ts";
 
 type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
@@ -55,11 +55,18 @@ export { expect };
 /** Default cache window in the app (state.rs DEFAULT_CACHE_DAYS). */
 export const CACHE_DAYS = 90;
 
-/** Conversations a fresh sync of the default fixture mailbox should show (inside the cache window). */
-export const DEFAULT_CONVERSATIONS = (() => {
+/** Conversations in the inbox matching `pred`, inside the cache window (mirrors the app's SQL). */
+export function inboxConversations(pred: (m: ReturnType<typeof defaultMailbox>[number]) => boolean = () => true) {
   const cutoff = new Date(Date.now() - CACHE_DAYS * 86_400_000).toISOString();
-  return new Set(defaultMailbox().filter((m) => m.receivedDateTime >= cutoff).map((m) => m.conversationId)).size;
-})();
+  return new Set(
+    defaultMailbox()
+      .filter((m) => m.parentFolderId === FOLDER_IDS.inbox && m.receivedDateTime >= cutoff && pred(m))
+      .map((m) => m.conversationId),
+  ).size;
+}
+
+/** What the default view (the Important split, `is:focused`) shows after a fresh sync. */
+export const DEFAULT_CONVERSATIONS = inboxConversations((m) => m.inferenceClassification === "focused");
 
 export async function waitForSyncIdle(page: Page) {
   await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });

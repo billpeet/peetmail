@@ -50,6 +50,8 @@ Events from Rust to UI:
 - `accounts` holds provider, email and the encrypted token blob.
 - `folders` holds the Graph folder id, a role (inbox, sentitems, ...) and the delta link.
 - `messages` holds metadata only. Threads are `conversation_id` groups.
+- `messages_fts` is the FTS5 search index, kept in step by triggers; body text is added when a body is fetched.
+- `outbox` holds queued Graph mutations (see `outbox.rs`).
 - `message_bodies` holds sanitized HTML, with `size` and `accessed_at` for LRU eviction.
 - `settings` is key/value.
 
@@ -74,7 +76,7 @@ The parent page handles link clicks, opening them in the system browser, and for
 
 ## Keyboard map
 
-Phase 0 bindings are marked ✓. The rest follow Superhuman's defaults.
+Implemented bindings are marked ✓; numbers are the phase that adds them. They follow Superhuman's defaults.
 
 | Keys | Action | |
 |---|---|---|
@@ -86,17 +88,18 @@ Phase 0 bindings are marked ✓. The rest follow Superhuman's defaults.
 | `Ctrl+R` | Sync now | ✓ |
 | `Ctrl+,` | Settings | ✓ |
 | `?` | Shortcut overlay | ✓ |
-| `Ctrl+K` | Command palette | 1 |
-| `e` | Archive (mark done) | 1 |
-| `#` | Delete | 1 |
-| `u` | Toggle read | 1 |
-| `s` | Flag | 1 |
+| `Ctrl+K` | Command palette | ✓ |
+| `e` | Archive (mark done) | ✓ |
+| `#` | Delete | ✓ |
+| `u` | Toggle read | ✓ |
+| `s` | Flag | ✓ |
 | `h` | Snooze / remind | 3 |
-| `r` / `a` / `f` | Reply / reply all / forward | 1 |
-| `c` | Compose | 1 |
-| `/` | Search | 1 |
-| `Tab` / `Shift+Tab` | Next / previous split | 1 |
-| `z` | Undo last action | 1 |
+| `r` / `a` / `f` | Reply / reply all / forward | ✓ |
+| `c` | Compose | ✓ |
+| `/` | Search | ✓ |
+| `Tab` / `Shift+Tab` | Next / previous split | ✓ |
+| `z` | Undo last action | ✓ |
+| `i` | Load remote images in the open conversation | ✓ |
 | `g c` | Calendar | 2 |
 | `0` | Toggle calendar side panel | 2 |
 
@@ -118,17 +121,24 @@ Every binding lives in one registry (`src/lib/keys.svelte.ts`) with an id, label
 - [x] Configurable cache limits
 - [ ] First real sign-in and sync against your mailbox (needs your Entra app, see below)
 
-### Phase 1: the core loop
+### Phase 1: the core loop (done)
 
-- Outbox table: every mutation (archive, delete, read, flag, move) applies locally first, then a worker replays it to Graph with retry. Undo (`z`) removes the pending row or enqueues the inverse.
-- Archive, delete, read/unread, flag
-- Compose, reply, reply all, forward. Plain-ish editor with Markdown shortcuts, sent through `/me/sendMail` or a draft with `send`.
-- Split inboxes: saved queries over local data (sender domain, VIP list, Focused/Other, has-invite, Graph categories). `Tab` cycles. Defaults: Important (Focused), Other, VIP, Calendar.
-- Search: SQLite FTS5 over subject, sender and preview, plus bodies once cached. Server search (`$search`) as a fallback for mail outside the window.
-- Command palette (`Ctrl+K`) over the keymap registry
-- Sync more folders: Sent, Archive, Drafts
-- "Load images" per message: Rust fetches remote images and inlines them as data URIs, so the CSP stays strict
-- Inline `cid:` attachments, attachment list and download
+- [x] Outbox: archive, delete, read/unread and flag apply to SQLite first and queue a Graph op. Triage ops wait 2s before sending, so a quick undo never touches the server. Undo (`z`) cancels queued ops or queues the inverse. Retries with backoff; permanent failures show a toast and a "failed" count.
+- [x] Sync leaves messages with queued ops alone, so a stale delta can't revert a local change.
+- [x] Opening a conversation marks it read. Archive or delete in the reader moves on to the next conversation.
+- [x] Compose, reply, reply all, forward (`c` `r` `a` `f`, `Ctrl+Enter` sends). Plain text in, HTML out. Replies and forwards go through Graph's `reply`/`replyAll`/`forward` so the original is quoted and threaded. Contact suggestions from people you've exchanged mail with.
+- [x] One query language for search and splits: `from:` `to:` `subject:` `is:unread|read|flagged|focused|other|invite` `has:attachment`, `-` to negate, free words as prefixes, `"quoted phrases"`.
+- [x] Search (`/`): SQLite FTS5 over subject, people, preview, and body text once a body has been fetched. Covers all cached folders except Deleted Items.
+- [x] Split inboxes: named queries, `Tab`/`Shift+Tab` to cycle, unread counts on tabs, editable in Settings. Defaults: Important (`is:focused`), Other (`is:other`).
+- [x] Command palette (`Ctrl+K`) over the keymap registry.
+- [x] Sent Items synced, so threads include your replies. Archive and Deleted Items are local move targets only.
+- [x] Load images (`i`): Rust fetches remote images (raster only, 5 MB cap) and inlines them as data URIs; the CSP stays strict.
+- [x] Inline `cid:` images, attachment list, download to Downloads.
+
+Deferred from Phase 1:
+- Server search (`$search`) for mail outside the cache window.
+- Syncing Archive and Drafts; a folder picker / move-to-folder.
+- Markdown shortcuts in the composer.
 
 ### Phase 2: calendar
 

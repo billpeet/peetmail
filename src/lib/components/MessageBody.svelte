@@ -3,10 +3,12 @@
   // loads (CSP inherited by srcdoc), no IPC access. The parent still handles link
   // clicks and forwards keystrokes so shortcuts keep working after clicking into mail.
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { api } from "$lib/api";
   import { getBody } from "$lib/bodies";
   import { keymap } from "$lib/keys.svelte";
 
-  let { messageId }: { messageId: number } = $props();
+  // `images`: fetch remote images through Rust and inline them (press i in the reader).
+  let { messageId, images = false }: { messageId: number; images?: boolean } = $props();
 
   let html = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -15,10 +17,11 @@
 
   $effect(() => {
     const id = messageId;
+    const withImages = images;
     html = null;
     error = null;
-    getBody(id).then(
-      (h) => id === messageId && (html = h),
+    (withImages ? api.getMessageBodyWithImages(id) : getBody(id)).then(
+      (h) => id === messageId && withImages === images && (html = h),
       (e) => id === messageId && (error = String(e)),
     );
   });
@@ -59,6 +62,9 @@
 {:else if html === null}
   <div data-testid="message-body-loading" class="h-16 animate-pulse rounded bg-white/90"></div>
 {:else}
+  {#if !images && /src="https?:/i.test(html)}
+    <p data-testid="images-blocked" class="mb-1 px-1 text-xs text-ink-500">Remote images hidden. Press <kbd>i</kbd> to load them.</p>
+  {/if}
   <iframe
     bind:this={frame}
     title="Message body"

@@ -2,6 +2,7 @@
   import { api } from "$lib/api";
   import { mail } from "$lib/mail.svelte";
   import ClientIdForm from "./ClientIdForm.svelte";
+  import SplitEditor from "./SplitEditor.svelte";
 
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
@@ -32,13 +33,18 @@
 </script>
 
 <div data-testid="settings" class="fixed inset-0 z-20 grid place-items-center bg-black/60">
-    <div class="w-[480px] space-y-6 rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
+    <div class="max-h-[85vh] w-[520px] space-y-6 overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
     <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
 
     <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft account</h3>
       <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
       <ClientIdForm onsaved={() => (mail.overlay = null)} />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Split inboxes</h3>
+      <SplitEditor />
     </section>
 
     <form onsubmit={save} class="space-y-5">

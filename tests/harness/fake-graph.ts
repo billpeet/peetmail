@@ -10,17 +10,34 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { ACCOUNT, defaultMailbox, makeMessage, type GraphMessage, type Sender } from "./fixtures.ts";
+import {
+  ACCOUNT,
+  defaultMailbox,
+  FOLDER_IDS,
+  makeMessage,
+  ME,
+  PIXEL_PNG,
+  type FolderName,
+  type GraphMessage,
+  type Sender,
+} from "./fixtures.ts";
 
 /** The only client ID the fake authority accepts. Anything else never redirects back, like Entra. */
 export const CLIENT_ID = "11111111-2222-3333-4444-555555555555";
-export const INBOX_ID = "AAMkAGI2-inbox";
+export const INBOX_ID = FOLDER_IDS.inbox;
+
+const FOLDER_NAMES: Record<FolderName, string> = {
+  inbox: "Inbox",
+  sentitems: "Sent Items",
+  archive: "Archive",
+  deleteditems: "Deleted Items",
+};
 
 const b64url = (buf: Uint8Array) => Buffer.from(buf).toString("base64url");
 
 type Json = Record<string, any>;
 type ChangeKind = "upsert" | "partial" | "remove";
-type Change = { seq: number; id: string; kind: ChangeKind; fields?: Json };
+type Change = { seq: number; id: string; kind: ChangeKind; fields?: Json; folders: string[] };
 type Session = { items: Json[]; pageSize: number; deltaLink: string };
 type Reply = (status: number, body: Json | string, headers?: Record<string, string>) => void;
 
@@ -37,6 +54,8 @@ export type FakeConfig = {
   latencyMs: number;
   /** Message body requests return 500. */
   failBody: boolean;
+  /** Every write (PATCH, move, send) fails with this status; 0 = off. */
+  failWrites: number;
 };
 
 export type FakeOptions = { port?: number; mailbox?: GraphMessage[]; count?: number; seed?: number; verbose?: boolean };
@@ -51,14 +70,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     accessTokens: new Map<string, number>(), // token -> expiresAt (ms)
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
-    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false } as FakeConfig,
+    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0 } as FakeConfig,
     requests: [] as RequestRecord[],
+    /** Writes the app made: sends, replies, moves, patches. */
+    sent: [] as Json[],
   };
 
   const defaults = { count, seed };
   function reset({ count = defaults.count, seed = defaults.seed, messages }: { count?: number; seed?: number; messages?: GraphMessage[] } = {}) {
     state.messages.clear();
     state.changes = [];
+    state.sent = [];
     state.sessions.clear();
     state.seq = 0;
     for (const m of messages ?? mailbox ?? defaultMailbox({ count, seed })) state.messages.set(m.id, m);
@@ -68,6 +90,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   const server = createServer((req, res) => handle(req, res).catch((e) => send(res, 500, { error: { message: String(e) } })));
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  let replyBytes: (status: number, bytes: Buffer, contentType: string) => void = () => {};
 
   function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
     const isHtml = typeof body === "string";
@@ -98,9 +122,20 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       if (!p.startsWith("/_test")) record(req, url, status);
       send(res, status, body, headers);
     };
+    replyBytes = (status, bytes, contentType) => {
+      record(req, url, status);
+      res.writeHead(status, { "Content-Type": contentType });
+      res.end(bytes);
+    };
 
     if (p.startsWith("/_test")) return control(req, res, url);
     if (p.startsWith("/oauth/")) return oauth(req, url, reply);
+    if (p.startsWith("/img/")) {
+      // Stand-in for a sender's image host (load-images tests).
+      record(req, url, 200);
+      res.writeHead(200, { "Content-Type": "image/png" });
+      return res.end(Buffer.from(PIXEL_PNG, "base64"));
+    }
     if (p.startsWith("/v1.0/")) {
       if (state.config.latencyMs) await new Promise((r) => setTimeout(r, state.config.latencyMs));
       return graph(req, url, reply);
@@ -174,26 +209,142 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (t) return graphError(reply, t.status, "TooManyRequests", "Throttled by test", { "Retry-After": String(t.retryAfter) });
 
     const p = url.pathname.replace(/^\/v1\.0/, "");
+    const method = req.method ?? "GET";
+    const isWrite = method !== "GET";
+    if (isWrite && state.config.failWrites) {
+      return graphError(reply, state.config.failWrites, "ErrorInternalServerError", "Write failed (test)");
+    }
+
     if (p === "/me") return reply(200, { ...ACCOUNT, userPrincipalName: ACCOUNT.mail });
-    if (p === "/me/mailFolders/inbox") return reply(200, { id: INBOX_ID, displayName: "Inbox" });
-    if (p === `/me/mailFolders/${INBOX_ID}/messages/delta`) return delta(req, url, reply);
+
+    const folder = p.match(/^\/me\/mailFolders\/([^/]+)$/);
+    if (folder) {
+      const id = folderId(decodeURIComponent(folder[1]));
+      if (!id) return graphError(reply, 404, "ErrorFolderNotFound", "Folder not found");
+      const name = Object.entries(FOLDER_IDS).find(([, v]) => v === id)![0];
+      return reply(200, { id, displayName: FOLDER_NAMES[name as FolderName] });
+    }
+    const deltaMatch = p.match(/^\/me\/mailFolders\/([^/]+)\/messages\/delta$/);
+    if (deltaMatch) {
+      const id = folderId(decodeURIComponent(deltaMatch[1]));
+      if (!id) return graphError(reply, 404, "ErrorFolderNotFound", "Folder not found");
+      return delta(req, url, reply, id);
+    }
+
+    if (method === "POST" && p === "/me/sendMail") {
+      const b = await readBody(req);
+      const m = b.message ?? {};
+      sendCopy({ kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [] });
+      return reply(202, "");
+    }
+
+    const action = p.match(/^\/me\/messages\/([^/]+)\/(reply|replyAll|forward|move)$/);
+    if (action && method === "POST") {
+      const msg = state.messages.get(decodeURIComponent(action[1]));
+      if (!msg) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      const b = await readBody(req);
+      if (action[2] === "move") {
+        const dest = folderId(b.destinationId ?? "");
+        if (!dest) return graphError(reply, 400, "ErrorInvalidIdMalformed", "Bad destinationId");
+        const from = msg.parentFolderId;
+        msg.parentFolderId = dest;
+        change(msg.id, "upsert", undefined, [from, dest]);
+        state.sent.push({ kind: "move", messageId: msg.id, destination: b.destinationId });
+        return reply(201, metadata(msg));
+      }
+      const kind = action[2] as "reply" | "replyAll" | "forward";
+      const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== ACCOUNT.mail);
+      const to =
+        b.toRecipients ?? b.message?.toRecipients ??
+        (kind === "forward" ? [] : kind === "reply" ? [msg.from] : [msg.from, ...others(msg.toRecipients)]);
+      const cc = b.message?.ccRecipients ?? (kind === "replyAll" ? others(msg.ccRecipients) : []);
+      const prefix = kind === "forward" ? "FW: " : "RE: ";
+      sendCopy({
+        kind,
+        messageId: msg.id,
+        conversationId: msg.conversationId,
+        subject: prefix + msg.subject.replace(/^(re|fw):\s*/i, ""),
+        html: `${b.comment ?? ""}<hr><blockquote>${msg.body.content}</blockquote>`,
+        to,
+        cc,
+      });
+      return reply(202, "");
+    }
+
+    const attachmentValue = p.match(/^\/me\/messages\/([^/]+)\/attachments\/([^/]+)\/\$value$/);
+    if (attachmentValue) {
+      const msg = state.messages.get(decodeURIComponent(attachmentValue[1]));
+      const att = msg?.attachments?.find((a) => a.id === decodeURIComponent(attachmentValue[2]));
+      if (!att) return graphError(reply, 404, "ErrorItemNotFound", "Attachment not found");
+      return replyBytes(200, Buffer.from(att.contentBytes, "base64"), att.contentType);
+    }
+    const attachments = p.match(/^\/me\/messages\/([^/]+)\/attachments$/);
+    if (attachments) {
+      const msg = state.messages.get(decodeURIComponent(attachments[1]));
+      if (!msg) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      let list = msg.attachments ?? [];
+      if ((url.searchParams.get("$filter") ?? "").includes("isInline eq true")) list = list.filter((a) => a.isInline);
+      const select = url.searchParams.get("$select");
+      const value = list.map((a) => ({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        ...(select ? Object.fromEntries(Object.entries(a).filter(([k]) => select.split(",").includes(k))) : a),
+      }));
+      return reply(200, { value });
+    }
 
     const m = p.match(/^\/me\/messages\/([^/]+)$/);
     if (m) {
       const msg = state.messages.get(decodeURIComponent(m[1]));
       if (!msg) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      if (method === "PATCH") {
+        const b = await readBody(req);
+        const fields: Json = {};
+        if ("isRead" in b) fields.isRead = msg.isRead = Boolean(b.isRead);
+        if (b.flag?.flagStatus) fields.flag = msg.flag = { flagStatus: b.flag.flagStatus };
+        change(msg.id, "partial", fields);
+        state.sent.push({ kind: "patch", messageId: msg.id, fields });
+        return reply(200, metadata(msg));
+      }
       if (state.config.failBody) return graphError(reply, 500, "InternalServerError", "Body fetch failed (test)");
       return reply(200, { id: msg.id, body: msg.body });
     }
-    graphError(reply, 404, "NotFound", `No fake route for ${p}`);
+    graphError(reply, 404, "NotFound", `No fake route for ${method} ${p}`);
   }
 
-  const metadata = ({ body, ...rest }: GraphMessage): Json => rest;
+  /** Accepts a well-known name or a folder id. */
+  function folderId(nameOrId: string): string | undefined {
+    if (nameOrId in FOLDER_IDS) return FOLDER_IDS[nameOrId as FolderName];
+    return Object.values(FOLDER_IDS).find((v) => v === nameOrId);
+  }
 
-  function delta(req: IncomingMessage, url: URL, reply: Reply) {
+  let sentCount = 0;
+  /** Puts a copy of something you sent into Sent Items and logs it for assertions. */
+  function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[] }) {
+    const id = `msg-sent-new-${++sentCount}`;
+    const msg = makeMessage({
+      id,
+      conversationId: s.conversationId,
+      sender: ME,
+      to: s.to.map((r) => [r.emailAddress?.name ?? r.emailAddress?.address, r.emailAddress?.address] as Sender),
+      folder: "sentitems",
+      subject: s.subject,
+      receivedAt: Date.now(),
+      isRead: true,
+      snippet: s.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+    });
+    msg.ccRecipients = s.cc as GraphMessage["ccRecipients"];
+    msg.body = { contentType: "html", content: s.html };
+    state.messages.set(id, msg);
+    change(id, "upsert");
+    state.sent.push({ kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc });
+  }
+
+  const metadata = ({ body, attachments, ...rest }: GraphMessage): Json => rest;
+
+  function delta(req: IncomingMessage, url: URL, reply: Reply, folder: string) {
     const q = url.searchParams;
     const pageSize = Number(String(req.headers.prefer ?? "").match(/odata\.maxpagesize=(\d+)/)?.[1] ?? 10);
-    const deltaUrl = (token: string) => `${origin}/v1.0/me/mailFolders/${INBOX_ID}/messages/delta?$deltatoken=${token}`;
+    const base = `${origin}/v1.0/me/mailFolders/${folder}/messages/delta`;
 
     // Continuing a paging session.
     if (q.has("$skiptoken")) {
@@ -206,13 +357,13 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     let items: Json[];
     let cutoff = "";
     if (q.has("$deltatoken")) {
-      if (state.config.expireDelta) {
+      if (state.config.expireDelta && folder === FOLDER_IDS.inbox) {
         state.config.expireDelta = false;
         return graphError(reply, 410, "SyncStateNotFound", "The sync state generation is not found.");
       }
       const [since, c] = (q.get("$deltatoken") ?? "").split(".");
       cutoff = c ?? "";
-      items = changesSince(Number(since), cutoff);
+      items = changesSince(folder, Number(since), cutoff);
     } else {
       const filter = q.get("$filter");
       if (filter) {
@@ -220,13 +371,13 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         cutoff = filter.match(/receivedDateTime ge (\S+)/)?.[1] ?? "";
       }
       items = [...state.messages.values()]
-        .filter((m) => !cutoff || m.receivedDateTime >= cutoff)
+        .filter((m) => m.parentFolderId === folder && (!cutoff || m.receivedDateTime >= cutoff))
         .sort((a, b) => b.receivedDateTime.localeCompare(a.receivedDateTime))
         .map(metadata);
     }
 
     const sid = b64url(randomBytes(6));
-    const s: Session = { items, pageSize, deltaLink: deltaUrl(`${state.seq}.${cutoff}`) };
+    const s: Session = { items, pageSize, deltaLink: `${base}?$deltatoken=${state.seq}.${cutoff}` };
     state.sessions.set(sid, s);
     return page(s, sid, 0);
 
@@ -234,7 +385,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const slice = s.items.slice(offset, offset + s.pageSize);
       const body: Json = { "@odata.context": `${origin}/v1.0/$metadata#Collection(message)`, value: slice };
       if (offset + s.pageSize < s.items.length) {
-        body["@odata.nextLink"] = `${origin}/v1.0/me/mailFolders/${INBOX_ID}/messages/delta?$skiptoken=${sid}:${offset + s.pageSize}`;
+        body["@odata.nextLink"] = `${base}?$skiptoken=${sid}:${offset + s.pageSize}`;
       } else {
         body["@odata.deltaLink"] = s.deltaLink;
         state.sessions.delete(sid);
@@ -243,10 +394,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     }
   }
 
-  function changesSince(since: number, cutoff: string): Json[] {
+  /** Delta items for one folder: changed messages still in it, and @removed for ones that left. */
+  function changesSince(folder: string, since: number, cutoff: string): Json[] {
     const latest = new Map<string, { kind: ChangeKind; fields: Json }>();
     for (const c of state.changes) {
-      if (c.seq <= since) continue;
+      if (c.seq <= since || !c.folders.includes(folder)) continue;
       const prev = latest.get(c.id);
       // A partial after an upsert still needs the full object.
       const kind = c.kind === "partial" && prev && prev.kind !== "partial" ? prev.kind : c.kind;
@@ -255,15 +407,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     const out: Json[] = [];
     for (const [id, c] of latest) {
       const msg = state.messages.get(id);
-      if (c.kind === "remove" || !msg) out.push({ id, "@removed": { reason: "deleted" } });
+      if (c.kind === "remove" || !msg || msg.parentFolderId !== folder) out.push({ id, "@removed": { reason: "deleted" } });
       else if (c.kind === "partial") out.push({ id, ...c.fields });
       else if (!cutoff || msg.receivedDateTime >= cutoff) out.push(metadata(msg));
     }
     return out;
   }
 
-  function change(id: string, kind: ChangeKind, fields?: Json) {
-    state.changes.push({ seq: ++state.seq, id, kind, fields });
+  /** Records a change. `folders` are the folders whose delta should see it (default: the message's current one). */
+  function change(id: string, kind: ChangeKind, fields?: Json, folders?: string[]) {
+    const current = state.messages.get(id)?.parentFolderId;
+    state.changes.push({ seq: ++state.seq, id, kind, fields, folders: folders ?? (current ? [current] : Object.values(FOLDER_IDS)) });
   }
 
   // ---------- control API ----------
@@ -278,11 +432,14 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         return ok({
           routes: [
             "POST /_test/reset {count?, seed?}",
-            "POST /_test/deliver {count?, subject?, from?: [name, address], conversationId?, body?: html}",
+            "POST /_test/deliver {count?, subject?, from?: [name, address], to?: [[name, address]], cc?, conversationId?, body?: html, folder?, inference?}",
             "POST /_test/update {id, fields: {isRead?, flag?, subject?...}}",
             "POST /_test/remove {id}",
             "POST /_test/throttle {count?=1, status?=429, retryAfter?=1}",
-            "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?}",
+            "POST /_test/move {id, folder: inbox|archive|deleteditems|sentitems}",
+            "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status}",
+            "GET  /_test/sent   (writes the app made: send, reply, move, patch)",
+            "GET  /_test/message?id=...",
             "POST /_test/expire-tokens",
             "GET  /_test/state",
             "GET  /_test/requests   DELETE /_test/requests",
@@ -304,7 +461,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
             subject: body.subject ?? `New message ${delivered}`,
             receivedAt: Date.now(),
             snippet: body.preview ?? "Just landed in your inbox.",
+            folder: body.folder,
+            to: body.to as Sender[] | undefined,
           });
+          if (body.cc) msg.ccRecipients = (body.cc as Sender[]).map(([name, address]) => ({ emailAddress: { name, address } }));
+          if (body.inference) msg.inferenceClassification = body.inference;
           if (body.body) msg.body = { contentType: "html", content: body.body };
           state.messages.set(id, msg);
           change(id, "upsert");
@@ -318,6 +479,21 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         Object.assign(msg, body.fields);
         change(body.id, "partial", body.fields);
         return ok();
+      }
+      case "POST /_test/move": {
+        const msg = state.messages.get(body.id);
+        const dest = folderId(body.folder ?? "");
+        if (!msg || !dest) return send(res, 404, { error: "no such message or folder" });
+        const from = msg.parentFolderId;
+        msg.parentFolderId = dest;
+        change(msg.id, "upsert", undefined, [from, dest]);
+        return ok();
+      }
+      case "GET /_test/sent":
+        return ok(state.sent);
+      case "GET /_test/message": {
+        const msg = state.messages.get(url.searchParams.get("id") ?? "");
+        return msg ? ok(metadata(msg)) : send(res, 404, { error: "no such message" });
       }
       case "POST /_test/remove":
         state.messages.delete(body.id);
@@ -351,10 +527,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state,
     /** Calls the control API, e.g. control("deliver", { subject: "Hi" }). */
     async control(route: string, body?: Json): Promise<any> {
+      const isGet = body === undefined && /^(state|requests|sent|message\?.*)$/.test(route);
       const res = await fetch(`${origin}/_test/${route}`, {
-        method: body === undefined && route.match(/^(state|requests)$/) ? "GET" : "POST",
+        method: isGet ? "GET" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: body === undefined && route.match(/^(state|requests)$/) ? undefined : JSON.stringify(body ?? {}),
+        body: isGet ? undefined : JSON.stringify(body ?? {}),
       });
       if (!res.ok) throw new Error(`control ${route} failed: ${res.status} ${await res.text()}`);
       return res.json();

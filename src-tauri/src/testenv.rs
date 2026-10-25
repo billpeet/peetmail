@@ -9,7 +9,8 @@
 //! | PEETMAIL_AUTHORITY_URL        | OAuth authority, e.g. http://127.0.0.1:4010/oauth        |
 //! | PEETMAIL_AUTH_AUTOFOLLOW=1    | Follow the authorize URL with reqwest, not a browser     |
 //! | PEETMAIL_SYNC_INTERVAL_SECS   | Background sync interval (default 60)                    |
-//! | PEETMAIL_HEADLESS=1           | Window off-screen, no taskbar entry, never takes focus   |
+//! | PEETMAIL_HEADLESS=1           | Window hidden, no taskbar entry, never takes focus       |
+//! | PEETMAIL_DOWNLOAD_DIR         | Attachments save here and Explorer isn't opened          |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

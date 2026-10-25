@@ -1,4 +1,15 @@
-import { api, type Bootstrap, type Folder, type MessageRow, type SyncStatus, type ThreadRow } from "./api";
+import {
+  api,
+  type Action,
+  type Bootstrap,
+  type DraftKind,
+  type Folder,
+  type MessageRow,
+  type OutboxStatus,
+  type SplitInfo,
+  type SyncStatus,
+  type ThreadRow,
+} from "./api";
 import { prefetchBody } from "./bodies";
 
 const PAGE = 200;
@@ -6,14 +17,32 @@ const PAGE = 200;
 const LOAD_AHEAD = 50;
 const REFRESH_DEBOUNCE_MS = 150;
 const PREFETCH_DELAY_MS = 120;
+const TOAST_MS = 5000;
 
 export type View = "list" | "reader";
-export type Overlay = null | "help" | "settings";
+export type Overlay = null | "help" | "settings" | "palette";
+
+export type ComposerState = {
+  kind: DraftKind;
+  /** Message replied to or forwarded. */
+  referenceMessageId: number | null;
+  to: string;
+  cc: string;
+  subject: string;
+  body: string;
+};
+
+export type Toast = { text: string; undo?: boolean; error?: boolean };
 
 class MailStore {
   boot = $state<Bootstrap | null>(null);
   account = $derived(this.boot?.accounts.find((a) => a.signedIn) ?? null);
   folder = $state<Folder | null>(null);
+
+  splits = $state.raw<SplitInfo[]>([]);
+  splitIndex = $state(0);
+  /** Active search text; when non-null the list shows search results across all mail. */
+  search = $state<string | null>(null);
 
   threads = $state.raw<ThreadRow[]>([]);
   selected = $state(0);
@@ -24,7 +53,12 @@ class MailStore {
   thread = $state.raw<MessageRow[]>([]);
   /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
   threadFor = $state<string | null>(null);
+  /** Remote images allowed for the open conversation. */
+  imagesFor = $state<string | null>(null);
 
+  composer = $state<ComposerState | null>(null);
+  toast = $state<Toast | null>(null);
+  outbox = $state<OutboxStatus>({ pending: 0, failed: 0, lastError: null });
   sync = $state<SyncStatus>({ state: "idle", message: null });
   error = $state<string | null>(null);
 
@@ -32,6 +66,14 @@ class MailStore {
   #loadingMore = false;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
   #prefetchTimer: ReturnType<typeof setTimeout> | undefined;
+  #toastTimer: ReturnType<typeof setTimeout> | undefined;
+  #searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Query and scope behind the current list. */
+  get listQuery(): { folderId: number | null; query: string } {
+    if (this.search !== null) return { folderId: null, query: this.search };
+    return { folderId: this.folder?.id ?? null, query: this.splits[this.splitIndex]?.query ?? "" };
+  }
 
   async init() {
     try {
@@ -46,6 +88,7 @@ class MailStore {
     if (!this.account) {
       this.folder = null;
       this.threads = [];
+      this.splits = [];
       this.view = "list";
       return;
     }
@@ -63,20 +106,32 @@ class MailStore {
     }, REFRESH_DEBOUNCE_MS);
   }
 
+  async refreshSplits() {
+    if (!this.folder) return;
+    this.splits = await api.listSplits(this.folder.id);
+    if (this.splitIndex >= this.splits.length) this.splitIndex = 0;
+  }
+
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
   async refresh() {
     if (!this.folder) return;
+    await this.refreshSplits();
     const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
-    const rows = await api.listThreads(this.folder.id, null, count);
+    const { folderId, query } = this.listQuery;
+    const rows = await api.listThreads(folderId, query, null, count);
     this.threads = rows;
     this.#exhausted = rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
     const cur = this.current;
-    if (this.view === "reader" && cur) {
-      this.thread = await api.getThread(cur.accountId, cur.conversationId);
-      this.threadFor = cur.conversationId;
+    if (this.view === "reader") {
+      if (!cur) {
+        this.view = "list";
+      } else {
+        this.thread = await api.getThread(cur.accountId, cur.conversationId);
+        this.threadFor = cur.conversationId;
+      }
     }
   }
 
@@ -86,7 +141,8 @@ class MailStore {
     if (!last) return;
     this.#loadingMore = true;
     try {
-      const rows = await api.listThreads(this.folder.id, { receivedAt: last.receivedAt, messageId: last.messageId }, PAGE);
+      const { folderId, query } = this.listQuery;
+      const rows = await api.listThreads(folderId, query, { receivedAt: last.receivedAt, messageId: last.messageId }, PAGE);
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
     } finally {
@@ -111,15 +167,149 @@ class MailStore {
     if (!t) return;
     this.view = "reader";
     const rows = await api.getThread(t.accountId, t.conversationId);
-    if (this.current?.conversationId === t.conversationId) {
-      this.thread = rows;
-      this.threadFor = t.conversationId;
-    }
+    if (this.current?.conversationId !== t.conversationId) return;
+    this.thread = rows;
+    this.threadFor = t.conversationId;
+    // Opening a conversation reads it, like every mail client; not worth an undo entry.
+    if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
   }
 
   back() {
     this.view = "list";
   }
+
+  // ---------- splits and search ----------
+
+  async switchSplit(index: number) {
+    if (!this.splits.length) return;
+    this.search = null;
+    this.splitIndex = (index + this.splits.length) % this.splits.length;
+    this.selected = 0;
+    this.view = "list";
+    await this.refresh();
+  }
+
+  startSearch() {
+    this.search = this.search ?? "";
+    this.view = "list";
+  }
+
+  setSearch(text: string) {
+    this.search = text;
+    clearTimeout(this.#searchTimer);
+    this.#searchTimer = setTimeout(() => {
+      this.selected = 0;
+      this.refresh();
+    }, 120);
+  }
+
+  async endSearch() {
+    if (this.search === null) return;
+    this.search = null;
+    this.selected = 0;
+    await this.refresh();
+  }
+
+  // ---------- triage ----------
+
+  async act(action: Action, { undoable = true, quiet = false } = {}) {
+    const t = this.current;
+    if (!t) return;
+    try {
+      const out = await api.threadAction(t.accountId, t.conversationId, action, undoable);
+      if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
+      // mail-changed triggers the refresh; do it now too so the list never lags a keypress.
+      await this.refresh();
+      // In the reader, archive/delete moves straight on to the next conversation.
+      if ((action === "archive" || action === "trash") && this.view === "reader" && this.current) await this.open();
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
+  async toggleRead() {
+    const t = this.current;
+    if (t) await this.act(t.unreadCount > 0 ? "markRead" : "markUnread");
+  }
+
+  async toggleFlag() {
+    const t = this.current;
+    if (t) await this.act(t.isFlagged ? "unflag" : "flag");
+  }
+
+  async undo() {
+    try {
+      const label = await api.undo();
+      this.showToast({ text: label ? `Undid: ${label.toLowerCase()}` : "Nothing to undo" });
+      await this.refresh();
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
+  showToast(t: Toast) {
+    this.toast = t;
+    clearTimeout(this.#toastTimer);
+    this.#toastTimer = setTimeout(() => (this.toast = null), TOAST_MS);
+  }
+
+  // ---------- compose ----------
+
+  compose() {
+    this.composer = { kind: "new", referenceMessageId: null, to: "", cc: "", subject: "", body: "" };
+  }
+
+  /** Reply, reply all or forward the newest message of the current conversation. */
+  async respond(kind: Exclude<DraftKind, "new">) {
+    const t = this.current;
+    if (!t || !this.account) return;
+    const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId);
+    // Reply to the newest message someone else sent, if there is one.
+    const me = this.account.email.toLowerCase();
+    const ref = [...msgs].reverse().find((m) => m.fromAddress?.toLowerCase() !== me) ?? msgs.at(-1);
+    if (!ref) return;
+    const notMe = (a: string | null | undefined): a is string => !!a && a.toLowerCase() !== me;
+    const fromIsMe = !notMe(ref.fromAddress);
+    let to: string[] = [];
+    let cc: string[] = [];
+    if (kind === "reply") to = fromIsMe ? ref.to.map((r) => r.address).filter(notMe) : [ref.fromAddress!];
+    if (kind === "replyAll") {
+      to = [...new Set([ref.fromAddress, ...ref.to.map((r) => r.address)].filter(notMe))];
+      cc = ref.cc.map((r) => r.address).filter(notMe);
+    }
+    const bare = ref.subject.replace(/^((re|fw|fwd):\s*)+/i, "");
+    this.composer = {
+      kind,
+      referenceMessageId: ref.id,
+      to: to.join(", "),
+      cc: cc.join(", "),
+      subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
+      body: "",
+    };
+  }
+
+  async send() {
+    const c = this.composer;
+    if (!c || !this.account) return;
+    const split = (s: string) => s.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+    try {
+      await api.sendMessage({
+        accountId: this.account.id,
+        kind: c.kind,
+        referenceMessageId: c.referenceMessageId,
+        to: split(c.to),
+        cc: split(c.cc),
+        subject: c.subject,
+        body: c.body,
+      });
+      this.composer = null;
+      this.showToast({ text: "Sending…" });
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
+  // ---------- misc ----------
 
   /** Warm the bodies around the cursor so opening (or j/k in the reader) is instant. */
   #schedulePrefetch() {

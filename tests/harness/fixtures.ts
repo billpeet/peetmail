@@ -4,8 +4,33 @@
 
 export type Sender = [name: string, address: string];
 
-export type GraphMessage = {
+/** Graph folder ids for the well-known folders the fake knows about. */
+export const FOLDER_IDS = {
+  inbox: "AAMkAGI2-inbox",
+  sentitems: "AAMkAGI2-sent",
+  archive: "AAMkAGI2-archive",
+  deleteditems: "AAMkAGI2-deleted",
+} as const;
+export type FolderName = keyof typeof FOLDER_IDS;
+
+export type FakeAttachment = {
   id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  isInline: boolean;
+  contentId?: string;
+  contentBytes: string;
+};
+
+/** 1x1 PNG, used for inline and remote image fixtures. */
+export const PIXEL_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+export type GraphMessage = {
+  "@odata.type"?: string;
+  id: string;
+  parentFolderId: string;
   conversationId: string;
   subject: string;
   from: { emailAddress: { name: string; address: string } };
@@ -19,6 +44,8 @@ export type GraphMessage = {
   importance: string;
   inferenceClassification: string;
   body: { contentType: "html" | "text"; content: string };
+  /** Not part of Graph's message payload; served from /attachments. */
+  attachments?: FakeAttachment[];
 };
 
 type Variant = "default" | "newsletter" | "hostile" | "quoted" | "plain";
@@ -73,6 +100,8 @@ function rng(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+const OTHER_SENDERS = new Set(["noreply@github.com", "notifications@linear.app", "receipts@stripe.com", "hello@beetroot.news"]);
 
 const pick = <T,>(r: () => number, list: T[]): T => list[Math.floor(r() * list.length)];
 const addr = ([name, address]: Sender) => ({ emailAddress: { name, address } });
@@ -140,6 +169,39 @@ export function defaultMailbox({ now = Date.now(), count = 160, seed = 42 }: { n
     }));
   }
 
+  // Your reply in the offsite thread, so threads show Sent copies.
+  messages.push(makeMessage({
+    id: "msg-thread-sent", conversationId: "conv-thread-1", sender: ME, to: [SENDERS[0]],
+    subject: "Re: Offsite agenda (draft)", receivedAt: now - 9 * HOUR, isRead: true, folder: "sentitems",
+    snippet: "Works for me. I'll book the room.",
+  }));
+  // Mail you sent, so contact suggestions have something to rank.
+  for (let i = 0; i < 3; i++) {
+    messages.push(makeMessage({
+      id: `msg-sent-${i}`, conversationId: `conv-sent-${i}`, sender: ME, to: [SENDERS[1]],
+      subject: `Quick question ${i + 1}`, receivedAt: now - (50 + i * 24) * HOUR, isRead: true, folder: "sentitems",
+    }));
+  }
+  // Inline image (cid:) plus a regular attachment.
+  const attach = makeMessage({
+    id: "msg-attach", conversationId: "conv-attach", sender: SENDERS[1], subject: "Q4 plan attached",
+    receivedAt: now - 3 * HOUR, isRead: true, hasAttachments: true,
+  });
+  attach.body = { contentType: "html", content: `<p>Chart below, full plan attached.</p><img src="cid:chart@peetmail" alt="chart" width="40">` };
+  attach.attachments = [
+    { id: "att-chart", name: "chart.png", contentType: "image/png", size: 68, isInline: true, contentId: "<chart@peetmail>", contentBytes: PIXEL_PNG },
+    { id: "att-pdf", name: "Q4 plan.pdf", contentType: "application/pdf", size: 18, isInline: false, contentBytes: Buffer.from("%PDF-1.4 fake plan").toString("base64") },
+  ];
+  messages.push(attach);
+  // A meeting invite.
+  messages.push({
+    ...makeMessage({
+      id: "msg-invite", conversationId: "conv-invite", sender: SENDERS[8], subject: "Invitation: Design review (Thu 10am)",
+      receivedAt: now - 4 * HOUR, isRead: false,
+    }),
+    "@odata.type": "#microsoft.graph.eventMessage",
+  });
+
   for (let i = 0; messages.length < count; i++) {
     const sender = pick(r, SENDERS);
     const subject = pick(r, SUBJECTS);
@@ -164,6 +226,9 @@ export type MessageSpec = {
   id: string;
   conversationId?: string;
   sender: Sender;
+  /** Recipients; defaults to you. */
+  to?: Sender[];
+  folder?: FolderName;
   subject: string;
   receivedAt: number;
   isRead?: boolean;
@@ -175,16 +240,17 @@ export type MessageSpec = {
 };
 
 export function makeMessage({
-  id, conversationId, sender, subject, receivedAt, isRead = false, isFlagged = false,
+  id, conversationId, sender, to = [ME], folder = "inbox", subject, receivedAt, isRead = false, isFlagged = false,
   hasAttachments = false, importance = "normal", variant = "default", snippet = SNIPPETS[1],
 }: MessageSpec): GraphMessage {
   const plain = variant === "plain";
   return {
     id,
+    parentFolderId: FOLDER_IDS[folder],
     conversationId: conversationId ?? `conv-${id}`,
     subject,
     from: addr(sender),
-    toRecipients: [addr(ME)],
+    toRecipients: to.map(addr),
     ccRecipients: [],
     receivedDateTime: new Date(receivedAt).toISOString().replace(/\.\d{3}Z$/, "Z"),
     bodyPreview: snippet.slice(0, 120),
@@ -192,7 +258,7 @@ export function makeMessage({
     flag: { flagStatus: isFlagged ? "flagged" : "notFlagged" },
     hasAttachments,
     importance,
-    inferenceClassification: "focused",
+    inferenceClassification: OTHER_SENDERS.has(sender[1]) ? "other" : "focused",
     body: plain
       ? { contentType: "text", content: `Hey love,\n\n${snippet}\n\n<not a tag> & see you Sunday.\nMum` }
       : { contentType: "html", content: htmlBody(subject, snippet, variant) },
@@ -200,3 +266,4 @@ export function makeMessage({
 }
 
 export const ACCOUNT = { displayName: ME[0], mail: ME[1] };
+export { ME };

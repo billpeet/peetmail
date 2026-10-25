@@ -78,8 +78,11 @@ test("threads expand the newest message and collapse read ones", async ({ inbox:
   await row(page, "conv-thread-1").click();
   await page.keyboard.press("Enter");
   const messages = page.getByTestId("message");
-  await expect(messages).toHaveCount(4);
-  await expect(page.locator("[data-testid=message][data-expanded=true]")).toHaveCount(1);
+  // Four received plus your reply from Sent Items.
+  await expect(messages).toHaveCount(5);
+  await expect(messages.last()).toContainText("Sent");
+  // Newest (your reply) and the one unread message start expanded.
+  await expect(page.locator("[data-testid=message][data-expanded=true]")).toHaveCount(2);
   await expect(messages.last()).toHaveAttribute("data-expanded", "true");
 
   await messages.first().getByTestId("message-header").click();

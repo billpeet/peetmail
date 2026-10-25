@@ -1,9 +1,12 @@
+mod actions;
 mod auth;
 mod commands;
 mod db;
 mod error;
 mod graph;
 mod mail;
+mod outbox;
+mod query;
 mod sanitize;
 mod secure;
 mod state;
@@ -68,12 +71,15 @@ pub fn run() {
             };
             std::fs::create_dir_all(&dir)?;
             let db = db::Db::open(&dir.join("peetmail.db"))?;
+            db.with(|c| outbox::reset_inflight(c))?;
             app.manage(state::AppState::new(db));
             create_main_window(app)?;
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
+                    // Retry anything queued while offline before pulling changes.
+                    outbox::kick(&handle);
                     if let Err(e) = mail::sync_all(&handle).await {
                         log::error!("background sync: {e}");
                     }
@@ -94,6 +100,16 @@ pub fn run() {
             commands::get_message_body,
             commands::sync_now,
             commands::set_cache_limits,
+            commands::thread_action,
+            commands::undo,
+            commands::outbox_status,
+            commands::send_message,
+            commands::suggest_contacts,
+            commands::list_splits,
+            commands::set_splits,
+            commands::get_message_body_with_images,
+            commands::list_attachments,
+            commands::download_attachment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

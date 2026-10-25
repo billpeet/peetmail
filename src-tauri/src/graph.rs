@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use reqwest::{header, StatusCode};
+use reqwest::{header, Method, StatusCode};
 use serde_json::Value;
 
 use crate::error::{AppError, Result};
@@ -25,17 +25,58 @@ pub const PREFER_IMMUTABLE: &str = r#"IdType="ImmutableId""#;
 const MAX_RETRIES: u32 = 5;
 
 pub async fn get(http: &reqwest::Client, token: &str, url: &str, prefer: &[&str]) -> Result<Value> {
+    request(http, token, Method::GET, url, None, prefer).await
+}
+
+/// Sends a request, retrying 429/503 after Retry-After. 202/204 responses (sendMail,
+/// reply, PATCH without return) come back as `Value::Null`.
+pub async fn request(
+    http: &reqwest::Client,
+    token: &str,
+    method: Method,
+    url: &str,
+    body: Option<&Value>,
+    prefer: &[&str],
+) -> Result<Value> {
+    let res = send(http, token, method, url, body, prefer).await?;
+    let text = res.text().await?;
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// GET returning raw bytes (attachment `$value`, images).
+pub async fn get_bytes(http: &reqwest::Client, token: &str, url: &str) -> Result<Vec<u8>> {
+    let res = send(http, token, Method::GET, url, None, &[]).await?;
+    Ok(res.bytes().await?.to_vec())
+}
+
+async fn send(
+    http: &reqwest::Client,
+    token: &str,
+    method: Method,
+    url: &str,
+    body: Option<&Value>,
+    prefer: &[&str],
+) -> Result<reqwest::Response> {
     let mut attempt = 0;
     loop {
-        let mut req = http.get(url).bearer_auth(token).header(header::ACCEPT, "application/json");
+        let mut req = http
+            .request(method.clone(), url)
+            .bearer_auth(token)
+            .header(header::ACCEPT, "application/json");
         if !prefer.is_empty() {
             req = req.header("Prefer", prefer.join(", "));
+        }
+        if let Some(b) = body {
+            req = req.json(b);
         }
         let res = req.send().await?;
         let status = res.status();
 
         if status.is_success() {
-            return Ok(res.json().await?);
+            return Ok(res);
         }
 
         let throttled = status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE;

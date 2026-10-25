@@ -1,10 +1,16 @@
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::db::{self, Account, Cursor, Folder, MessageRow, ThreadRow};
+use serde::Deserialize;
+use tauri::Emitter;
+use tauri_plugin_opener::OpenerExt;
+
+use crate::actions::{self, Action, ActionOutcome};
+use crate::db::{self, Account, Contact, Cursor, Folder, MessageRow, Scope, ThreadRow};
 use crate::error::{AppError, Result};
-use crate::state::{AppState, CacheLimits, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID};
-use crate::{auth, mail};
+use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
+use crate::state::{AppState, CacheLimits, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID, KEY_SPLITS};
+use crate::{auth, mail, query};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,15 +101,20 @@ pub fn list_folders(state: State<'_, AppState>, account_id: i64) -> Result<Vec<F
     state.db.with(|c| db::list_folders(c, account_id))
 }
 
+/// Threads for a folder (inbox, a split) or, with no folder, all mail (search).
+/// `query` uses the query language in query.rs.
 #[tauri::command]
 pub fn list_threads(
     state: State<'_, AppState>,
-    folder_id: i64,
+    folder_id: Option<i64>,
+    query: Option<String>,
     cursor: Option<Cursor>,
     limit: Option<i64>,
 ) -> Result<Vec<ThreadRow>> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
-    state.db.with(|c| db::list_threads(c, folder_id, cursor.as_ref(), limit))
+    let filter = query::compile(query.as_deref().unwrap_or(""));
+    let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::AllMail);
+    state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))
 }
 
 #[tauri::command]
@@ -140,6 +151,186 @@ pub async fn set_cache_limits(app: AppHandle, state: State<'_, AppState>, limits
         let _ = mail::sync_all(&app).await;
     });
     Ok(())
+}
+
+// ---------- triage ----------
+
+fn mail_changed(app: &AppHandle, account_id: i64) {
+    let _ = app.emit(mail::EVENT_MAIL_CHANGED, serde_json::json!({ "accountId": account_id, "folderId": null }));
+}
+
+/// Applies a triage action to a conversation. Local state changes immediately; the
+/// server catches up through the outbox.
+#[tauri::command]
+pub fn thread_action(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    conversation_id: String,
+    action: Action,
+    undoable: Option<bool>,
+) -> Result<ActionOutcome> {
+    let entry = state.db.with(|c| actions::apply(c, account_id, &conversation_id, action))?;
+    let changed = entry.before.len();
+    let label = (changed > 0).then(|| entry.label.clone());
+    if changed > 0 && undoable.unwrap_or(true) {
+        let mut undo = state.undo.lock().expect("undo mutex");
+        undo.push(entry);
+        let excess = undo.len().saturating_sub(50);
+        undo.drain(..excess);
+    }
+    if changed > 0 {
+        outbox::emit_status(&app, &state);
+        outbox::kick(&app);
+        mail_changed(&app, account_id);
+    }
+    Ok(ActionOutcome { label, changed })
+}
+
+/// Undoes the most recent action. Returns its label ("Archived") or None if nothing to undo.
+#[tauri::command]
+pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>> {
+    let Some(entry) = state.undo.lock().expect("undo mutex").pop() else { return Ok(None) };
+    state.db.with(|c| actions::undo(c, &entry))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    mail_changed(&app, entry.account_id);
+    Ok(Some(entry.label))
+}
+
+#[tauri::command]
+pub fn outbox_status(state: State<'_, AppState>) -> Result<OutboxStatus> {
+    state.db.with(|c| outbox::status(c))
+}
+
+// ---------- compose ----------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendInput {
+    account_id: i64,
+    kind: DraftKind,
+    /// Message being replied to or forwarded.
+    reference_message_id: Option<i64>,
+    #[serde(default)]
+    to: Vec<String>,
+    #[serde(default)]
+    cc: Vec<String>,
+    #[serde(default)]
+    subject: String,
+    body: String,
+}
+
+/// Queues a message for sending and returns immediately.
+#[tauri::command]
+pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<()> {
+    let reference = match input.reference_message_id {
+        Some(id) => Some(state.db.with(|c| db::message_remote(c, id))?.ok_or_else(|| AppError::Other("original message not found".into()))?.1),
+        None => None,
+    };
+    if input.kind != DraftKind::New && reference.is_none() {
+        return Err(AppError::Other("replies and forwards need the original message".into()));
+    }
+    let clean = |v: Vec<String>| v.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect::<Vec<_>>();
+    let draft = Draft { kind: input.kind, to: clean(input.to), cc: clean(input.cc), subject: input.subject, body: input.body };
+    if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
+        return Err(AppError::Other("add at least one recipient".into()));
+    }
+    if let Some(bad) = draft.to.iter().chain(&draft.cc).find(|a| !a.contains('@')) {
+        return Err(AppError::Other(format!("\"{bad}\" isn't an email address")));
+    }
+    state.db.with(|c| outbox::enqueue(c, input.account_id, reference.as_deref(), &Op::Send(draft), std::time::Duration::ZERO))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn suggest_contacts(state: State<'_, AppState>, prefix: String) -> Result<Vec<Contact>> {
+    state.db.with(|c| db::suggest_contacts(c, prefix.trim(), 8))
+}
+
+// ---------- splits ----------
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Split {
+    pub name: String,
+    pub query: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitInfo {
+    pub name: String,
+    pub query: String,
+    pub count: i64,
+    pub unread: i64,
+}
+
+fn default_splits() -> Vec<Split> {
+    vec![
+        Split { name: "Important".into(), query: "is:focused".into() },
+        Split { name: "Other".into(), query: "is:other".into() },
+    ]
+}
+
+fn load_splits(state: &AppState) -> Result<Vec<Split>> {
+    let raw = state.db.with(|c| db::get_setting(c, KEY_SPLITS))?;
+    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_else(default_splits))
+}
+
+/// Split inboxes with conversation counts for the given inbox folder.
+#[tauri::command]
+pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<SplitInfo>> {
+    let splits = load_splits(&state)?;
+    state.db.with(|c| {
+        splits
+            .into_iter()
+            .map(|s| {
+                let (count, unread) = db::count_threads(c, folder_id, &query::compile(&s.query))?;
+                Ok(SplitInfo { name: s.name, query: s.query, count, unread })
+            })
+            .collect()
+    })
+}
+
+#[tauri::command]
+pub fn set_splits(state: State<'_, AppState>, splits: Vec<Split>) -> Result<()> {
+    let splits: Vec<Split> = splits.into_iter().filter(|s| !s.name.trim().is_empty()).collect();
+    state.db.with(|c| db::set_setting(c, KEY_SPLITS, &serde_json::to_string(&splits)?))
+}
+
+// ---------- images and attachments ----------
+
+#[tauri::command]
+pub async fn get_message_body_with_images(state: State<'_, AppState>, message_id: i64) -> Result<String> {
+    mail::message_body_with_images(&state, message_id).await
+}
+
+#[tauri::command]
+pub async fn list_attachments(state: State<'_, AppState>, message_id: i64) -> Result<Vec<mail::Attachment>> {
+    mail::list_attachments(&state, message_id).await
+}
+
+/// Saves an attachment to Downloads and reveals it in Explorer. Returns the saved path.
+#[tauri::command]
+pub async fn download_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    message_id: i64,
+    attachment_id: String,
+    name: String,
+) -> Result<String> {
+    let dir = match crate::testenv::get("PEETMAIL_DOWNLOAD_DIR") {
+        Some(d) => std::path::PathBuf::from(d),
+        None => tauri::Manager::path(&app).download_dir().map_err(|e| AppError::Other(e.to_string()))?,
+    };
+    let path = mail::download_attachment(&state, message_id, &attachment_id, &name, &dir).await?;
+    if crate::testenv::get("PEETMAIL_DOWNLOAD_DIR").is_none() {
+        let _ = app.opener().reveal_item_in_dir(&path);
+    }
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

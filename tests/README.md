@@ -20,7 +20,7 @@ Playwright ──CDP──▶ WebView2 in peetmail.exe (debug build, headless)
 ```
 
 - **Fake Microsoft.** `fake-graph.ts` implements the identity platform and the Graph routes PeetMail calls, with real semantics: PKCE verification, token expiry and rotation, delta paging with next/delta links, partial and `@removed` items, 429 throttling, 410 resync. Only `CLIENT_ID` (`11111111-2222-3333-4444-555555555555`) is accepted. Any other ID never redirects back, like Entra.
-- **Fixtures.** `fixtures.ts` builds a seeded mailbox with dates relative to now. Messages tests can target by id: `msg-hostile` (scripts and handlers to strip), `msg-newsletter` (remote images), `msg-plain` (text body), `conv-thread-1` (4-message thread).
+- **Fixtures.** `fixtures.ts` builds a seeded mailbox with dates relative to now. Messages are spread over Inbox and Sent Items, and notification senders are classified Other. Messages tests can target by id: `msg-hostile` (scripts and handlers to strip), `msg-newsletter` (remote images, Other), `msg-plain` (text body), `conv-thread-1` (4 received + your Sent reply), `msg-attach` (inline `cid:` image + PDF attachment), `msg-invite` (meeting invite), `msg-sent-*` (mail you sent, for contact suggestions).
 - **Isolation.** `app.ts` launches the exe with `PEETMAIL_DATA_DIR`, its own `WEBVIEW2_USER_DATA_FOLDER`, the fake server's URLs, and a free DevTools port. Every test gets a fresh app and a fresh fake server, so tests run in parallel.
 - **Headless.** The window is created hidden, so nothing appears on screen or takes focus. WebView2 still renders, and screenshots and keyboard input over CDP work. Set `PEETMAIL_HEADED=1` to watch.
 - **Builds.** `global-setup.ts` rebuilds the debug exe when sources are newer than the last harness build. `PEETMAIL_SKIP_BUILD=1` skips that check.
@@ -31,7 +31,10 @@ Import from `tests/e2e/fixtures.ts`:
 
 - `page` is the app, not signed in. `inbox` is signed in with the first sync finished.
 - `fake` is the in-process fake server. Use `fake.control(route, body)` to change the world and `fake.requestsSince(n)` to assert on traffic.
-- Helpers: `syncNow`, `waitForSyncIdle`, `row(page, conversationId)`, `selectedRow`, `messageBody(page, n)` (frame locator for a message iframe), `snap(page, testInfo, name)` for a named screenshot.
+- Helpers: `syncNow`, `waitForSyncIdle`, `row(page, conversationId)`, `selectedRow`, `messageBody(page, n)` (frame locator for a message iframe), `snap(page, testInfo, name)` for a named screenshot, `inboxConversations(pred)` for expected counts.
+- The default list is the Important split (`is:focused`); `DEFAULT_CONVERSATIONS` is its expected size.
+- Writes the app makes (sends, replies, moves, patches) land in `fake.state.sent`; `fake.control("message?id=...")` returns the server's copy of a message. Triage ops leave after a 2s grace period, so poll with `expect.poll(..., { timeout: 10_000 })`.
+- Attachments download to `<dataDir>/downloads` in tests (`PEETMAIL_DOWNLOAD_DIR`).
 
 ```ts
 test("new mail appears after Ctrl+R", async ({ inbox: page, fake }) => {
@@ -64,6 +67,6 @@ pnpm drive stop
 
 ## Fake server control API
 
-`POST /_test/<route>` with JSON. `GET /_test` lists them all. The main ones: `deliver`, `update` (partial change such as `isRead`), `remove`, `throttle`, `config` (`rejectDeltaFilter`, `expireDelta`, `tokenTtl`, `latencyMs`, `failBody`), `expire-tokens`, `reset`, `requests`.
+`POST /_test/<route>` with JSON. `GET /_test` lists them all. The main ones: `deliver` (with optional `to`, `cc`, `folder`, `inference`), `update` (partial change such as `isRead`), `move`, `remove`, `throttle`, `config` (`rejectDeltaFilter`, `expireDelta`, `tokenTtl`, `latencyMs`, `failBody`, `failWrites`), `expire-tokens`, `reset`, `requests`, `sent`, `message?id=`. Anything under `/img/` on the fake returns a PNG, standing in for a sender's image host.
 
 When the app starts calling a new Graph endpoint, add it to `fake-graph.ts` with the real API's semantics, including its error cases, then test it through the app.
