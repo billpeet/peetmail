@@ -15,7 +15,7 @@ Done means `pnpm verify` is green and every new behaviour has a test that would 
 
 ## Gotchas
 
-- The harness only works with a `tauri build --debug` exe. A plain `cargo build` produces an exe that loads the Vite dev server (blank "localhost refused to connect" window). The harness rebuilds automatically via a stamp file. Use `pnpm build:debug` if you build by hand.
+- The harness runs its own `tauri build --debug` exe from `src-tauri/target-harness` (separate from `target/`, so a running `pnpm tauri dev` never locks it). It rebuilds automatically via a stamp file. A plain `cargo build` exe loads the Vite dev server instead of the embedded frontend, so it is never used for tests.
 - Test-only env overrides (`PEETMAIL_*`, see `src-tauri/src/testenv.rs`) are compiled out of release builds. Keep new test knobs there.
 - Tests and the drive CLI run in their own data dir and WebView2 profile. The user's real data lives in `%APPDATA%\com.boris.peetmail`; leave it alone.
 - UI elements that tests or agents target get a `data-testid`. Add one with every new interactive element.

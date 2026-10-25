@@ -18,7 +18,8 @@
     "build:debug": "tauri build --debug --no-bundle",
     "verify": "pnpm check && pnpm test:unit && pnpm test:rust && pnpm test:e2e",
     "drive": "node tests/harness/drive.ts",
-    "fake-graph": "node tests/harness/fake-graph.ts --verbose"
+    "fake-graph": "node tests/harness/fake-graph.ts --verbose",
+    "bench:open": "node tests/bench/open-large.ts"
   },
   "license": "MIT",
   "dependencies": {

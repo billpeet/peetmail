@@ -39,20 +39,85 @@ pub fn compose_html(text: &str) -> String {
     format!(r#"<div style="font-family:Segoe UI,sans-serif;font-size:14px">{}</div>"#, paragraphs.join(""))
 }
 
-static TEXT_ONLY: LazyLock<ammonia::Builder<'static>> = LazyLock::new(ammonia::Builder::empty);
-
-/// Plain text of an HTML body for the search index, capped so huge newsletters stay cheap.
+/// Plain text of a sanitized HTML body for the search index, capped so huge newsletters
+/// stay cheap. A single linear scan: the input is ammonia's well-formed output, so a full
+/// HTML parse (which a 1 MB newsletter made cost ~50ms) isn't needed.
 pub fn html_to_text(html: &str) -> String {
-    let stripped = TEXT_ONLY.clean(html).to_string();
-    let decoded = stripped
-        .replace("&nbsp;", " ")
+    const CAP: usize = 20_000;
+    let mut out = String::with_capacity(html.len().min(CAP * 2));
+    let mut rest = html;
+    let mut pending_space = false;
+    while !rest.is_empty() && out.len() < CAP {
+        if let Some(after) = rest.strip_prefix('<') {
+            // Skip <style> and <script> contents entirely; other tags become word breaks.
+            let lower: String = after.chars().take(7).collect::<String>().to_ascii_lowercase();
+            let skip_to = if lower.starts_with("style") { Some("</style>") } else if lower.starts_with("script") { Some("</script>") } else { None };
+            rest = match skip_to {
+                Some(close) => match find_ci(rest, close) {
+                    Some(i) => &rest[i + close.len()..],
+                    None => "",
+                },
+                None => match after.find('>') {
+                    Some(i) => {
+                        // Block-level tags separate words; inline ones (<b>, <a>, <span>) don't.
+                        let name: String = after[..i]
+                            .trim_start_matches('/')
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric())
+                            .collect::<String>()
+                            .to_ascii_lowercase();
+                        if BLOCK_TAGS.contains(&name.as_str()) {
+                            pending_space = true;
+                        }
+                        &after[i + 1..]
+                    }
+                    None => "",
+                },
+            };
+            if skip_to.is_some() {
+                pending_space = true;
+            }
+            continue;
+        }
+        let end = rest.find('<').unwrap_or(rest.len());
+        let (chunk, next) = rest.split_at(end);
+        let text = decode_entities(chunk);
+        if text.starts_with(char::is_whitespace) {
+            pending_space = true;
+        }
+        for (i, word) in text.split_whitespace().enumerate() {
+            if (i > 0 || pending_space) && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(word);
+        }
+        // Words only run on into the next text node if nothing separated them.
+        pending_space = text.ends_with(char::is_whitespace);
+        rest = next;
+    }
+    out.chars().take(CAP).collect()
+}
+
+const BLOCK_TAGS: &[&str] = &[
+    "p", "div", "br", "hr", "tr", "td", "th", "li", "ul", "ol", "table", "tbody", "thead", "blockquote",
+    "h1", "h2", "h3", "h4", "h5", "h6", "pre", "center", "img", "section", "article", "header", "footer",
+];
+
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    haystack.to_ascii_lowercase().find(needle)
+}
+
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    s.replace("&nbsp;", " ")
+        .replace("&#160;", " ")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    let collapsed = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(20_000).collect()
+        .replace("&amp;", "&")
 }
 
 /// Rewrites the `src` of every `<img>` in sanitized HTML. `f` returns the replacement,
@@ -127,6 +192,9 @@ mod tests {
     fn html_to_text_drops_tags_styles_and_scripts() {
         let t = html_to_text("<style>p{x}</style><p>Hello&nbsp;<b>world</b></p><script>bad()</script> &amp; more");
         assert_eq!(t, "Hello world & more");
+        assert_eq!(html_to_text("<p>Hi</p><p>there</p><b>bo</b>ld"), "Hi there bold");
+        assert_eq!(html_to_text("<STYLE>x</STYLE>ok"), "ok");
+        assert_eq!(html_to_text(&clean_html(r#"<img src="data:image/png;base64,AAAA" alt="pic">caption"#)), "caption");
     }
 
     #[test]

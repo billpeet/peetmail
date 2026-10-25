@@ -38,13 +38,18 @@ export type LaunchedApp = {
 };
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-export const EXE = join(ROOT, "src-tauri/target/debug/peetmail.exe");
+/**
+ * The harness builds into its own target dir, so tests never fight a dev copy of the app
+ * (`pnpm tauri dev`) over a locked target/debug/peetmail.exe.
+ */
+const TARGET_DIR = join(ROOT, "src-tauri/target-harness");
+export const EXE = join(TARGET_DIR, "debug/peetmail.exe");
 /**
  * Written after a successful `tauri build --debug`. A plain `cargo build` produces an
  * exe that loads the Vite dev server instead of the embedded frontend, so an exe newer
  * than the stamp means "not built by us" and forces a rebuild.
  */
-const STAMP = join(ROOT, "src-tauri/target/debug/.harness-build-stamp");
+const STAMP = join(TARGET_DIR, "debug/.harness-build-stamp");
 
 export function freePort(): Promise<number> {
   return new Promise((res, rej) => {
@@ -82,7 +87,12 @@ export function ensureBuilt({ force = false, log = console.log }: { force?: bool
   if (process.env.PEETMAIL_SKIP_BUILD === "1" && existsSync(STAMP)) return;
   if (!force && !needsBuild()) return;
   log("building debug app (pnpm tauri build --debug --no-bundle)…");
-  const r = spawnSync("pnpm tauri build --debug --no-bundle", { cwd: ROOT, stdio: "inherit", shell: true });
+  const r = spawnSync("pnpm tauri build --debug --no-bundle", {
+    cwd: ROOT,
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env, CARGO_TARGET_DIR: TARGET_DIR },
+  });
   if (r.status !== 0) throw new Error("debug build failed");
   writeFileSync(STAMP, new Date().toISOString());
 }

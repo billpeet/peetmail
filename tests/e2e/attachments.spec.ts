@@ -31,7 +31,10 @@ test("i loads remote images through the app, never from the page", async ({ inbo
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("images-blocked")).toBeVisible();
   const img = page.frameLocator("[data-testid=message-body]").first().locator("img");
-  await expect(img).toHaveAttribute("src", /\/img\/hero\.png$/);
+  // Blocked images carry no live src at all, so the page never even attempts the request
+  // (each attempt costs a CSP violation; 300 of them added ~120ms to a newsletter).
+  await expect(img).toHaveAttribute("data-remote-src", /\/img\/hero\.png$/);
+  await expect(img).not.toHaveAttribute("src", /.+/);
   expect(fake.state.requests.filter((r) => r.path.startsWith("/img/"))).toEqual([]);
 
   await page.keyboard.press("i");

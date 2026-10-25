@@ -44,3 +44,9 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Dependencies (html5ever/ammonia, serde_json, rusqlite...) are compiled optimised even in
+# dev builds: sanitising a 1 MB email took ~0.5s unoptimised. Our own crate stays at
+# opt-level 0 so incremental builds remain fast.
+[profile.dev.package."*"]
+opt-level = 2

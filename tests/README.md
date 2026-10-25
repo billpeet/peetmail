@@ -48,6 +48,10 @@ Drive the app the way a user does: keyboard first (`page.keyboard.press("j")`), 
 
 Every test attaches `final-screen.png`, `app.log` and `console.log` to the report. On failure, read `test-results/e2e/<test>/error-context.md` for the error and an accessibility snapshot, or open `test-results/e2e-report/index.html`.
 
+## Benchmarks
+
+`pnpm bench:open [runs] [warm|cold] [latencyMs]` times Enter-to-visible for large emails (an 840 KB newsletter with 900 remote images, 4 MB of embedded images) in the real app. `warm` uses prefetched bodies; `cold` blocks prefetch so bodies are fetched and sanitised on open, with simulated Graph latency. It exits non-zero when over budget. Run it after touching body fetching, sanitising, prefetch or `MessageBody`.
+
 ## The drive CLI
 
 `pnpm drive` keeps one app + fake server running between shell calls, for exploring, reproducing bugs and checking UI changes. `pnpm drive help` lists every command. Typical loop:
