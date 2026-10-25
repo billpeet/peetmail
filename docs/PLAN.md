@@ -129,7 +129,7 @@ Every binding lives in one registry (`src/lib/keys.svelte.ts`) with an id, label
 - [x] Compose, reply, reply all, forward (`c` `r` `a` `f`, `Ctrl+Enter` sends). Plain text in, HTML out. Replies and forwards go through Graph's `reply`/`replyAll`/`forward` so the original is quoted and threaded. Contact suggestions from people you've exchanged mail with.
 - [x] One query language for search and splits: `from:` `to:` `subject:` `is:unread|read|flagged|focused|other|invite` `has:attachment`, `-` to negate, free words as prefixes, `"quoted phrases"`.
 - [x] Search (`/`): SQLite FTS5 over subject, people, preview, and body text once a body has been fetched. Covers all cached folders except Deleted Items.
-- [x] Split inboxes: named queries, `Tab`/`Shift+Tab` to cycle, unread counts on tabs, editable in Settings. Defaults: Important (`is:focused`), Other (`is:other`).
+- [x] Split inboxes: named queries, `Tab`/`Shift+Tab` to cycle, unread counts on tabs, editable in Settings. A built-in Inbox tab comes first and holds whatever no split claims; each message lands in exactly one tab (first matching split wins). Default split: Other (`is:other`).
 - [x] Command palette (`Ctrl+K`) over the keymap registry.
 - [x] Sent Items synced, so threads include your replies. Archive and Deleted Items are local move targets only.
 - [x] Load images (`i`): Rust fetches remote images (raster only, 5 MB cap) and inlines them as data URIs; the CSP stays strict.

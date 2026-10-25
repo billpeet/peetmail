@@ -41,6 +41,18 @@ class MailStore {
 
   splits = $state.raw<SplitInfo[]>([]);
   splitIndex = $state(0);
+  /**
+   * Indexes of the tabs to show. With "hide empty splits" on, empty splits are left out,
+   * but Inbox and the tab you're on always stay, so the view never jumps from under you.
+   */
+  visibleSplits = $derived(
+    this.splits
+      .map((_, i) => i)
+      .filter((i) => {
+        const s = this.splits[i];
+        return !this.boot?.preferences.hideEmptySplits || s.builtin || s.count > 0 || i === this.splitIndex;
+      }),
+  );
   /** Active search text; when non-null the list shows search results across all mail. */
   search = $state<string | null>(null);
 
@@ -62,6 +74,11 @@ class MailStore {
   sync = $state<SyncStatus>({ state: "idle", message: null });
   error = $state<string | null>(null);
 
+  /**
+   * Bumped by every list reload. Responses that come back after a newer reload started are
+   * dropped, so fast Tab presses can't leave one split's mail showing under another's tab.
+   */
+  #listSeq = 0;
   #exhausted = false;
   #loadingMore = false;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -70,9 +87,9 @@ class MailStore {
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Query and scope behind the current list. */
-  get listQuery(): { folderId: number | null; query: string } {
-    if (this.search !== null) return { folderId: null, query: this.search };
-    return { folderId: this.folder?.id ?? null, query: this.splits[this.splitIndex]?.query ?? "" };
+  get listQuery(): { folderId: number | null; query: string; split: number | null } {
+    if (this.search !== null) return { folderId: null, query: this.search, split: null };
+    return { folderId: this.folder?.id ?? null, query: "", split: this.splitIndex };
   }
 
   async init() {
@@ -106,20 +123,28 @@ class MailStore {
     }, REFRESH_DEBOUNCE_MS);
   }
 
-  async refreshSplits() {
-    if (!this.folder) return;
-    this.splits = await api.listSplits(this.folder.id);
-    if (this.splitIndex >= this.splits.length) this.splitIndex = 0;
+  async setHideEmptySplits(hide: boolean) {
+    if (!this.boot) return;
+    const preferences = { ...this.boot.preferences, hideEmptySplits: hide };
+    await api.setPreferences(preferences);
+    this.boot = { ...this.boot, preferences };
   }
 
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
   async refresh() {
     if (!this.folder) return;
-    await this.refreshSplits();
+    const seq = ++this.#listSeq;
+    const folderForSplits = this.folder.id;
+    const { folderId, query, split } = this.listQuery;
     const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
-    const { folderId, query } = this.listQuery;
-    const rows = await api.listThreads(folderId, query, null, count);
+    const [splits, rows] = await Promise.all([
+      api.listSplits(folderForSplits),
+      api.listThreads(folderId, query, split, null, count),
+    ]);
+    if (seq !== this.#listSeq) return;
+    this.splits = splits;
+    if (this.splitIndex >= splits.length) this.splitIndex = 0;
     this.threads = rows;
     this.#exhausted = rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
@@ -130,7 +155,9 @@ class MailStore {
       if (!cur) {
         this.view = "list";
       } else {
-        this.thread = await api.getThread(cur.accountId, cur.conversationId);
+        const thread = await api.getThread(cur.accountId, cur.conversationId);
+        if (seq !== this.#listSeq) return;
+        this.thread = thread;
         this.threadFor = cur.conversationId;
       }
     }
@@ -141,9 +168,11 @@ class MailStore {
     const last = this.threads.at(-1);
     if (!last) return;
     this.#loadingMore = true;
+    const seq = this.#listSeq;
     try {
-      const { folderId, query } = this.listQuery;
-      const rows = await api.listThreads(folderId, query, { receivedAt: last.receivedAt, messageId: last.messageId }, PAGE);
+      const { folderId, query, split } = this.listQuery;
+      const rows = await api.listThreads(folderId, query, split, { receivedAt: last.receivedAt, messageId: last.messageId }, PAGE);
+      if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
     } finally {
@@ -190,6 +219,16 @@ class MailStore {
     this.view = "list";
     await this.refresh();
   }
+
+  /** Next/previous visible tab (Tab / Shift+Tab). */
+  async cycleSplit(step: 1 | -1) {
+    const vis = this.visibleSplits;
+    if (!vis.length) return;
+    const pos = vis.indexOf(this.splitIndex);
+    const next = vis[(pos + step + vis.length) % vis.length];
+    await this.switchSplit(next);
+  }
+
 
   startSearch() {
     this.search = this.search ?? "";

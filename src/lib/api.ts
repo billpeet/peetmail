@@ -70,13 +70,16 @@ export type SendInput = {
 };
 export type Contact = { name: string | null; address: string };
 export type Split = { name: string; query: string };
-export type SplitInfo = Split & { count: number; unread: number };
+/** A tab of the split inbox. The first is the built-in Inbox (`builtin`): mail no split claims. */
+export type SplitInfo = Split & { builtin: boolean; count: number; unread: number };
 export type Attachment = { id: string; name: string; contentType: string; size: number };
 export type OutboxStatus = { pending: number; failed: number; lastError: string | null };
 
 export type CacheLimits = { cacheDays: number; bodyCacheMb: number };
 
-export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits };
+export type Preferences = { hideEmptySplits: boolean };
+
+export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
 
 export type Cursor = { receivedAt: string; messageId: number };
 
@@ -89,14 +92,18 @@ export const api = {
   cancelSignIn: () => invoke<void>("cancel_sign_in"),
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),
   listFolders: (accountId: number) => invoke<Folder[]>("list_folders", { accountId }),
-  /** `folderId` null searches all mail. `query` uses the query language (src-tauri/src/query.rs). */
-  listThreads: (folderId: number | null, query: string, cursor: Cursor | null, limit: number) =>
-    invoke<ThreadRow[]>("list_threads", { folderId, query, cursor, limit }),
+  /**
+   * `folderId` null searches all mail. `split` picks a split-inbox tab (0 = Inbox) and wins over
+   * `query`, which uses the query language (src-tauri/src/query.rs).
+   */
+  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number) =>
+    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit }),
   getThread: (accountId: number, conversationId: string) =>
     invoke<MessageRow[]>("get_thread", { accountId, conversationId }),
   getMessageBody: (messageId: number) => invoke<string>("get_message_body", { messageId }),
   syncNow: () => invoke<void>("sync_now"),
   setCacheLimits: (limits: CacheLimits) => invoke<void>("set_cache_limits", { limits }),
+  setPreferences: (preferences: Preferences) => invoke<void>("set_preferences", { preferences }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),

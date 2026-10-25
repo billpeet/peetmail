@@ -58,8 +58,8 @@
       { id: "search.clear", keys: "Escape", label: "Clear search", group: "Navigate", when: () => inList() && mail.search !== null, run: () => mail.endSearch() },
       { id: "list.top", keys: "g g", label: "Jump to top", group: "Navigate", when: inList, run: () => mail.select(0) },
       { id: "list.bottom", keys: "G", label: "Jump to bottom", group: "Navigate", when: inList, run: () => mail.select(mail.threads.length - 1) },
-      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.switchSplit(mail.splitIndex + 1) },
-      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.switchSplit(mail.splitIndex - 1) },
+      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
+      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: ready, run: () => mail.switchSplit(0) },
       { id: "search", keys: "/", label: "Search", group: "Go to", when: ready, run: focusSearch },
 
@@ -103,7 +103,8 @@
     <header data-testid="inbox" class="flex h-11 shrink-0 items-center gap-1 border-b border-ink-800 px-3 text-sm">
       {#if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
-          {#each mail.splits as s, i (s.name)}
+          {#each mail.visibleSplits as i (mail.splits[i].name)}
+            {@const s = mail.splits[i]}
             <button
               data-testid="split-tab"
               data-active={i === mail.splitIndex}

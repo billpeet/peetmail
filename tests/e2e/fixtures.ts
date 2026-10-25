@@ -68,7 +68,7 @@ export function inboxConversations(pred: (m: ReturnType<typeof defaultMailbox>[n
   ).size;
 }
 
-/** What the default view (the Important split, `is:focused`) shows after a fresh sync. */
+/** What the default view (the built-in Inbox tab: everything the default Other split doesn't claim) shows after a fresh sync. */
 export const DEFAULT_CONVERSATIONS = inboxConversations((m) => m.inferenceClassification === "focused");
 
 export async function waitForSyncIdle(page: Page) {

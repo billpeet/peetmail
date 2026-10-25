@@ -100,6 +100,7 @@ pub fn run() {
             commands::get_message_body,
             commands::sync_now,
             commands::set_cache_limits,
+            commands::set_preferences,
             commands::thread_action,
             commands::undo,
             commands::outbox_status,

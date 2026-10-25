@@ -146,6 +146,35 @@ pub fn compile(input: &str) -> Filter {
     }
 }
 
+/// Filter for one tab of the split inbox, so every message lands in exactly one tab.
+///
+/// Tab 0 is the built-in Inbox: mail no split claims. Tab `i` (1-based) is split `i - 1`'s
+/// matches that no earlier split already claimed, so order decides ties. Splits with an
+/// empty query claim nothing (rather than everything).
+pub fn split_filter(queries: &[String], tab: usize) -> Filter {
+    let compiled: Vec<Option<Filter>> =
+        queries.iter().map(|q| (!q.trim().is_empty()).then(|| compile(q))).collect();
+    let (own, earlier): (Option<&Filter>, &[Option<Filter>]) = match tab {
+        0 => (None, &compiled[..]),
+        i if i <= compiled.len() => match &compiled[i - 1] {
+            Some(f) => (Some(f), &compiled[..i - 1]),
+            None => return Filter { sql: "0".into(), params: vec![] },
+        },
+        _ => return Filter { sql: "0".into(), params: vec![] },
+    };
+    let mut parts = Vec::new();
+    let mut params = Vec::new();
+    if let Some(f) = own {
+        parts.push(format!("({})", f.sql));
+        params.extend(f.params.iter().cloned());
+    }
+    for f in earlier.iter().flatten() {
+        parts.push(format!("NOT ({})", f.sql));
+        params.extend(f.params.iter().cloned());
+    }
+    Filter { sql: if parts.is_empty() { "1".into() } else { parts.join(" AND ") }, params }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +209,23 @@ mod tests {
         assert_eq!(compile("").sql, "1");
         assert_eq!(fts_match(r#"say "hi"#), r#""say"* """hi"*"#);
         let p = compile(r#""quick question""#);
+        assert_eq!(p.params.len(), 1);
         assert_eq!(p.params, vec![SqlValue::Text(r#""quick question""#.into())]);
+    }
+
+    #[test]
+    fn split_tabs_are_exclusive_and_inbox_catches_the_rest() {
+        let q = vec!["from:github.com".to_string(), "is:other".to_string(), "  ".to_string()];
+        let inbox = split_filter(&q, 0);
+        assert_eq!(inbox.sql, "NOT ((m.from_address LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\')) AND NOT (m.inference = 'other')");
+        assert_eq!(inbox.params.len(), 2);
+        let github = split_filter(&q, 1);
+        assert!(github.sql.starts_with("((m.from_address"));
+        assert!(!github.sql.contains("NOT"));
+        let other = split_filter(&q, 2);
+        assert!(other.sql.starts_with("(m.inference = 'other') AND NOT ("));
+        assert_eq!(other.params.len(), 2, "params follow the SQL order");
+        assert_eq!(split_filter(&q, 3).sql, "0", "an empty query claims nothing");
+        assert_eq!(split_filter(&[], 0).sql, "1", "no splits: Inbox is everything");
     }
 }

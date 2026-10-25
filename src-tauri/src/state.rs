@@ -12,6 +12,7 @@ pub const KEY_CACHE_DAYS: &str = "cache_days";
 pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 
 pub const KEY_SPLITS: &str = "splits";
+pub const KEY_HIDE_EMPTY_SPLITS: &str = "hide_empty_splits";
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
@@ -30,6 +31,14 @@ pub struct AppState {
     pub undo: std::sync::Mutex<Vec<crate::actions::UndoEntry>>,
     /// Held while bodies are prefetched in the background, so runs don't pile up.
     pub prefetch_lock: tokio::sync::Mutex<()>,
+}
+
+/// UI preferences that live in the settings table.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preferences {
+    /// Hide split tabs with no conversations (the Inbox tab always shows).
+    pub hide_empty_splits: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +90,16 @@ impl AppState {
                 body_cache_mb: get(KEY_BODY_CACHE_MB, DEFAULT_BODY_CACHE_MB)?,
             })
         })
+    }
+
+    pub fn preferences(&self) -> Result<Preferences> {
+        self.db.with(|c| {
+            Ok(Preferences { hide_empty_splits: db::get_setting(c, KEY_HIDE_EMPTY_SPLITS)?.as_deref() == Some("1") })
+        })
+    }
+
+    pub fn set_preferences(&self, p: &Preferences) -> Result<()> {
+        self.db.with(|c| db::set_setting(c, KEY_HIDE_EMPTY_SPLITS, if p.hide_empty_splits { "1" } else { "0" }))
     }
 
     pub fn store_tokens_blob(tokens: &TokenSet) -> Result<Vec<u8>> {

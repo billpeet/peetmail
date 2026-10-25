@@ -9,7 +9,7 @@ use crate::actions::{self, Action, ActionOutcome};
 use crate::db::{self, Account, Contact, Cursor, Folder, MessageRow, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
-use crate::state::{AppState, CacheLimits, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID, KEY_SPLITS};
+use crate::state::{AppState, CacheLimits, Preferences, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID, KEY_SPLITS};
 use crate::{auth, mail, query};
 
 #[derive(Serialize)]
@@ -18,6 +18,7 @@ pub struct Bootstrap {
     client_id: Option<String>,
     accounts: Vec<Account>,
     cache_limits: CacheLimits,
+    preferences: Preferences,
 }
 
 #[tauri::command]
@@ -26,7 +27,13 @@ pub fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap> {
         client_id: state.client_id()?,
         accounts: state.db.with(|c| db::list_accounts(c))?,
         cache_limits: state.cache_limits()?,
+        preferences: state.preferences()?,
     })
+}
+
+#[tauri::command]
+pub fn set_preferences(state: State<'_, AppState>, preferences: Preferences) -> Result<()> {
+    state.set_preferences(&preferences)
 }
 
 /// Saves the Entra client ID. Changing it signs every account out, because refresh
@@ -101,18 +108,23 @@ pub fn list_folders(state: State<'_, AppState>, account_id: i64) -> Result<Vec<F
     state.db.with(|c| db::list_folders(c, account_id))
 }
 
-/// Threads for a folder (inbox, a split) or, with no folder, all mail (search).
-/// `query` uses the query language in query.rs.
+/// Threads for a folder or, with no folder, all mail (search). `split` selects a tab of the
+/// split inbox (0 = Inbox, see `list_splits`) and takes precedence over `query`, which uses
+/// the query language in query.rs.
 #[tauri::command]
 pub fn list_threads(
     state: State<'_, AppState>,
     folder_id: Option<i64>,
     query: Option<String>,
+    split: Option<usize>,
     cursor: Option<Cursor>,
     limit: Option<i64>,
 ) -> Result<Vec<ThreadRow>> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
-    let filter = query::compile(query.as_deref().unwrap_or(""));
+    let filter = match split {
+        Some(tab) => query::split_filter(&split_queries(&state)?, tab),
+        None => query::compile(query.as_deref().unwrap_or("")),
+    };
     let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::AllMail);
     state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))
 }
@@ -252,7 +264,7 @@ pub fn suggest_contacts(state: State<'_, AppState>, prefix: String) -> Result<Ve
 
 // ---------- splits ----------
 
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Split {
     pub name: String,
@@ -264,32 +276,60 @@ pub struct Split {
 pub struct SplitInfo {
     pub name: String,
     pub query: String,
+    /// The built-in Inbox tab: everything no split claims. Always first, not editable.
+    pub builtin: bool,
     pub count: i64,
     pub unread: i64,
 }
 
 fn default_splits() -> Vec<Split> {
-    vec![
-        Split { name: "Important".into(), query: "is:focused".into() },
-        Split { name: "Other".into(), query: "is:other".into() },
-    ]
+    vec![Split { name: "Other".into(), query: "is:other".into() }]
 }
 
+/// The user's splits (excluding the built-in Inbox tab).
 fn load_splits(state: &AppState) -> Result<Vec<Split>> {
     let raw = state.db.with(|c| db::get_setting(c, KEY_SPLITS))?;
-    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_else(default_splits))
+    let Some(mut splits) = raw.and_then(|r| serde_json::from_str::<Vec<Split>>(&r).ok()) else {
+        return Ok(default_splits());
+    };
+    // Before the built-in Inbox existed, the default list started with Important (is:focused).
+    // Left in place it would claim nearly everything ahead of the user's own splits.
+    // One-time migration, so a user can still create such a split deliberately afterwards.
+    const MIGRATED: &str = "splits_builtin_inbox";
+    if state.db.with(|c| db::get_setting(c, MIGRATED))?.is_none() {
+        splits = drop_old_default(splits);
+        let json = serde_json::to_string(&splits)?;
+        state.db.with(|c| {
+            db::set_setting(c, KEY_SPLITS, &json)?;
+            db::set_setting(c, MIGRATED, "1")
+        })?;
+    }
+    Ok(splits)
 }
 
-/// Split inboxes with conversation counts for the given inbox folder.
+/// The pre-built-in-Inbox default list started with Important (`is:focused`), which would
+/// now claim nearly all mail ahead of the user's own splits.
+fn drop_old_default(splits: Vec<Split>) -> Vec<Split> {
+    splits.into_iter().filter(|s| !(s.name == "Important" && s.query == "is:focused")).collect()
+}
+
+fn split_queries(state: &AppState) -> Result<Vec<String>> {
+    Ok(load_splits(state)?.into_iter().map(|s| s.query).collect())
+}
+
+/// Tabs of the split inbox for the given inbox folder: the built-in Inbox first, then the
+/// user's splits, each with conversation counts. Every message lands in exactly one tab.
 #[tauri::command]
 pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<SplitInfo>> {
     let splits = load_splits(&state)?;
+    let queries: Vec<String> = splits.iter().map(|s| s.query.clone()).collect();
+    let tabs = std::iter::once(("Inbox".to_string(), String::new(), true))
+        .chain(splits.into_iter().map(|s| (s.name, s.query, false)));
     state.db.with(|c| {
-        splits
-            .into_iter()
-            .map(|s| {
-                let (count, unread) = db::count_threads(c, folder_id, &query::compile(&s.query))?;
-                Ok(SplitInfo { name: s.name, query: s.query, count, unread })
+        tabs.enumerate()
+            .map(|(i, (name, query, builtin))| {
+                let (count, unread) = db::count_threads(c, folder_id, &query::split_filter(&queries, i))?;
+                Ok(SplitInfo { name, query, builtin, count, unread })
             })
             .collect()
     })
@@ -297,7 +337,13 @@ pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<Spl
 
 #[tauri::command]
 pub fn set_splits(state: State<'_, AppState>, splits: Vec<Split>) -> Result<()> {
-    let splits: Vec<Split> = splits.into_iter().filter(|s| !s.name.trim().is_empty()).collect();
+    // Anything saved from here on is post-migration.
+    state.db.with(|c| db::set_setting(c, "splits_builtin_inbox", "1"))?;
+    let splits: Vec<Split> = splits
+        .into_iter()
+        .map(|s| Split { name: s.name.trim().into(), query: s.query.trim().into() })
+        .filter(|s| !s.name.is_empty() && !s.query.is_empty())
+        .collect();
     state.db.with(|c| db::set_setting(c, KEY_SPLITS, &serde_json::to_string(&splits)?))
 }
 
@@ -335,6 +381,17 @@ pub async fn download_attachment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn migration_drops_only_the_old_important_default() {
+        let split = |n: &str, q: &str| super::Split { name: n.into(), query: q.into() };
+        let kept = super::drop_old_default(vec![
+            split("Important", "is:focused"),
+            split("Other", "is:other"),
+            split("Important", "from:boss@contoso.com"),
+        ]);
+        assert_eq!(kept, vec![split("Other", "is:other"), split("Important", "from:boss@contoso.com")]);
+    }
+
     #[test]
     fn validates_guids() {
         assert!(super::is_guid("e7f36417-119b-4407-8631-35b13727823a"));
