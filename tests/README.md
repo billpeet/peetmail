@@ -31,7 +31,7 @@ Import from `tests/e2e/fixtures.ts`:
 
 - `page` is the app, not signed in. `inbox` is signed in with the first sync finished.
 - `fake` is the in-process fake server. Use `fake.control(route, body)` to change the world and `fake.requestsSince(n)` to assert on traffic.
-- Helpers: `syncNow`, `waitForSyncIdle`, `row(page, conversationId)`, `selectedRow`, `messageBody(page, n)` (frame locator for a message iframe), `snap(page, testInfo, name)` for a named screenshot, `inboxConversations(pred)` for expected counts.
+- Helpers: `syncNow`, `waitForSyncIdle`, `row(page, conversationId)`, `selectedRow`, `messageBody(page, n)` (frame locator for a message iframe), `snap(page, testInfo, name)` for a named screenshot, `inboxConversations(pred)` for expected counts, `selectWithKeys(page, conversationId)` to select a row without opening it (a click opens the conversation, which also marks it read).
 - The default list is the built-in Inbox tab (mail the default `Other` split doesn't claim); `DEFAULT_CONVERSATIONS` is its expected size.
 - Writes the app makes (sends, replies, moves, patches) land in `fake.state.sent`; `fake.control("message?id=...")` returns the server's copy of a message. Triage ops leave after a 2s grace period, so poll with `expect.poll(..., { timeout: 10_000 })`.
 - Attachments download to `<dataDir>/downloads` in tests (`PEETMAIL_DOWNLOAD_DIR`).
@@ -45,6 +45,8 @@ test("new mail appears after Ctrl+R", async ({ inbox: page, fake }) => {
 ```
 
 Drive the app the way a user does: keyboard first (`page.keyboard.press("j")`), selectors by `data-testid`. Wait on observable state (`toHaveAttribute("data-state", "idle")`, a visible element) before the next step, since saves and syncs are async.
+
+The launcher waits until WebView2 actually delivers keyboard input before handing the page over: on the first launches of a freshly built exe it silently drops keys sent over DevTools for a few hundred milliseconds.
 
 Every test attaches `final-screen.png`, `app.log` and `console.log` to the report. On failure, read `test-results/e2e/<test>/error-context.md` for the error and an accessibility snapshot, or open `test-results/e2e-report/index.html`.
 

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { test, expect, row, syncNow, waitForQuiet } from "./fixtures";
+import { test, expect, selectWithKeys, syncNow, waitForQuiet } from "./fixtures";
 
 /** Records the message iframe's visibility and height on every animation frame. */
 async function startSampling(page: Page) {
@@ -30,7 +30,7 @@ test("a long message appears at full height in one step", async ({ inbox: page, 
   await waitForQuiet(fake);
 
   // Cold open: body is in SQLite (prefetched) but not yet in memory or measured.
-  await row(page, `conv-${ids[0]}`).click();
+  await selectWithKeys(page, `conv-${ids[0]}`);
   await startSampling(page);
   await page.keyboard.press("Enter");
   const first = await visibleHeights(page);

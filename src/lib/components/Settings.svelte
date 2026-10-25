@@ -32,7 +32,7 @@
   }
 </script>
 
-<div data-testid="settings" class="fixed inset-0 z-20 grid place-items-center bg-black/60">
+<div data-testid="settings" onclick={(e) => e.target === e.currentTarget && (mail.overlay = null)} role="presentation" class="fixed inset-x-0 top-9 bottom-0 z-20 grid place-items-center bg-black/60">
     <div class="max-h-[85vh] w-[520px] space-y-6 overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 p-6 shadow-2xl">
     <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
 

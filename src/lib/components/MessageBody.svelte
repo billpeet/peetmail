@@ -12,6 +12,7 @@
   import { api } from "$lib/api";
   import { getBody, peekBody } from "$lib/bodies";
   import { keymap } from "$lib/keys.svelte";
+  import { mail } from "$lib/mail.svelte";
 
   // `images`: fetch remote images through Rust and inline them (press i in the reader).
   let { messageId, images = false }: { messageId: number; images?: boolean } = $props();
@@ -95,7 +96,11 @@
   <div data-testid="message-body-loading" style:height="{height || 64}px" class="animate-pulse rounded bg-white/90"></div>
 {:else}
   {#if !images && /src="https?:/i.test(html)}
-    <p data-testid="images-blocked" class="mb-1 px-1 text-xs text-ink-500">Remote images hidden. Press <kbd>i</kbd> to load them.</p>
+    <p data-testid="images-blocked" class="mb-1 px-1 text-xs text-ink-500">
+      Remote images hidden.
+      <button data-testid="load-images" onclick={() => (mail.imagesFor = mail.threadFor)} class="text-accent hover:underline">Load images</button>
+      or press <kbd>i</kbd>.
+    </p>
   {/if}
   <iframe
     bind:this={frame}

@@ -58,7 +58,7 @@
   onMount(() => input?.focus());
 </script>
 
-<div data-testid="palette" class="fixed inset-0 z-30 flex justify-center bg-black/50 pt-[15vh]">
+<div data-testid="palette" onclick={(e) => e.target === e.currentTarget && (mail.overlay = null)} role="presentation" class="fixed inset-x-0 top-9 bottom-0 z-30 flex justify-center bg-black/50 pt-[15vh]">
   <div class="h-fit w-[560px] overflow-hidden rounded-xl border border-ink-700 bg-ink-900 shadow-2xl">
     <input
       data-testid="palette-input"

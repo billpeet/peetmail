@@ -3,6 +3,7 @@
   // so a 50k-thread inbox costs the same to render as a 50-thread one.
   import { mail } from "$lib/mail.svelte";
   import { listDate, senderName } from "$lib/format";
+  import { Archive, Flag, Mail, MailOpen, Paperclip, Trash2 } from "@lucide/svelte";
 
   const ROW = 40;
   const OVERSCAN = 10;
@@ -49,12 +50,11 @@
           data-unread={unread}
           tabindex="-1"
           aria-selected={selected}
-          onclick={() => mail.select(index)}
-          ondblclick={() => mail.open()}
+          onclick={() => mail.openAt(index)}
           style:top="{index * ROW}px"
           style:height="{ROW}px"
           class={[
-            "absolute inset-x-0 flex cursor-default items-center gap-4 border-l-2 px-5 text-sm",
+            "group absolute inset-x-0 flex cursor-pointer items-center gap-4 border-l-2 px-5 text-sm",
             selected ? "border-accent bg-ink-800" : "border-transparent hover:bg-ink-900",
           ]}
         >
@@ -66,10 +66,27 @@
             <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{t.subject || "(no subject)"}</span>
             <span class="ml-2 text-ink-500">{t.preview}</span>
           </span>
-          {#if t.hasAttachments}<span class="text-xs text-ink-500" title="Has attachments">📎</span>{/if}
-          {#if t.isFlagged}<span class="text-xs text-amber-400" title="Flagged">●</span>{/if}
-          <span class={["w-16 shrink-0 text-right text-xs tabular-nums", unread ? "text-ink-100" : "text-ink-500"]}>
+          {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={14} /></span>{/if}
+          {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={14} fill="currentColor" /></span>{/if}
+          <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
             {listDate(t.receivedAt)}
+          </span>
+          <!-- Quick actions replace the date on hover. -->
+          <span data-testid="row-actions" class="hidden w-20 shrink-0 justify-end group-hover:flex">
+            <button data-testid="row-archive" title="Archive (E)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "archive"); }}>
+              <Archive size={15} />
+            </button>
+            <button data-testid="row-trash" title="Delete (#)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "trash"); }}>
+              <Trash2 size={15} />
+            </button>
+            <button
+              data-testid="row-read"
+              title={unread ? "Mark as read (U)" : "Mark as unread (U)"}
+              class="icon-btn size-7"
+              onclick={(e) => { e.stopPropagation(); mail.actAt(index, unread ? "markRead" : "markUnread"); }}
+            >
+              {#if unread}<MailOpen size={15} />{:else}<Mail size={15} />{/if}
+            </button>
           </span>
         </div>
       {/each}

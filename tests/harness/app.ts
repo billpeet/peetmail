@@ -199,6 +199,7 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, head
   const { browser, page } = await connect(cdpPort);
   await page.waitForLoadState("domcontentloaded");
   await page.locator("body").waitFor();
+  await waitForKeyboard(page);
 
   return {
     page,
@@ -212,6 +213,28 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, head
       killTree(proc.pid);
     },
   };
+}
+
+/**
+ * On the first launches of a freshly built exe, WebView2 silently drops keys sent over
+ * DevTools for a while after the page loads (no keydown ever reaches the page). Press a
+ * harmless key until the page sees it, so tests never type into the void.
+ */
+export async function waitForKeyboard(page: Page, timeoutMs = 20_000) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __keyProbe?: boolean };
+    w.__keyProbe = false;
+    window.addEventListener("keydown", () => (w.__keyProbe = true), { capture: true, once: true });
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.keyboard.press("Shift"); // modifiers alone are ignored by the keymap
+    if (await page.evaluate(() => (window as unknown as { __keyProbe?: boolean }).__keyProbe)) {
+      return;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`WebView2 never delivered keyboard input within ${timeoutMs}ms`);
 }
 
 /** What the app is showing right now, read from data-testid hooks. Used by drive and in error messages. */

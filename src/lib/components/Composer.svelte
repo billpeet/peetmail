@@ -5,6 +5,9 @@
   import { api, type Contact } from "$lib/api";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
+  import { X } from "@lucide/svelte";
+  import { latestOnly, STALE } from "$lib/latest";
+  import { narrow } from "$lib/contacts";
 
   const c = mail.composer!;
   let to = $state(c.to);
@@ -30,10 +33,19 @@
   let active = $state(0);
   let field = $state<"to" | "cc" | null>(null);
 
+  // One lookup per keystroke; only the latest may update the list, or a slow reply for
+  // "p" could replace the one for "priya" and Enter would pick the wrong person.
+  const lookup = latestOnly(async (prefix: string) => (prefix ? api.suggestContacts(prefix) : []));
+
   async function suggest(which: "to" | "cc", value: string) {
     field = which;
-    const last = value.split(/[,;]/).pop()?.trim() ?? "";
-    suggestions = last.length >= 1 ? await api.suggestContacts(last) : [];
+    const text = value.split(/[,;]/).pop()?.trim() ?? "";
+    // Instantly keep only what still matches; the fresh lookup replaces it when it lands.
+    suggestions = text ? narrow(suggestions, text) : [];
+    active = 0;
+    const found = await lookup(text);
+    if (found === STALE) return;
+    suggestions = found;
     active = 0;
   }
 
@@ -43,6 +55,7 @@
     const next = [...parts, contact.address].join(", ") + ", ";
     if (which === "to") to = next;
     else cc = next;
+    lookup.cancel(); // a lookup still in flight mustn't reopen the list
     suggestions = [];
   }
 
@@ -91,11 +104,14 @@
   {/if}
 {/snippet}
 
-<div data-testid="composer" class="fixed inset-0 z-20 flex items-end justify-center bg-black/40 p-6">
+<div data-testid="composer" class="fixed inset-x-0 top-9 bottom-0 z-20 flex items-end justify-center bg-black/40 p-6">
   <div class="flex h-[70vh] w-full max-w-3xl flex-col rounded-xl border border-ink-700 bg-ink-900 shadow-2xl">
     <div class="flex items-center justify-between border-b border-ink-800 px-4 py-2.5 text-sm">
       <span class="font-semibold text-ink-100">{title}</span>
-      <span class="text-xs text-ink-500"><kbd>Ctrl</kbd> <kbd>Enter</kbd> send · <kbd>Esc</kbd> close</span>
+      <span class="flex items-center gap-2 text-xs text-ink-500">
+        <kbd>Ctrl</kbd> <kbd>Enter</kbd> send · <kbd>Esc</kbd> close
+        <button data-testid="compose-close" title="Close (Esc)" aria-label="Close" onclick={close} class="icon-btn size-7"><X size={15} /></button>
+      </span>
     </div>
 
     <div class="space-y-0 border-b border-ink-800 text-sm">

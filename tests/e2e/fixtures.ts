@@ -114,6 +114,20 @@ export function selectedRow(page: Page) {
   return page.locator("[data-testid=thread-row][aria-selected=true]");
 }
 
+/**
+ * Jumps to the top (g g), then moves down with j until `conversationId` is selected, without opening it
+ * (a click opens the conversation, which also marks it read).
+ */
+export async function selectWithKeys(page: Page, conversationId: string) {
+  await page.keyboard.press("g");
+  await page.keyboard.press("g");
+  for (let i = 0; i < 300; i++) {
+    if ((await selectedRow(page).getAttribute("data-conversation-id")) === conversationId) return;
+    await page.keyboard.press("j");
+  }
+  throw new Error(`couldn't reach ${conversationId} with j`);
+}
+
 export function messageBody(page: Page, nth = 0) {
   return page.frameLocator("[data-testid=message-body]").nth(nth);
 }

@@ -96,9 +96,15 @@ test("mail that matches no split stays in Inbox, and the first matching split wi
   await tabs.nth(1).click();
   await expect(page.getByTestId("thread-row").first()).toContainText("GitHub");
   await tabs.nth(2).click();
-  await expect(page.getByTestId("thread-row").first()).toBeVisible();
-  const senders = await page.getByTestId("thread-row").evaluateAll((rows) => rows.map((r) => r.textContent ?? ""));
-  expect(senders.some((t) => t.includes("GitHub"))).toBe(false);
+  await expect(tabs.nth(2)).toHaveAttribute("data-active", "true");
+  // Poll: right after the click the GitHub tab's rows are still on screen.
+  const rows = page.getByTestId("thread-row");
+  await expect
+    .poll(async () => {
+      const texts = await rows.evaluateAll((els) => els.map((r) => r.textContent ?? ""));
+      return texts.length > 0 && !texts.some((t) => t.includes("GitHub"));
+    })
+    .toBe(true);
 });
 
 test("Ctrl+K runs any command by name", async ({ inbox: page }, testInfo) => {

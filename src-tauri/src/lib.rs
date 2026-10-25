@@ -28,7 +28,10 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         .title("PeetMail")
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 560.0)
-        .background_color(tauri::window::Color(14, 14, 17, 255));
+        // The title bar is drawn by the app (TitleBar.svelte); keep the native shadow.
+        .decorations(false)
+        .shadow(true)
+        .background_color(tauri::window::Color(38, 38, 42, 255));
     builder = if headless {
         // Never shown: WebView2 keeps rendering (screenshots, input over CDP) for a
         // hidden window, and nothing flashes up or steals focus.

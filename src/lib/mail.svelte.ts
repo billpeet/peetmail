@@ -71,6 +71,8 @@ class MailStore {
   composer = $state<ComposerState | null>(null);
   toast = $state<Toast | null>(null);
   outbox = $state<OutboxStatus>({ pending: 0, failed: 0, lastError: null });
+  /** True once changes have been waiting a while (slow or offline); routine 2s sends stay quiet. */
+  outboxSlow = $state(false);
   sync = $state<SyncStatus>({ state: "idle", message: null });
   error = $state<string | null>(null);
 
@@ -85,6 +87,21 @@ class MailStore {
   #prefetchTimer: ReturnType<typeof setTimeout> | undefined;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
+  #slowTimer: ReturnType<typeof setTimeout> | undefined;
+
+  setOutbox(s: OutboxStatus) {
+    this.outbox = s;
+    if (s.pending === 0) {
+      clearTimeout(this.#slowTimer);
+      this.#slowTimer = undefined;
+      this.outboxSlow = false;
+    } else if (this.#slowTimer === undefined && !this.outboxSlow) {
+      this.#slowTimer = setTimeout(() => {
+        this.#slowTimer = undefined;
+        this.outboxSlow = this.outbox.pending > 0;
+      }, 4000);
+    }
+  }
 
   /** Query and scope behind the current list. */
   get listQuery(): { folderId: number | null; query: string; split: number | null } {
@@ -205,6 +222,12 @@ class MailStore {
     if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
   }
 
+  /** Mouse: click a row to open it. */
+  async openAt(index: number) {
+    this.selected = Math.max(0, Math.min(index, this.threads.length - 1));
+    await this.open();
+  }
+
   back() {
     this.view = "list";
   }
@@ -266,6 +289,12 @@ class MailStore {
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
+  }
+
+  /** Mouse: run an action on a row without opening it (hover buttons). */
+  async actAt(index: number, action: Action) {
+    this.selected = index;
+    await this.act(action);
   }
 
   async toggleRead() {

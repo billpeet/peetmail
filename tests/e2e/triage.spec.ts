@@ -1,4 +1,4 @@
-import { test, expect, row, selectedRow, snap, syncNow } from "./fixtures";
+import { test, expect, row, selectedRow, selectWithKeys, snap, syncNow } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
@@ -8,7 +8,7 @@ const serverMessage = (fake: Fake, id: string) => fake.control(`message?id=${id}
 const folderOf = async (fake: Fake, id: string) => (await serverMessage(fake, id)).parentFolderId as string;
 
 async function selectConversation(page: Page, conversationId: string) {
-  await row(page, conversationId).click();
+  await selectWithKeys(page, conversationId);
   await expect(selectedRow(page)).toHaveAttribute("data-conversation-id", conversationId);
 }
 

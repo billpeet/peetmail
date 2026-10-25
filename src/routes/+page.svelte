@@ -10,6 +10,7 @@
   import Settings from "$lib/components/Settings.svelte";
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
+  import { Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
 
   // `ready`: signed in, nothing modal open. Every mail binding hangs off it.
   const ready = () => !!mail.account && mail.overlay === null && !mail.composer;
@@ -22,6 +23,16 @@
   function focusSearch() {
     mail.startSearch();
     queueMicrotask(() => searchInput?.focus());
+  }
+
+  /** The mouse's back button (XButton1) steps back like Esc. */
+  function onmouseup(e: MouseEvent) {
+    if (e.button !== 3) return;
+    e.preventDefault();
+    if (mail.overlay) mail.overlay = null;
+    else if (mail.composer) mail.composer = null;
+    else if (mail.view === "reader") mail.back();
+    else if (mail.search !== null) mail.endSearch();
   }
 
   function searchKeys(e: KeyboardEvent) {
@@ -38,13 +49,13 @@
 
   onMount(() => {
     mail.init();
-    api.outboxStatus().then((s) => (mail.outbox = s));
+    api.outboxStatus().then((s) => mail.setOutbox(s));
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
-        mail.outbox = s;
+        mail.setOutbox(s);
       }),
     ];
 
@@ -94,13 +105,15 @@
   );
 </script>
 
+<svelte:window {onmouseup} />
+
 <div class="flex h-full flex-col bg-ink-950 text-ink-100">
   {#if !mail.boot}
     <!-- bootstrap is a single local query; nothing to show -->
   {:else if !mail.account}
     <Setup />
   {:else}
-    <header data-testid="inbox" class="flex h-11 shrink-0 items-center gap-1 border-b border-ink-800 px-3 text-sm">
+    <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
       {#if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
           {#each mail.visibleSplits as i (mail.splits[i].name)}
@@ -109,7 +122,7 @@
               data-testid="split-tab"
               data-active={i === mail.splitIndex}
               onclick={() => mail.switchSplit(i)}
-              class={["rounded-md px-2.5 py-1", i === mail.splitIndex ? "bg-ink-800 font-semibold text-ink-100" : "text-ink-500 hover:text-ink-300"]}
+              class={["rounded-md px-3 py-1.5", i === mail.splitIndex ? "bg-ink-800 font-semibold text-ink-100" : "text-ink-500 hover:bg-ink-900 hover:text-ink-100"]}
             >
               {s.name}
               {#if s.unread}<span class="ml-1 text-xs font-normal text-accent">{s.unread}</span>{/if}
@@ -118,7 +131,7 @@
         </nav>
         <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{mail.threads.length} conversations</span>
       {:else}
-        <span class="px-2 text-ink-500">Search</span>
+        <Search size={16} class="ml-2 text-ink-500" />
         <input
           data-testid="search-input"
           bind:this={searchInput}
@@ -131,8 +144,14 @@
           class="min-w-0 flex-1 bg-transparent px-1 text-ink-100 outline-none select-text"
         />
         <span data-testid="thread-count" class="text-xs text-ink-500">{mail.threads.length} conversations</span>
+        <button data-testid="search-close" title="Close search (Esc)" aria-label="Close search" onclick={() => mail.endSearch()} class="icon-btn"><X size={16} /></button>
       {/if}
-      <span class="ml-auto pl-4 text-xs text-ink-500">{mail.account.email}</span>
+      <span class="ml-auto flex items-center gap-1 pl-4">
+        <button data-testid="header-compose" title="Compose (C)" aria-label="Compose" onclick={() => mail.compose()} class="icon-btn"><SquarePen size={17} /></button>
+        {#if mail.search === null}
+          <button data-testid="header-search" title="Search (/)" aria-label="Search" onclick={focusSearch} class="icon-btn"><Search size={17} /></button>
+        {/if}
+      </span>
     </header>
 
     <main class="min-h-0 flex-1">
@@ -143,12 +162,17 @@
       {/if}
     </main>
 
-    <footer class="flex h-7 shrink-0 items-center gap-4 border-t border-ink-800 px-5 text-xs text-ink-500">
+    <footer class="flex h-8 shrink-0 items-center gap-4 border-t border-ink-800 bg-chrome px-4 text-xs text-ink-500">
       <span data-testid="sync-status" data-state={mail.sync.state} class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>
-      {#if mail.outbox.pending}<span data-testid="outbox-pending">Sending {mail.outbox.pending} change{mail.outbox.pending === 1 ? "" : "s"}…</span>{/if}
+      {#if mail.outbox.pending && mail.outboxSlow}<span data-testid="outbox-pending">Sending {mail.outbox.pending} change{mail.outbox.pending === 1 ? "" : "s"}…</span>{/if}
       {#if mail.outbox.failed}<span data-testid="outbox-failed" class="text-red-300" title={mail.outbox.lastError ?? ""}>{mail.outbox.failed} failed</span>{/if}
       {#if keymap.pending.length}<span class="text-ink-300">{keymap.pending.join(" ")} …</span>{/if}
-      <span class="ml-auto"><kbd>Ctrl</kbd> <kbd>K</kbd> commands · <kbd>?</kbd> shortcuts</span>
+      <span class="ml-auto flex items-center gap-3">
+        <button data-testid="footer-palette" onclick={() => (mail.overlay = "palette")} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>K</kbd> commands</button>
+        <button data-testid="footer-help" onclick={() => (mail.overlay = "help")} class="hover:text-ink-100"><kbd>?</kbd> shortcuts</button>
+        <span class="text-ink-500">{mail.account.email}</span>
+        <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => (mail.overlay = "settings")} class="icon-btn size-6"><SettingsIcon size={14} /></button>
+      </span>
     </footer>
   {/if}
 
