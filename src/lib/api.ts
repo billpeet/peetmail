@@ -1,5 +1,6 @@
 // Typed wrappers around the Rust commands in src-tauri/src/commands.rs.
 // Keep these in sync by hand for now (tauri-specta codegen is a candidate for later).
+import type { Snippet } from "./snippets";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -185,6 +186,8 @@ export const api = {
     invoke<ActionOutcome>("snooze_thread", { accountId, conversationId, until }),
   unsnoozeThread: (accountId: number, conversationId: string) => invoke<void>("unsnooze_thread", { accountId, conversationId }),
   listSnoozed: () => invoke<SnoozedThread[]>("list_snoozed"),
+  listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),

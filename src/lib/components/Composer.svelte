@@ -11,6 +11,7 @@
   import { narrow } from "$lib/contacts";
   import { parseSendTime } from "$lib/quickAdd";
   import { formatSendAt } from "$lib/mail.svelte";
+  import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "$lib/snippets";
 
   const c = mail.composer!;
   let to = $state(c.to);
@@ -54,6 +55,78 @@
     if (e.key !== "Enter" || e.ctrlKey) return;
     e.preventDefault();
     if (laterParsed?.ok) mail.send(laterParsed.at);
+  }
+
+  // ----- snippets: ";name" in the body, or Ctrl+; -----
+  /** Where the ";query" starts and what's typed after it; null while the list is closed. */
+  let snip = $state<{ start: number; query: string } | null>(null);
+  let snipActive = $state(0);
+  const snipMatches = $derived(snip ? matchSnippets(mail.snippets, snip.query) : []);
+  // Typing ";" shows the list only when there's something to pick; Ctrl+; always does.
+  let snipForced = $state(false);
+  const snipOpen = $derived(!!snip && (snipMatches.length > 0 || snipForced));
+
+  function updateSnip() {
+    if (!bodyInput) return;
+    const t = snippetTrigger(body, bodyInput.selectionStart ?? body.length);
+    if (!t) {
+      snip = null;
+      snipForced = false;
+    } else {
+      if (snip?.query !== t.query) snipActive = 0;
+      snip = t;
+    }
+  }
+
+  function openSnippets() {
+    if (!bodyInput) return;
+    bodyInput.focus();
+    const at = bodyInput.selectionStart ?? body.length;
+    // Start a ";" word at the caret (with a space before it if needed).
+    const pad = at > 0 && !/\s/.test(body[at - 1]) ? " " : "";
+    body = body.slice(0, at) + pad + ";" + body.slice(at);
+    const caret = at + pad.length + 1;
+    snipForced = true;
+    queueMicrotask(() => {
+      bodyInput?.setSelectionRange(caret, caret);
+      updateSnip();
+    });
+  }
+
+  async function insertSnippet(s: Snippet) {
+    if (!snip || !bodyInput) return;
+    const { start } = snip;
+    const end = bodyInput.selectionStart ?? body.length;
+    snip = null;
+    snipForced = false;
+    const first = to.split(/[,;]/).map((x) => x.trim()).find(Boolean) ?? null;
+    let person = first ? { name: null as string | null, address: first } : null;
+    if (person) {
+      const known = (await api.suggestContacts(person.address).catch(() => [])).find((c) => c.address.toLowerCase() === person!.address.toLowerCase());
+      if (known?.name) person = { ...person, name: known.name };
+    }
+    const me = mail.account ? { name: mail.account.displayName, address: mail.account.email } : null;
+    const text = expandSnippet(s.body, { to: person, me });
+    body = body.slice(0, start) + text + body.slice(end);
+    const caret = start + text.length;
+    queueMicrotask(() => {
+      bodyInput?.focus();
+      bodyInput?.setSelectionRange(caret, caret);
+    });
+  }
+
+  function bodyKeys(e: KeyboardEvent) {
+    if (!snipOpen) return;
+    const n = snipMatches.length;
+    if (e.key === "ArrowDown" && n) snipActive = (snipActive + 1) % n;
+    else if (e.key === "ArrowUp" && n) snipActive = (snipActive - 1 + n) % n;
+    else if ((e.key === "Enter" || e.key === "Tab") && n && !e.ctrlKey) insertSnippet(snipMatches[snipActive]);
+    else if (e.key === "Escape") {
+      snip = null;
+      snipForced = false;
+      e.stopPropagation(); // close the list, not the composer
+    } else return;
+    e.preventDefault();
   }
 
   let toInput: HTMLInputElement | undefined = $state();
@@ -121,7 +194,8 @@
       { id: "compose.send", keys: "ctrl+Enter", label: "Send", group: "Compose", when: () => !!mail.composer, run: () => mail.send() },
       { id: "compose.later", keys: "ctrl+shift+Enter", label: "Send later", group: "Compose", when: () => !!mail.composer, run: () => (later === null ? openLater() : closeLater()) },
       { id: "compose.later.close", keys: "Escape", label: "Close send later", group: "Compose", when: () => !!mail.composer && later !== null, run: closeLater },
-      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null, run: close },
+      { id: "compose.snippet", keys: "ctrl+;", label: "Insert snippet", group: "Compose", when: () => !!mail.composer && later === null, run: openSnippets },
+      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null && !snipOpen, run: close },
       { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => !!mail.composer, run: () => (showCc = true) },
     ]);
   });
@@ -201,14 +275,51 @@
       </label>
     </div>
 
-    <textarea
-      data-testid="compose-body"
-      bind:this={bodyInput}
-      bind:value={body}
-      oninput={() => (armedDiscard = false)}
-      placeholder={isReply ? "Write your reply…" : ""}
-      class="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text"
-    ></textarea>
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <textarea
+        data-testid="compose-body"
+        bind:this={bodyInput}
+        bind:value={body}
+        oninput={() => {
+          armedDiscard = false;
+          updateSnip();
+        }}
+        onkeydown={bodyKeys}
+        onclick={updateSnip}
+        onblur={() => setTimeout(() => {
+          if (document.activeElement !== bodyInput) snip = null;
+        }, 150)}
+        placeholder={isReply ? "Write your reply… (;name inserts a snippet)" : "Type ;name to insert a snippet"}
+        class="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text"
+      ></textarea>
+      {#if snipOpen}
+        <div data-testid="snippet-list" class="absolute bottom-2 left-4 z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
+          {#if snipMatches.length}
+            <ul class="max-h-64 overflow-y-auto py-1">
+              {#each snipMatches as s, i (s.name)}
+                <li>
+                  <button
+                    type="button"
+                    data-testid="snippet-option"
+                    onmousedown={(e) => { e.preventDefault(); insertSnippet(s); }}
+                    onmousemove={() => (snipActive = i)}
+                    class={["block w-full px-3 py-1.5 text-left text-sm", i === snipActive ? "bg-ink-800" : ""]}
+                  >
+                    <span class="font-mono text-accent">;{s.name}</span>
+                    <span class="ml-2 truncate text-ink-500">{s.body.split("\n")[0]}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p data-testid="snippet-none" class="px-3 py-2 text-xs text-ink-500">
+              {mail.snippets.length ? "No snippet matches." : "No snippets yet. Add them in Settings (Ctrl+,)."}
+            </p>
+          {/if}
+          <p class="border-t border-ink-800 px-3 py-1 text-xs text-ink-500"><kbd>Enter</kbd> insert · <kbd>Esc</kbd> dismiss</p>
+        </div>
+      {/if}
+    </div>
 
     {#if later !== null}
       <div data-testid="compose-later" class="space-y-2 border-t border-ink-800 px-4 py-3 text-sm">

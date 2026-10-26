@@ -134,6 +134,8 @@ pub fn run() {
             commands::snooze_thread,
             commands::unsnooze_thread,
             commands::list_snoozed,
+            commands::list_snippets,
+            commands::set_snippets,
             commands::cancel_send,
             commands::scheduled_sends,
             commands::thread_action,

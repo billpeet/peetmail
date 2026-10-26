@@ -101,6 +101,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Tab` / `Shift+Tab` | Next / previous split | ✓ |
 | `z` | Undo last action (also takes back a send during its undo window) | ✓ |
 | `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
+| `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
 | `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
@@ -158,7 +159,7 @@ Deferred from Phase 1:
 
 - [x] Snooze (`h`). The conversation moves to a hidden "PeetMail Snoozed" server folder (visible if the mailbox refuses hidden folders), so other clients stop showing it too. PeetMail wakes it on time (a 1s local check; on next start if it was closed): back to the inbox, newest message unread, sorted on top by its wake time (`messages.sort_at`) with a Reminder badge. Undoable. Not done: "remind me if nobody replies".
 - [x] Undo send (delay window, 10s by default, set in Settings), scheduled send. Both wait in the local outbox, so a scheduled message only goes out while PeetMail is running (or as soon as it next starts). Server-side deferred delivery (`PR_DEFERRED_SEND_TIME`) would send with the PC off, but needs the draft-then-send flow; revisit if that matters.
-- Snippets
+- [x] Snippets: made in Settings (name + text); in the composer type `;name` or press `Ctrl+;`, pick with ↑/↓, Enter inserts. Placeholders `{first_name}` `{name}` (first recipient; guessed from the address when there's no name) and `{my_first_name}` `{my_name}`. Stored in settings as JSON.
 - Multiple accounts in one unified view
 - Windows notifications, start with Windows, tray icon
 - Gmail provider behind the same provider interface

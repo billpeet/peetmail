@@ -3,6 +3,7 @@
   import { mail } from "$lib/mail.svelte";
   import ClientIdForm from "./ClientIdForm.svelte";
   import SplitEditor from "./SplitEditor.svelte";
+  import SnippetEditor from "./SnippetEditor.svelte";
 
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
@@ -45,6 +46,11 @@
     <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Split inboxes</h3>
       <SplitEditor />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Snippets</h3>
+      <SnippetEditor />
     </section>
 
     <section class="space-y-2">

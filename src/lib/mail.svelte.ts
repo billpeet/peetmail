@@ -17,6 +17,7 @@ import {
   type SnoozedThread,
 } from "./api";
 import { prefetchBody } from "./bodies";
+import type { Snippet } from "./snippets";
 import { calendar } from "./calendar.svelte";
 
 const PAGE = 200;
@@ -87,6 +88,8 @@ class MailStore {
   imagesFor = $state<string | null>(null);
 
   composer = $state<ComposerState | null>(null);
+  /** Composer snippets (;name). */
+  snippets = $state.raw<Snippet[]>([]);
   /** Snoozed conversations, soonest back first. */
   snoozed = $state.raw<SnoozedThread[]>([]);
   /** The conversation the snooze picker acts on. */
@@ -145,6 +148,7 @@ class MailStore {
   async init() {
     try {
       this.boot = await api.bootstrap();
+      api.listSnippets().then((s) => (this.snippets = s)).catch(() => {});
       calendar.setWeekStartsOn(this.boot.preferences.weekStartsOn);
       await this.loadFolder();
     } catch (e) {

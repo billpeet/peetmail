@@ -446,6 +446,56 @@ pub fn set_splits(state: State<'_, AppState>, splits: Vec<Split>) -> Result<()> 
     state.db.with(|c| db::set_setting(c, KEY_SPLITS, &serde_json::to_string(&splits)?))
 }
 
+// ---------- snippets ----------
+
+const KEY_SNIPPETS: &str = "snippets";
+
+/// Reusable text for the composer (`;name`). The body may use {first_name}, {name},
+/// {my_first_name} and {my_name}; the frontend fills them in.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub name: String,
+    pub body: String,
+}
+
+/// Trims, drops blank rows and rejects duplicate names (case-insensitive), so `;name`
+/// always means one snippet.
+fn clean_snippets(snippets: Vec<Snippet>) -> Result<Vec<Snippet>> {
+    let mut out: Vec<Snippet> = Vec::new();
+    for s in snippets {
+        let name = s.name.trim().to_string();
+        let body = s.body.trim_end().to_string();
+        if name.is_empty() && body.trim().is_empty() {
+            continue;
+        }
+        if name.is_empty() {
+            return Err(AppError::Other("every snippet needs a name".into()));
+        }
+        if name.contains(char::is_whitespace) {
+            return Err(AppError::Other(format!("snippet names can't contain spaces (\"{name}\")")));
+        }
+        if out.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
+            return Err(AppError::Other(format!("there's already a snippet called \"{name}\"")));
+        }
+        out.push(Snippet { name, body });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    let raw = state.db.with(|c| db::get_setting(c, KEY_SNIPPETS))?;
+    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn set_snippets(state: State<'_, AppState>, snippets: Vec<Snippet>) -> Result<Vec<Snippet>> {
+    let clean = clean_snippets(snippets)?;
+    state.db.with(|c| db::set_setting(c, KEY_SNIPPETS, &serde_json::to_string(&clean)?))?;
+    Ok(clean)
+}
+
 // ---------- recent opens ----------
 
 #[tauri::command]
@@ -551,6 +601,17 @@ pub async fn download_attachment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snippets_are_trimmed_blank_rows_dropped_and_names_unique() {
+        use super::{clean_snippets, Snippet};
+        let snip = |name: &str, body: &str| Snippet { name: name.into(), body: body.into() };
+        let clean = clean_snippets(vec![snip(" thanks ", "Thanks {first_name}!\n\n"), snip("", "  "), snip("intro", "Hi")]).unwrap();
+        assert_eq!(clean, vec![snip("thanks", "Thanks {first_name}!"), snip("intro", "Hi")]);
+        assert!(clean_snippets(vec![snip("a", "x"), snip("A", "y")]).unwrap_err().to_string().contains("already"));
+        assert!(clean_snippets(vec![snip("", "body only")]).unwrap_err().to_string().contains("needs a name"));
+        assert!(clean_snippets(vec![snip("two words", "x")]).unwrap_err().to_string().contains("spaces"));
+    }
+
     #[test]
     fn migration_drops_only_the_old_important_default() {
         let split = |n: &str, q: &str| super::Split { name: n.into(), query: q.into() };
