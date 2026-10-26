@@ -99,3 +99,26 @@ test("Ctrl+; with no snippets says where to make them", async ({ inbox: page }) 
   await page.keyboard.press("Control+;");
   await expect(page.getByTestId("snippet-none")).toContainText("Settings");
 });
+
+test("the list opens next to the caret, wherever it is in the body", async ({ inbox: page }) => {
+  await saveSnippets(page, [["thanks", "Thanks!"]]);
+  await page.keyboard.press("c");
+  const body = page.getByTestId("compose-body");
+  await body.click();
+  const box = (await body.boundingBox())!;
+
+  // First line: the list starts just under it, not at the bottom of the body.
+  await page.keyboard.type("Hi Sam, ;th");
+  let list = (await page.getByTestId("snippet-list").boundingBox())!;
+  expect(list.y).toBeGreaterThan(box.y);
+  expect(list.y).toBeLessThan(box.y + 60);
+  expect(list.x).toBeGreaterThan(box.x + 40); // follows the caret across, too
+
+  // Lower down: it moves with the caret.
+  await page.keyboard.press("Escape");
+  for (let i = 0; i < 6; i++) await page.keyboard.press("Enter");
+  await page.keyboard.type(";th");
+  const lower = (await page.getByTestId("snippet-list").boundingBox())!;
+  expect(lower.y).toBeGreaterThan(list.y + 80);
+  expect(lower.y).toBeLessThan(box.y + box.height);
+});

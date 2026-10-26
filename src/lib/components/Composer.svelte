@@ -12,6 +12,7 @@
   import { parseSendTime } from "$lib/quickAdd";
   import { formatSendAt } from "$lib/mail.svelte";
   import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "$lib/snippets";
+  import { caretCoords } from "$lib/caret";
 
   const c = mail.composer!;
   let to = $state(c.to);
@@ -65,6 +66,22 @@
   // Typing ";" shows the list only when there's something to pick; Ctrl+; always does.
   let snipForced = $state(false);
   const snipOpen = $derived(!!snip && (snipMatches.length > 0 || snipForced));
+  /** Where the list goes: under the ";" (or above it near the bottom), as CSS. */
+  let snipStyle = $state("");
+  const SNIP_LIST_W = 384; // w-96
+  const SNIP_LIST_H = 260; // roughly the tallest it gets
+
+  function placeSnip(start: number) {
+    if (!bodyInput) return;
+    const c = caretCoords(bodyInput, start);
+    const box = bodyInput.getBoundingClientRect();
+    const left = Math.max(8, Math.min(c.left, box.width - SNIP_LIST_W - 8));
+    const below = c.top + c.height + 4;
+    snipStyle =
+      below + SNIP_LIST_H > box.height && c.top > SNIP_LIST_H
+        ? `left:${left}px; bottom:${box.height - c.top + 4}px`
+        : `left:${left}px; top:${below}px`;
+  }
 
   function updateSnip() {
     if (!bodyInput) return;
@@ -74,6 +91,7 @@
       snipForced = false;
     } else {
       if (snip?.query !== t.query) snipActive = 0;
+      if (snip?.start !== t.start) placeSnip(t.start);
       snip = t;
     }
   }
@@ -293,7 +311,7 @@
         class="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text"
       ></textarea>
       {#if snipOpen}
-        <div data-testid="snippet-list" class="absolute bottom-2 left-4 z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
+        <div data-testid="snippet-list" style={snipStyle} class="absolute z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
           {#if snipMatches.length}
             <ul class="max-h-64 overflow-y-auto py-1">
               {#each snipMatches as s, i (s.name)}

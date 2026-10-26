@@ -40,6 +40,11 @@ test.describe("undo send", () => {
     await expect(page.getByTestId("outbox-pending")).toHaveCount(0);
   });
 
+});
+
+test.describe("a long undo window", () => {
+  test.use({ undoSendSecs: 10 });
+
   test("triage during a send's undo window isn't held up by it", async ({ inbox: page, fake }) => {
     await draft(page, "Slow one");
     await page.keyboard.press("Control+Enter");
@@ -47,9 +52,9 @@ test.describe("undo send", () => {
     await expect(selectedRow(page)).toHaveAttribute("data-conversation-id", "conv-plain");
     const before = fake.state.requests.length;
     await page.keyboard.press("e");
-    // The archive's 2s grace, not the send's 3s, decides when it goes.
+    // The archive's 2s grace (plus at most a 1s nap), not the send's 10s, decides when it goes.
     await expect
-      .poll(() => fake.requestsSince(before).some((r) => r.method === "POST" && r.path.endsWith("/move")), { timeout: 2900 })
+      .poll(() => fake.requestsSince(before).some((r) => r.method === "POST" && r.path.endsWith("/move")), { timeout: 6000 })
       .toBe(true);
     expect(sentNew(fake)).toEqual([]);
   });
