@@ -20,6 +20,8 @@ const LOAD_AHEAD = 50;
 const REFRESH_DEBOUNCE_MS = 150;
 const PREFETCH_DELAY_MS = 120;
 const TOAST_MS = 5000;
+/** In the preview layout, a conversation counts as read once it's been shown this long. */
+const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader";
 export type Overlay = null | "help" | "settings" | "palette";
@@ -96,6 +98,12 @@ class MailStore {
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #slowTimer: ReturnType<typeof setTimeout> | undefined;
+  #dwellTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Preview layout: list on the left, the selected conversation beside it. */
+  get previewing(): boolean {
+    return this.boot?.preferences.layout === "preview";
+  }
 
   setOutbox(s: OutboxStatus) {
     this.outbox = s;
@@ -186,9 +194,11 @@ class MailStore {
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
     this.#schedulePrefetch();
     const cur = this.current;
-    if (this.view === "reader") {
+    if (this.view === "reader" || this.previewing) {
       if (!cur) {
         this.view = "list";
+        this.thread = [];
+        this.threadFor = null;
       } else {
         const thread = await api.getThread(cur.accountId, cur.conversationId);
         if (seq !== this.#listSeq) return;
@@ -222,6 +232,7 @@ class MailStore {
     if (this.selected >= this.threads.length - LOAD_AHEAD) this.loadMore();
     this.#schedulePrefetch();
     if (this.view === "reader") this.open();
+    else if (this.previewing) this.preview();
   }
 
   move(delta: number) {
@@ -242,11 +253,44 @@ class MailStore {
     if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
   }
 
-  /** Mouse: click a row to open it. */
+  /** Mouse: click a row to open it (in the preview layout, to preview it). */
   async openAt(index: number) {
     this.pinned = null;
     this.selected = Math.max(0, Math.min(index, this.threads.length - 1));
-    await this.open();
+    if (this.previewing && this.view === "list") await this.preview();
+    else await this.open();
+  }
+
+  /**
+   * Shows the selected conversation in the reading pane. It's only marked read (and added
+   * to Recent Opens) after PREVIEW_DWELL_MS, so skimming past with j doesn't read everything.
+   */
+  async preview() {
+    clearTimeout(this.#dwellTimer);
+    const t = this.current;
+    if (!t) {
+      this.thread = [];
+      this.threadFor = null;
+      return;
+    }
+    const rows = await api.getThread(t.accountId, t.conversationId);
+    if (this.current?.conversationId !== t.conversationId) return;
+    this.thread = rows;
+    this.threadFor = t.conversationId;
+    this.#dwellTimer = setTimeout(() => {
+      if (this.current?.conversationId !== t.conversationId || !this.previewing) return;
+      api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
+      if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
+    }, PREVIEW_DWELL_MS);
+  }
+
+  async toggleLayout() {
+    const next = this.previewing ? "list" : "preview";
+    await this.setPreference("layout", next);
+    this.view = "list";
+    this.pinned = null;
+    if (next === "preview") await this.preview();
+    else clearTimeout(this.#dwellTimer);
   }
 
   /** Opens a Recent Opens entry: selects it in the list if it's there, else pins it. */
@@ -320,6 +364,8 @@ class MailStore {
       if ((action === "archive" || action === "trash") && this.view === "reader") {
         if (this.pinned) this.back();
         else if (this.current) await this.open();
+      } else if ((action === "archive" || action === "trash") && this.previewing) {
+        await this.preview(); // the next conversation slid into place; restart its dwell timer
       }
     } catch (e) {
       this.showToast({ text: String(e), error: true });

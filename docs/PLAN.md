@@ -101,6 +101,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `z` | Undo last action | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
+| `v` | Toggle the reading pane (list only, or list + preview) | ✓ |
 | `g c` | Calendar | 2 |
 | `0` | Toggle calendar side panel | 2 |
 

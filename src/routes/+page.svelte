@@ -11,7 +11,8 @@
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
-  import { PanelRight, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import { Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
 
   // `ready`: signed in, nothing modal open. Every mail binding hangs off it.
@@ -87,6 +88,7 @@
       { id: "compose.replyAll", keys: "a", label: "Reply all", group: "Write", when: hasThread, run: () => mail.respond("replyAll") },
       { id: "compose.forward", keys: "f", label: "Forward", group: "Write", when: hasThread, run: () => mail.respond("forward") },
 
+      { id: "layout.toggle", keys: "v", label: "Toggle reading pane", group: "App", when: ready, run: () => mail.toggleLayout() },
       { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: ready, run: () => mail.toggleRightPane() },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
@@ -105,12 +107,22 @@
 
   const showPane = $derived(mail.boot?.preferences.showRightPane ?? true);
 
+  // Preview layout: list width (resizable, saved) next to the reading pane.
+  const LIST_DEFAULT = 420;
+  const LIST_MIN = 300;
+  let viewport = $state(typeof window === "undefined" ? 1920 : window.innerWidth);
+  const listMax = $derived(Math.max(LIST_MIN, Math.min(800, viewport - 480 - (showPane ? 320 : 0))));
+  let listDrag = $state<number | null>(null);
+  const listWidth = $derived(
+    Math.round(Math.max(LIST_MIN, Math.min(listDrag ?? mail.boot?.preferences.listWidth ?? LIST_DEFAULT, listMax))),
+  );
+
   const syncLabel = $derived(
     mail.sync.state === "syncing" ? "Syncing…" : mail.sync.state === "error" ? "Sync error" : "Up to date",
   );
 </script>
 
-<svelte:window {onmouseup} />
+<svelte:window {onmouseup} bind:innerWidth={viewport} />
 
 <div class="flex h-full flex-col bg-ink-950 text-ink-100">
   {#if !mail.boot}
@@ -166,6 +178,13 @@
           <button data-testid="header-search" title="Search (/)" aria-label="Search" onclick={focusSearch} class="icon-btn"><Search size={17} /></button>
         {/if}
         <button
+          data-testid="toggle-layout"
+          title={mail.previewing ? "List only (V)" : "List and reading pane (V)"}
+          aria-label="Toggle reading pane"
+          onclick={() => mail.toggleLayout()}
+          class={["icon-btn", mail.previewing && "text-ink-100"]}
+        >{#if mail.previewing}<Rows3 size={17} />{:else}<Columns2 size={17} />{/if}</button>
+        <button
           data-testid="toggle-pane"
           title={`${showPane ? "Hide" : "Show"} right pane (\\)`}
           aria-label="Toggle right pane"
@@ -175,11 +194,33 @@
       </span>
     </header>
 
-    <main class="min-h-0 flex-1">
-      {#if mail.view === "list"}
-        <ThreadList />
+    <main data-testid="main" data-layout={mail.previewing ? "preview" : "list"} class="flex min-h-0 flex-1">
+      {#if mail.view === "reader"}
+        <div class="min-w-0 flex-1"><Reader /></div>
+      {:else if mail.previewing}
+        <div data-testid="preview-list" data-width={listWidth} style:width="{listWidth}px" class="relative shrink-0 border-r border-ink-800">
+          <ThreadList />
+          <ResizeHandle
+            edge="right"
+            testid="list-resize"
+            label="Resize message list"
+            value={listWidth}
+            min={LIST_MIN}
+            max={listMax}
+            defaultValue={LIST_DEFAULT}
+            onpreview={(w) => (listDrag = w)}
+            onchange={(w) => mail.setPreference("listWidth", w)}
+          />
+        </div>
+        <div data-testid="preview-pane" class="min-w-0 flex-1">
+          {#if mail.current}
+            <Reader />
+          {:else}
+            <div class="grid h-full place-items-center text-sm text-ink-500">Nothing selected</div>
+          {/if}
+        </div>
       {:else}
-        <Reader />
+        <div class="min-w-0 flex-1"><ThreadList /></div>
       {/if}
     </main>
     </div>

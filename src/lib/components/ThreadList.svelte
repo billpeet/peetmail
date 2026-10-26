@@ -5,7 +5,9 @@
   import { listDate, senderName } from "$lib/format";
   import { Archive, Flag, Mail, MailOpen, Paperclip, Trash2 } from "@lucide/svelte";
 
-  const ROW = 40;
+  // One line per row in the list layout; three (sender + date, subject, preview) in the
+  // narrower preview layout, like Outlook.
+  const ROW = $derived(mail.previewing ? 76 : 40);
   const OVERSCAN = 10;
 
   let viewport: HTMLDivElement | undefined = $state();
@@ -58,21 +60,37 @@
             selected ? "border-accent bg-ink-800" : "border-transparent hover:bg-ink-900",
           ]}
         >
-          <span class={["w-48 shrink-0 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-            {senderName(t.fromName, t.fromAddress)}
-            {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
-          </span>
-          <span class="min-w-0 flex-1 truncate">
-            <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{t.subject || "(no subject)"}</span>
-            <span class="ml-2 text-ink-500">{t.preview}</span>
-          </span>
-          {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={14} /></span>{/if}
-          {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={14} fill="currentColor" /></span>{/if}
-          <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
-            {listDate(t.receivedAt)}
-          </span>
+          {#if mail.previewing}
+            <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
+              <span class="flex items-baseline gap-2">
+                <span class={["min-w-0 flex-1 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
+                  {senderName(t.fromName, t.fromAddress)}
+                  {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
+                </span>
+                {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={13} /></span>{/if}
+                {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={13} fill="currentColor" /></span>{/if}
+                <span class={["shrink-0 text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>{listDate(t.receivedAt)}</span>
+              </span>
+              <span class={["truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>{t.subject || "(no subject)"}</span>
+              <span class="truncate text-xs text-ink-500">{t.preview}</span>
+            </span>
+          {:else}
+            <span class={["w-48 shrink-0 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
+              {senderName(t.fromName, t.fromAddress)}
+              {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
+            </span>
+            <span class="min-w-0 flex-1 truncate">
+              <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{t.subject || "(no subject)"}</span>
+              <span class="ml-2 text-ink-500">{t.preview}</span>
+            </span>
+            {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={14} /></span>{/if}
+            {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={14} fill="currentColor" /></span>{/if}
+            <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
+              {listDate(t.receivedAt)}
+            </span>
+          {/if}
           <!-- Quick actions replace the date on hover. -->
-          <span data-testid="row-actions" class="hidden w-20 shrink-0 justify-end group-hover:flex">
+          <span data-testid="row-actions" class={["hidden shrink-0 justify-end group-hover:flex", mail.previewing ? "absolute top-1 right-3 rounded-md bg-ink-800" : "w-20"]}>
             <button data-testid="row-archive" title="Archive (E)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "archive"); }}>
               <Archive size={15} />
             </button>

@@ -16,6 +16,9 @@ pub const KEY_HIDE_EMPTY_SPLITS: &str = "hide_empty_splits";
 pub const KEY_SHOW_RIGHT_PANE: &str = "show_right_pane";
 pub const KEY_RIGHT_PANE_WIDTH: &str = "right_pane_width";
 pub const DEFAULT_RIGHT_PANE_WIDTH: i64 = 320;
+pub const KEY_LAYOUT: &str = "layout";
+pub const KEY_LIST_WIDTH: &str = "list_width";
+pub const DEFAULT_LIST_WIDTH: i64 = 420;
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
@@ -46,6 +49,10 @@ pub struct Preferences {
     pub show_right_pane: bool,
     /// Right pane width in CSS pixels (the UI clamps it to fit the window).
     pub right_pane_width: i64,
+    /// "list" (list, Enter opens a conversation) or "preview" (list + reading pane).
+    pub layout: String,
+    /// Width of the list in the preview layout, in CSS pixels.
+    pub list_width: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +114,11 @@ impl AppState {
                 right_pane_width: db::get_setting(c, KEY_RIGHT_PANE_WIDTH)?
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(DEFAULT_RIGHT_PANE_WIDTH),
+                layout: match db::get_setting(c, KEY_LAYOUT)?.as_deref() {
+                    Some("preview") => "preview".into(),
+                    _ => "list".into(),
+                },
+                list_width: db::get_setting(c, KEY_LIST_WIDTH)?.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_LIST_WIDTH),
             })
         })
     }
@@ -116,7 +128,9 @@ impl AppState {
         self.db.with(|c| {
             db::set_setting(c, KEY_HIDE_EMPTY_SPLITS, flag(p.hide_empty_splits))?;
             db::set_setting(c, KEY_SHOW_RIGHT_PANE, flag(p.show_right_pane))?;
-            db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())
+            db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())?;
+            db::set_setting(c, KEY_LAYOUT, if p.layout == "preview" { "preview" } else { "list" })?;
+            db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())
         })
     }
 

@@ -20,6 +20,11 @@
   --color-accent: #9ca3ff;
 }
 
+html {
+  /* Native scrollbars and form controls follow the dark theme (email bodies set their own). */
+  color-scheme: dark;
+}
+
 html,
 body {
   height: 100%;

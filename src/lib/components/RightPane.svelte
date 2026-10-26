@@ -4,52 +4,20 @@
   import { mail } from "$lib/mail.svelte";
   import { recentGroup, recentTime, senderName } from "$lib/format";
   import type { RecentOpen } from "$lib/api";
+  import ResizeHandle from "./ResizeHandle.svelte";
 
-  // ----- resizing: drag the left edge, arrow keys when focused, double-click to reset -----
+  // ----- resizing (see ResizeHandle) -----
   const DEFAULT_WIDTH = 320;
   const MIN_WIDTH = 240;
-  const MAX_WIDTH = 720;
   /** The mail list never gets narrower than this. */
   const MIN_LIST = 560;
 
   let viewport = $state(typeof window === "undefined" ? 1920 : window.innerWidth);
-  const clamp = (w: number) => Math.round(Math.max(MIN_WIDTH, Math.min(w, MAX_WIDTH, viewport - MIN_LIST)));
+  const maxWidth = $derived(Math.max(MIN_WIDTH, Math.min(720, viewport - MIN_LIST)));
   let dragWidth = $state<number | null>(null);
-  const width = $derived(clamp(dragWidth ?? mail.boot?.preferences.rightPaneWidth ?? DEFAULT_WIDTH));
-
-  function save(w: number) {
-    dragWidth = null;
-    mail.setPreference("rightPaneWidth", clamp(w));
-  }
-
-  function startDrag(e: PointerEvent) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const handle = e.currentTarget as HTMLElement;
-    handle.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startWidth = width;
-    const move = (ev: PointerEvent) => (dragWidth = clamp(startWidth + (startX - ev.clientX)));
-    const up = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", up);
-      handle.removeEventListener("pointercancel", up);
-      if (dragWidth !== null) save(dragWidth);
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", up);
-    handle.addEventListener("pointercancel", up);
-  }
-
-  function handleKeys(e: KeyboardEvent) {
-    const step = e.shiftKey ? 64 : 16;
-    if (e.key === "ArrowLeft") save(width + step);
-    else if (e.key === "ArrowRight") save(width - step);
-    else if (e.key === "Home") save(DEFAULT_WIDTH);
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
-  }
+  const width = $derived(
+    Math.round(Math.max(MIN_WIDTH, Math.min(dragWidth ?? mail.boot?.preferences.rightPaneWidth ?? DEFAULT_WIDTH, maxWidth))),
+  );
 
   const groups = $derived.by(() => {
     const now = new Date();
@@ -70,28 +38,17 @@
 <svelte:window bind:innerWidth={viewport} />
 
 <aside data-testid="right-pane" style:width="{width}px" data-width={width} class="relative flex shrink-0 flex-col border-l border-ink-800 bg-ink-950">
-  <!-- Resize handle: a thin strip over the left border. A focusable separator is the ARIA
-       "window splitter" pattern, which the linter doesn't recognise as interactive. -->
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-  <div
-    data-testid="pane-resize"
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize right pane"
-    aria-valuemin={MIN_WIDTH}
-    aria-valuemax={MAX_WIDTH}
-    aria-valuenow={width}
-    tabindex="0"
-    title="Drag to resize · double-click to reset"
-    onpointerdown={startDrag}
-    ondblclick={() => save(DEFAULT_WIDTH)}
-    onkeydown={handleKeys}
-    class={[
-      "absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize outline-none",
-      "after:absolute after:inset-y-0 after:left-[3px] after:w-0.5 after:transition-colors hover:after:bg-accent/60 focus-visible:after:bg-accent",
-      dragWidth !== null && "after:bg-accent",
-    ]}
-  ></div>
+  <ResizeHandle
+    edge="left"
+    testid="pane-resize"
+    label="Resize right pane"
+    value={width}
+    min={MIN_WIDTH}
+    max={maxWidth}
+    defaultValue={DEFAULT_WIDTH}
+    onpreview={(w) => (dragWidth = w)}
+    onchange={(w) => mail.setPreference("rightPaneWidth", w)}
+  />
   <h2 class="px-6 pt-5 pb-3 text-[15px] font-semibold text-ink-100">Recent Opens</h2>
   <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
     {#each groups as g (g.label)}

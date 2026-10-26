@@ -4,7 +4,10 @@
   import type { Recipient } from "$lib/api";
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
-  import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
+  import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
+
+  /** Shown as the reading pane beside the list (preview layout), not full width. */
+  const inPane = $derived(mail.previewing && mail.view === "list");
 
   const flagged = $derived(mail.current?.isFlagged ?? false);
 
@@ -46,7 +49,11 @@
 <div class="flex h-full flex-col">
   <!-- Every keyboard action, also reachable by mouse. Tooltips show the shortcut. -->
   <div data-testid="reader-toolbar" class="flex h-11 shrink-0 items-center gap-1 border-b border-ink-800 px-3">
-    {@render action("reader-back", "Back to list (Esc)", () => mail.back(), ArrowLeft)}
+    {#if inPane}
+      {@render action("reader-expand", "Open full width (Enter)", () => mail.open(), Maximize2)}
+    {:else}
+      {@render action("reader-back", "Back to list (Esc)", () => mail.back(), ArrowLeft)}
+    {/if}
     <span class="mx-1 h-5 w-px bg-ink-700"></span>
     {@render action("reader-archive", "Archive (E)", () => mail.act("archive"), Archive)}
     {@render action("reader-trash", "Delete (#)", () => mail.act("trash"), Trash2)}
