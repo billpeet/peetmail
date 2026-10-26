@@ -233,11 +233,25 @@ pub struct SendInput {
     #[serde(default)]
     subject: String,
     body: String,
+    /// Send later, at this time (RFC 3339). None: after the undo delay.
+    #[serde(default)]
+    send_at: Option<String>,
 }
 
-/// Queues a message for sending and returns immediately.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendOutcome {
+    /// Outbox id, for undo / cancel.
+    id: i64,
+    /// When it goes out (UTC).
+    send_at: String,
+    scheduled: bool,
+}
+
+/// Queues a message for sending and returns immediately. It waits out the undo delay,
+/// or until `send_at` when scheduled.
 #[tauri::command]
-pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<()> {
+pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<SendOutcome> {
     let reference = match input.reference_message_id {
         Some(id) => Some(state.db.with(|c| db::message_remote(c, id))?.ok_or_else(|| AppError::Other("original message not found".into()))?.1),
         None => None,
@@ -246,17 +260,57 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         return Err(AppError::Other("replies and forwards need the original message".into()));
     }
     let clean = |v: Vec<String>| v.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect::<Vec<_>>();
-    let draft = Draft { kind: input.kind, to: clean(input.to), cc: clean(input.cc), subject: input.subject, body: input.body };
+    let when = match &input.send_at {
+        Some(s) => {
+            let t = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| AppError::Other(format!("\"{s}\" isn't a time")))?.with_timezone(&chrono::Utc);
+            if t <= chrono::Utc::now() {
+                return Err(AppError::Other("that time has already passed".into()));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    let draft = Draft {
+        kind: input.kind,
+        to: clean(input.to),
+        cc: clean(input.cc),
+        subject: input.subject,
+        body: input.body,
+        send_at: when.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        reference_message_id: input.reference_message_id,
+    };
     if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
     }
     if let Some(bad) = draft.to.iter().chain(&draft.cc).find(|a| !a.contains('@')) {
         return Err(AppError::Other(format!("\"{bad}\" isn't an email address")));
     }
-    state.db.with(|c| outbox::enqueue(c, input.account_id, reference.as_deref(), &Op::Send(draft), std::time::Duration::ZERO))?;
+    let delay = state.preferences()?.undo_send_secs;
+    let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
+    let id = state.db.with(|c| outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at))?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
-    Ok(())
+    let _ = app.emit(EVENT_SCHEDULED, ());
+    Ok(SendOutcome { id, send_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), scheduled: when.is_some() })
+}
+
+/// Fired when the set of queued sends changes (scheduled list).
+pub const EVENT_SCHEDULED: &str = "scheduled-changed";
+
+/// Takes a send back before it goes (undo send, or cancelling a scheduled one).
+/// Returns the draft so the composer can reopen, or None if it has already gone.
+#[tauri::command]
+pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<Option<outbox::QueuedSend>> {
+    let taken = state.db.with(|c| outbox::take_send(c, id))?;
+    outbox::emit_status(&app, &state);
+    let _ = app.emit(EVENT_SCHEDULED, ());
+    Ok(taken)
+}
+
+/// Messages scheduled to send later, soonest first.
+#[tauri::command]
+pub fn scheduled_sends(state: State<'_, AppState>) -> Result<Vec<outbox::QueuedSend>> {
+    state.db.with(|c| outbox::queued_sends(c, true))
 }
 
 #[tauri::command]

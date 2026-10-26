@@ -111,6 +111,8 @@ pub fn run() {
             commands::invite_event,
             commands::respond_to_event,
             commands::create_event,
+            commands::cancel_send,
+            commands::scheduled_sends,
             commands::thread_action,
             commands::undo,
             commands::outbox_status,

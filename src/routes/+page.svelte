@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, onCalendarChanged, onMailChanged, onOutbox, onSyncStatus } from "$lib/api";
+  import { api, onCalendarChanged, onMailChanged, onOutbox, onScheduledChanged, onSyncStatus } from "$lib/api";
   import { calendar } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
@@ -19,6 +19,7 @@
   import QuickAdd from "$lib/components/QuickAdd.svelte";
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
+  import ScheduledList from "$lib/components/ScheduledList.svelte";
 
   // `base`: signed in, nothing modal open (global keys). `ready`: base, in the mail views
   // (every mail binding hangs off it, so mail keys don't act on a hidden conversation
@@ -70,13 +71,17 @@
   onMount(() => {
     mail.init();
     api.outboxStatus().then((s) => mail.setOutbox(s));
+    mail.refreshScheduled();
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
       onCalendarChanged(() => calendar.refresh()),
+      onScheduledChanged(() => mail.refreshScheduled()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
         mail.setOutbox(s);
+        // A scheduled send that just went out leaves the list.
+        if (mail.scheduled.length) mail.refreshScheduled();
       }),
     ];
 
@@ -93,6 +98,7 @@
       { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
       { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
+      { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => (mail.overlay = "scheduled") },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
       { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
@@ -270,6 +276,11 @@
       <span data-testid="sync-status" data-state={mail.sync.state} class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>
       {#if mail.outbox.pending && mail.outboxSlow}<span data-testid="outbox-pending">Sending {count(mail.outbox.pending, "change")}…</span>{/if}
       {#if mail.outbox.failed}<span data-testid="outbox-failed" class="text-red-300" title={mail.outbox.lastError ?? ""}>{mail.outbox.failed} failed</span>{/if}
+      {#if mail.scheduled.length}
+        <button data-testid="footer-scheduled" onclick={() => (mail.overlay = "scheduled")} class="hover:text-ink-100" title="Scheduled messages (g s)">
+          {count(mail.scheduled.length, "scheduled message")}
+        </button>
+      {/if}
       {#if keymap.pending.length}<span class="text-ink-300">{keymap.pending.join(" ")} …</span>{/if}
       <span class="ml-auto flex items-center gap-3">
         <button data-testid="footer-palette" onclick={() => (mail.overlay = "palette")} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>K</kbd> commands</button>
@@ -306,3 +317,4 @@
 {#if mail.overlay === "palette"}<Palette />{/if}
 {#if mail.overlay === "event"}<EventDetails />{/if}
 {#if mail.overlay === "quickadd"}<QuickAdd />{/if}
+{#if mail.overlay === "scheduled"}<ScheduledList />{/if}

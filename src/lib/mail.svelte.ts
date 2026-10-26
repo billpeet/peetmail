@@ -13,6 +13,7 @@ import {
   type SplitInfo,
   type SyncStatus,
   type ThreadRow,
+  type QueuedSend,
 } from "./api";
 import { prefetchBody } from "./bodies";
 import { calendar } from "./calendar.svelte";
@@ -27,7 +28,7 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled";
 
 export type ComposerState = {
   kind: DraftKind;
@@ -85,6 +86,10 @@ class MailStore {
   imagesFor = $state<string | null>(null);
 
   composer = $state<ComposerState | null>(null);
+  /** Messages scheduled to send later, soonest first. */
+  scheduled = $state.raw<QueuedSend[]>([]);
+  /** The send that `z` takes back while its toast is up. */
+  #lastSend: { id: number; until: number } | null = null;
   toast = $state<Toast | null>(null);
   outbox = $state<OutboxStatus>({ pending: 0, failed: 0, lastError: null });
   /** True once changes have been waiting a while (slow or offline); routine 2s sends stay quiet. */
@@ -471,6 +476,13 @@ class MailStore {
   }
 
   async undo() {
+    const s = this.#lastSend;
+    if (s && Date.now() < s.until) {
+      this.#lastSend = null;
+      const ok = await this.unsend(s.id).catch(() => false);
+      this.showToast(ok ? { text: "Send undone" } : { text: "Too late: it's already been sent", error: true });
+      return;
+    }
     try {
       const label = await api.undo();
       this.showToast({ text: label ? `Undid: ${label.toLowerCase()}` : "Nothing to undo" });
@@ -524,12 +536,13 @@ class MailStore {
     };
   }
 
-  async send() {
+  /** Sends the composer's message after the undo delay, or at `sendAt` when scheduling. */
+  async send(sendAt?: Date) {
     const c = this.composer;
     if (!c || !this.account) return;
     const split = (s: string) => s.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
     try {
-      await api.sendMessage({
+      const out = await api.sendMessage({
         accountId: this.account.id,
         kind: c.kind,
         referenceMessageId: c.referenceMessageId,
@@ -537,12 +550,48 @@ class MailStore {
         cc: split(c.cc),
         subject: c.subject,
         body: c.body,
+        sendAt: sendAt?.toISOString(),
       });
       this.composer = null;
-      this.showToast({ text: "Sending…" });
+      const delayMs = new Date(out.sendAt).getTime() - Date.now();
+      // Undo works while the toast is up, and never after the message has gone.
+      this.#lastSend = { id: out.id, until: Date.now() + (out.scheduled ? TOAST_MS : Math.max(0, delayMs)) };
+      const undo = out.scheduled || delayMs > 0;
+      this.showToast({ text: out.scheduled ? `Scheduled for ${formatSendAt(out.sendAt)}` : "Sending…", undo });
+      this.refreshScheduled();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
+  }
+
+  /** Takes back a send that hasn't gone and reopens it in the composer. */
+  async unsend(id: number): Promise<boolean> {
+    const q = await api.cancelSend(id);
+    this.refreshScheduled();
+    if (!q) return false;
+    const d = q.draft;
+    this.composer = {
+      kind: d.kind,
+      referenceMessageId: d.referenceMessageId ?? null,
+      to: d.to.join(", "),
+      cc: d.cc.join(", "),
+      subject: d.subject,
+      body: d.body,
+    };
+    return true;
+  }
+
+  /** Cancels a scheduled message without reopening it. */
+  async cancelScheduled(id: number) {
+    const q = await api.cancelSend(id);
+    this.refreshScheduled();
+    this.showToast(q ? { text: "Scheduled message cancelled" } : { text: "That message has already been sent", error: true });
+  }
+
+  async refreshScheduled() {
+    try {
+      this.scheduled = await api.scheduledSends();
+    } catch {}
   }
 
   // ---------- misc ----------
@@ -573,3 +622,13 @@ class MailStore {
 }
 
 export const mail = new MailStore();
+
+/** "Tue 27 Oct, 8:00 am" (today's sends drop the date). */
+export function formatSendAt(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return `today, ${time}`;
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow, ${time}`;
+  return `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}, ${time}`;
+}

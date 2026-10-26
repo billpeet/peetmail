@@ -17,7 +17,10 @@ import { defaultMailbox, FOLDER_IDS } from "../harness/fixtures.ts";
 type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number }>({
+  /** Undo-send delay for this test's app (`test.use({ undoSendSecs: 3 })`); 0 sends at once. */
+  undoSendSecs: [0, { option: true }],
+
   // eslint-disable-next-line no-empty-pattern
   fake: async ({}, use) => {
     const fake = await startFakeGraph();
@@ -25,8 +28,8 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page 
     await fake.close();
   },
 
-  app: async ({ fake }, use, testInfo) => {
-    const app = await launchApp({ fake });
+  app: async ({ fake, undoSendSecs }, use, testInfo) => {
+    const app = await launchApp({ fake, undoSendSecs });
     const consoleLines: string[] = [];
     app.page.on("console", (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));
     app.page.on("pageerror", (e) => consoleLines.push(`[pageerror] ${e.stack ?? e.message}`));

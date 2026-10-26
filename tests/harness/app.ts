@@ -20,6 +20,8 @@ export type LaunchOptions = {
   dataDir?: string;
   cdpPort?: number;
   syncIntervalSecs?: number;
+  /** Undo-send delay. 0 (the default here) sends at once, so tests don't wait out the app's 10s. */
+  undoSendSecs?: number;
   headed?: boolean;
   /** Run `pnpm tauri dev` (hot reload) instead of the prebuilt debug exe. */
   dev?: boolean;
@@ -114,8 +116,9 @@ export function testEnv({
   dataDir,
   cdpPort,
   syncIntervalSecs = 3600,
+  undoSendSecs = 0,
   headed = DEFAULT_HEADED,
-}: { fake: FakeEndpoints; dataDir: string; cdpPort: number; syncIntervalSecs?: number; headed?: boolean }): Record<string, string> {
+}: { fake: FakeEndpoints; dataDir: string; cdpPort: number; syncIntervalSecs?: number; undoSendSecs?: number; headed?: boolean }): Record<string, string> {
   return {
     ...(headed ? {} : { PEETMAIL_HEADLESS: "1" }),
     PEETMAIL_DATA_DIR: dataDir,
@@ -123,6 +126,7 @@ export function testEnv({
     PEETMAIL_AUTHORITY_URL: fake.authorityUrl,
     PEETMAIL_AUTH_AUTOFOLLOW: "1",
     PEETMAIL_SYNC_INTERVAL_SECS: String(syncIntervalSecs),
+    PEETMAIL_UNDO_SEND_SECS: String(undoSendSecs),
     PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),
@@ -172,12 +176,12 @@ export function killTree(pid: number | undefined) {
  * Starts the app. Returns { page, browser, proc, dataDir, cdpPort, logPath, close }.
  * `dev: true` runs `pnpm tauri dev` (hot reload) instead of the prebuilt exe.
  */
-export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, headed, dev = false, detached = false }: LaunchOptions): Promise<LaunchedApp> {
+export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, headed, dev = false, detached = false }: LaunchOptions): Promise<LaunchedApp> {
   dataDir ??= await mkdtemp(join(tmpdir(), "peetmail-test-"));
   mkdirSync(dataDir, { recursive: true });
   cdpPort ??= await freePort();
   const logPath = join(dataDir, "app-stdout.log");
-  const env = { ...process.env, ...testEnv({ fake, dataDir, cdpPort, syncIntervalSecs, headed }) };
+  const env = { ...process.env, ...testEnv({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, headed }) };
 
   const out = detached ? "ignore" : createWriteStream(logPath);
   const proc = dev

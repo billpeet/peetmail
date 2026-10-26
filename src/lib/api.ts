@@ -71,7 +71,21 @@ export type SendInput = {
   cc: string[];
   subject: string;
   body: string;
+  /** Send later (UTC ISO). Omitted: after the undo delay. */
+  sendAt?: string;
 };
+export type SendOutcome = { id: number; sendAt: string; scheduled: boolean };
+export type Draft = {
+  kind: DraftKind;
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+  sendAt?: string;
+  referenceMessageId?: number;
+};
+/** A send that hasn't gone out yet. */
+export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
 export type Contact = { name: string | null; address: string };
 export type Split = { name: string; query: string };
 /** A tab of the split inbox. The first is the built-in Inbox (`builtin`): mail no split claims. */
@@ -93,6 +107,8 @@ export type Preferences = {
   rightPaneTab: "recent" | "calendar";
   /** First day of the week: 0 = Sunday, 1 = Monday ... 6 = Saturday. */
   weekStartsOn: number;
+  /** Seconds a sent message waits so it can be undone (0: at once). */
+  undoSendSecs: number;
 };
 
 export type Attendee = { name: string | null; address: string | null; response: string | null; type: string | null };
@@ -162,7 +178,9 @@ export const api = {
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
-  sendMessage: (input: SendInput) => invoke<void>("send_message", { input }),
+  sendMessage: (input: SendInput) => invoke<SendOutcome>("send_message", { input }),
+  cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
+  scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
   listSplits: (folderId: number) => invoke<SplitInfo[]>("list_splits", { folderId }),
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
@@ -200,6 +218,8 @@ export type Invite = {
   previousLocation: string | null;
   event: CalendarEvent;
 };
+
+export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => listen("scheduled-changed", () => cb());
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 

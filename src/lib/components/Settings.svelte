@@ -48,6 +48,23 @@
     </section>
 
     <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Sending</h3>
+      <label class="flex items-center justify-between text-sm text-ink-300">
+        Undo send window
+        <select
+          data-testid="undo-send-select"
+          value={mail.boot?.preferences.undoSendSecs ?? 10}
+          onchange={(e) => mail.setPreference("undoSendSecs", Number(e.currentTarget.value))}
+          class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"
+        >
+          {#each [0, 5, 10, 20, 30] as s (s)}
+            <option value={s}>{s ? `${s} seconds` : "Off"}</option>
+          {/each}
+        </select>
+      </label>
+    </section>
+
+    <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Calendar</h3>
       <label class="flex items-center justify-between text-sm text-ink-300">
         Week starts on

@@ -98,7 +98,9 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `c` | Compose | ✓ |
 | `/` | Search | ✓ |
 | `Tab` / `Shift+Tab` | Next / previous split | ✓ |
-| `z` | Undo last action | ✓ |
+| `z` | Undo last action (also takes back a send during its undo window) | ✓ |
+| `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
+| `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
 | `v` | Toggle the reading pane (list only, or list + preview) | ✓ |
@@ -154,7 +156,7 @@ Deferred from Phase 1:
 ### Phase 3: polish
 
 - Snooze and reminders (local scheduler; on the server, move to a hidden folder)
-- Undo send (delay window), scheduled send
+- [x] Undo send (delay window, 10s by default, set in Settings), scheduled send. Both wait in the local outbox, so a scheduled message only goes out while PeetMail is running (or as soon as it next starts). Server-side deferred delivery (`PR_DEFERRED_SEND_TIME`) would send with the PC off, but needs the draft-then-send flow; revisit if that matters.
 - Snippets
 - Multiple accounts in one unified view
 - Windows notifications, start with Windows, tray icon
