@@ -30,6 +30,36 @@ pub enum Op {
     /// `destination` is a Graph well-known folder name (inbox, archive, deleteditems) or folder id.
     Move { destination: String },
     Send(Draft),
+    /// RSVP to a meeting; the outbox row's remote_id is the event's id.
+    Respond { response: Rsvp },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum Rsvp {
+    Accept,
+    Tentative,
+    Decline,
+}
+
+impl Rsvp {
+    /// Graph action segment: /me/events/{id}/{action}.
+    fn action(self) -> &'static str {
+        match self {
+            Rsvp::Accept => "accept",
+            Rsvp::Tentative => "tentativelyAccept",
+            Rsvp::Decline => "decline",
+        }
+    }
+
+    /// The event's `responseStatus.response` once this reply lands.
+    pub fn status(self) -> &'static str {
+        match self {
+            Rsvp::Accept => "accepted",
+            Rsvp::Tentative => "tentativelyAccepted",
+            Rsvp::Decline => "declined",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -243,6 +273,11 @@ async fn execute(state: &AppState, row: &Row) -> Result<()> {
         ),
         Op::Move { destination } => (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination })),
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
+        Op::Respond { response } => (
+            Method::POST,
+            format!("{base}/me/events/{}/{}", rid()?, response.action()),
+            json!({ "sendResponse": true }),
+        ),
     };
     mail::graph_call(state, row.account_id, method, &url, Some(&body), &[PREFER_IMMUTABLE]).await?;
     Ok(())
@@ -322,6 +357,16 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn rsvp_ops_round_trip() {
+        let op = Op::Respond { response: Rsvp::Tentative };
+        let s = serde_json::to_string(&op).unwrap();
+        assert_eq!(s, r#"{"type":"respond","response":"tentative"}"#);
+        assert_eq!(serde_json::from_str::<Op>(&s).unwrap(), op);
+        assert_eq!(Rsvp::Tentative.action(), "tentativelyAccept");
+        assert_eq!(Rsvp::Decline.status(), "declined");
     }
 
     #[test]

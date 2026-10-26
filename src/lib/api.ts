@@ -54,6 +54,8 @@ export type MessageRow = {
   isFlagged: boolean;
   /** Folder holding this copy: inbox, sentitems, archive, ... */
   folderRole: string;
+  /** "message", or "eventMessage" for meeting invites and responses. */
+  messageType: string;
 };
 
 export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
@@ -148,6 +150,9 @@ export const api = {
   /** Timed events by UTC instants [from, to); all-day events by local dates [fromDate, toDate). */
   listEvents: (from: string, to: string, fromDate: string, toDate: string) =>
     invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
+  inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
+  respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
+    invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),
@@ -167,6 +172,10 @@ export const onMailChanged = (cb: (p: { accountId: number; folderId: number }) =
 
 export const onOutbox = (cb: (s: OutboxStatus) => void): Promise<UnlistenFn> =>
   listen<OutboxStatus>("outbox-changed", (e) => cb(e.payload));
+
+export type Rsvp = "accept" | "tentative" | "decline";
+/** The calendar event behind a meeting-invite message. */
+export type Invite = { meetingMessageType: string | null; event: CalendarEvent };
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 

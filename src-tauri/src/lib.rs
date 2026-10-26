@@ -108,6 +108,8 @@ pub fn run() {
             commands::record_open,
             commands::recent_opens,
             commands::list_events,
+            commands::invite_event,
+            commands::respond_to_event,
             commands::thread_action,
             commands::undo,
             commands::outbox_status,

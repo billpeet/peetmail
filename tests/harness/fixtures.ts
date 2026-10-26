@@ -46,6 +46,9 @@ export type GraphMessage = {
   body: { contentType: "html" | "text"; content: string };
   /** Not part of Graph's message payload; served from /attachments. */
   attachments?: FakeAttachment[];
+  /** Meeting invites: the calendar event behind the message (served via $expand). */
+  eventId?: string;
+  meetingMessageType?: string;
 };
 
 type Variant = "default" | "newsletter" | "hostile" | "quoted" | "plain";
@@ -200,6 +203,8 @@ export function defaultMailbox({ now = Date.now(), count = 160, seed = 42 }: { n
       receivedAt: now - 4 * HOUR, isRead: false,
     }),
     "@odata.type": "#microsoft.graph.eventMessage",
+    eventId: "evt-invite",
+    meetingMessageType: "meetingRequest",
   });
 
   for (let i = 0; messages.length < count; i++) {

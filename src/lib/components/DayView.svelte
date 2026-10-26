@@ -92,6 +92,7 @@
             data-remote-id={e.remoteId}
             data-col={p.col}
             data-cols={p.cols}
+            data-response={e.response ?? "none"}
             onclick={() => onselect?.(e)}
             title="{e.subject}{e.location ? ` · ${e.location}` : ''}"
             class={[

@@ -119,3 +119,29 @@ test("clicking an event shows its details, from the week view and the day view",
   await page.getByTestId("event-close").click();
   await expect(details).toHaveCount(0);
 });
+
+test("recurring meetings and bare events show their details (subject, organiser, location)", async ({ inbox: page, fake }) => {
+  await showCalendar(page);
+  // Standup occurrences arrive bare; details come from the series master in the delta.
+  const standup = page.locator("[data-testid=cal-event]", { hasText: "Standup" });
+  await page.getByTestId("day-grid").evaluate((el) => (el.scrollTop = 8 * 44));
+  await expect(standup).toHaveCount(1);
+  await standup.click();
+  await expect(page.getByTestId("event-title")).toHaveText("Standup");
+  await expect(page.getByTestId("event-attendees")).toContainText("Sam Carter");
+  await page.keyboard.press("Escape");
+
+  // Team sync's master isn't in the delta at all; the app fetched it by id.
+  await page.keyboard.press("g");
+  await page.keyboard.press("c");
+  await expect(page.locator("[data-testid=week-event]", { hasText: "Team sync" })).toHaveCount(1);
+  // A bare one-off event was fetched by id too.
+  const planning = page.locator('[data-testid=week-event][data-remote-id="evt-bare"]');
+  if (!(await planning.count())) await page.getByTestId("week-next").click(); // tomorrow may be next week
+  await expect(planning).toContainText("Quarterly planning");
+  await planning.click();
+  await expect(page.getByTestId("event-location")).toHaveText("Board room");
+
+  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-sync-series")).toHaveLength(1);
+  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-standup-series")).toHaveLength(0);
+});

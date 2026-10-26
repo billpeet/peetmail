@@ -126,6 +126,7 @@
             <button
               data-testid="week-event"
               data-remote-id={e.remoteId}
+              data-response={e.response ?? "none"}
               onclick={() => select(e)}
               title="{e.subject}{e.location ? ` · ${e.location}` : ''}"
               class={[

@@ -4,6 +4,7 @@
   import type { Recipient } from "$lib/api";
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
+  import InviteCard from "./InviteCard.svelte";
   import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
 
   /** Shown as the reading pane beside the list (preview layout), not full width. */
@@ -71,6 +72,7 @@
 <div data-testid="reader" class="min-h-0 flex-1 overflow-y-auto">
   <div class="mx-auto max-w-4xl px-8 py-6">
     <h1 class="mb-5 text-xl font-semibold text-ink-100 select-text">{mail.current?.subject || "(no subject)"}</h1>
+    {#if mail.invite}<InviteCard invite={mail.invite} />{/if}
 
     <div class="space-y-2">
       {#each mail.thread as m (m.id)}

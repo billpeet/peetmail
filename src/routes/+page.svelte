@@ -24,6 +24,14 @@
   const base = () => !!mail.account && mail.overlay === null && !mail.composer;
   const ready = () => base() && mail.view !== "calendar";
   const inCalendar = () => base() && mail.view === "calendar";
+  /** An answerable invite is on screen (reader, or the reading pane). */
+  const hasInvite = () =>
+    ready() &&
+    (mail.view === "reader" || mail.previewing) &&
+    !!mail.invite &&
+    !mail.invite.event.isOrganizer &&
+    !mail.invite.event.isCancelled &&
+    mail.invite.meetingMessageType !== "meetingCancelled";
   const inList = () => ready() && mail.view === "list";
   const inReader = () => ready() && mail.view === "reader";
   const hasThread = () => ready() && !!mail.current;
@@ -104,6 +112,9 @@
       { id: "layout.toggle", keys: "v", label: "Toggle reading pane", group: "App", when: ready, run: () => mail.toggleLayout() },
       { id: "calendar.pane", keys: "0", label: "Toggle calendar", group: "Calendar", when: base, run: () => mail.toggleCalendarPane() },
       { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: base, run: () => mail.toggleRightPane() },
+      { id: "invite.accept", keys: "y", label: "Accept invite", group: "Calendar", when: hasInvite, run: () => mail.rsvp("accept") },
+      { id: "invite.maybe", keys: "m", label: "Maybe (tentative)", group: "Calendar", when: hasInvite, run: () => mail.rsvp("tentative") },
+      { id: "invite.decline", keys: "n", label: "Decline invite", group: "Calendar", when: hasInvite, run: () => mail.rsvp("decline") },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },

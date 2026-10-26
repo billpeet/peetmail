@@ -282,6 +282,25 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return reply(202, "");
     }
 
+    const eventGet = p.match(/^\/me\/events\/([^/]+)$/);
+    if (eventGet && method === "GET") {
+      const e = state.events.get(decodeURIComponent(eventGet[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      return reply(200, fullForm(e));
+    }
+
+    const rsvp = p.match(/^\/me\/events\/([^/]+)\/(accept|tentativelyAccept|decline)$/);
+    if (rsvp && method === "POST") {
+      const e = state.events.get(decodeURIComponent(rsvp[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      const b = await readBody(req);
+      const status = { accept: "accepted", tentativelyAccept: "tentativelyAccepted", decline: "declined" }[rsvp[2]]!;
+      e.responseStatus = { response: status, time: new Date().toISOString() };
+      eventChange(e.id);
+      state.sent.push({ kind: "rsvp", eventId: e.id, response: status, sendResponse: b.sendResponse });
+      return reply(202, "");
+    }
+
     const attachmentValue = p.match(/^\/me\/messages\/([^/]+)\/attachments\/([^/]+)\/\$value$/);
     if (attachmentValue) {
       const msg = state.messages.get(decodeURIComponent(attachmentValue[1]));
@@ -315,6 +334,10 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         change(msg.id, "partial", fields);
         state.sent.push({ kind: "patch", messageId: msg.id, fields });
         return reply(200, metadata(msg));
+      }
+      if ((url.searchParams.get("$expand") ?? "").includes("eventMessage/event")) {
+        const event = msg.eventId ? state.events.get(msg.eventId) : undefined;
+        return reply(200, { id: msg.id, meetingMessageType: msg.meetingMessageType ?? null, ...(event ? { event: fullForm(event) } : {}) });
       }
       if (state.config.failBody) return graphError(reply, 500, "InternalServerError", "Body fetch failed (test)");
       return reply(200, { id: msg.id, body: msg.body });
@@ -350,7 +373,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.sent.push({ kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc });
   }
 
-  const metadata = ({ body, attachments, ...rest }: GraphMessage): Json => rest;
+  const metadata = ({ body, attachments, eventId, ...rest }: GraphMessage): Json => rest;
 
   // ---------- calendar ----------
 
@@ -377,14 +400,18 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const since = Number(q.get("$deltatoken"));
       const latest = new Map<string, boolean>();
       for (const c of state.eventChanges) if (c.seq > since) latest.set(c.id, c.removed);
-      items = [...latest].map(([id, removed]) => (removed || !state.events.has(id) ? { id, "@removed": { reason: "deleted" } } : state.events.get(id)!));
+      items = [...latest].map(([id, removed]) => (removed || !state.events.has(id) ? { id, "@removed": { reason: "deleted" } } : deltaForm(state.events.get(id)!)));
     } else {
       const from = q.get("startDateTime") ?? "";
       const to = q.get("endDateTime") ?? "";
       if (!from || !to) return graphError(reply, 400, "ErrorInvalidParameter", "startDateTime and endDateTime are required");
-      items = [...state.events.values()].filter(
-        (e) => eventInstant(e.start, e.isAllDay) < to && eventInstant(e.end, e.isAllDay) > from,
-      );
+      items = [...state.events.values()]
+        .filter((e) =>
+          e.type === "seriesMaster"
+            ? !e.hiddenFromDelta
+            : eventInstant(e.start, e.isAllDay) < to && eventInstant(e.end, e.isAllDay) > from,
+        )
+        .map(deltaForm);
     }
     const sid = b64url(randomBytes(6));
     const s: Session = { items, pageSize, deltaLink: `${base}?$deltatoken=${state.eventSeq}` };
@@ -400,6 +427,16 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       }
       reply(200, body);
     }
+  }
+
+  /** How calendarView delta presents an event: occurrences bare, everything else in full. */
+  function deltaForm(e: GraphEvent): Json {
+    if (e.bare) return { id: e.id, type: e.type, ...(e.seriesMasterId ? { seriesMasterId: e.seriesMasterId } : {}), start: e.start, end: e.end };
+    return fullForm(e);
+  }
+
+  function fullForm({ bare, hiddenFromDelta, ...rest }: GraphEvent): Json {
+    return rest;
   }
 
   function eventChange(id: string, removed = false) {
@@ -577,7 +614,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         return ok();
       case "GET /_test/event": {
         const e = state.events.get(url.searchParams.get("id") ?? "");
-        return e ? ok(e) : send(res, 404, { error: "no such event" });
+        return e ? ok(fullForm(e)) : send(res, 404, { error: "no such event" });
       }
       case "GET /_test/sent":
         return ok(state.sent);

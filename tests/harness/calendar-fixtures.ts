@@ -19,6 +19,12 @@ export type GraphEvent = {
   onlineMeeting: { joinUrl: string } | null;
   webLink: string;
   bodyPreview: string;
+  type: "singleInstance" | "occurrence" | "exception" | "seriesMaster";
+  seriesMasterId?: string;
+  /** Fake-only: delta sends this event bare (id, type, seriesMasterId, start, end), like Graph does for occurrences. */
+  bare?: boolean;
+  /** Fake-only: a series master that delta doesn't list (the app must GET it by id). */
+  hiddenFromDelta?: boolean;
 };
 
 /** Graph's UTC dateTime form: "2026-10-27T03:00:00.0000000". */
@@ -48,6 +54,10 @@ type Spec = {
   response?: string;
   join?: boolean;
   showAs?: string;
+  type?: GraphEvent["type"];
+  seriesMasterId?: string;
+  bare?: boolean;
+  hiddenFromDelta?: boolean;
 };
 
 export function makeEvent(s: Spec): GraphEvent {
@@ -69,12 +79,20 @@ export function makeEvent(s: Spec): GraphEvent {
     onlineMeeting: s.join ? { joinUrl: `https://teams.example/join/${s.id}` } : null,
     webLink: `https://outlook.office.com/calendar/item/${s.id}`,
     bodyPreview: "",
+    type: s.type ?? (s.seriesMasterId ? "occurrence" : "singleInstance"),
+    ...(s.seriesMasterId ? { seriesMasterId: s.seriesMasterId } : {}),
+    ...(s.bare ? { bare: true } : {}),
+    ...(s.hiddenFromDelta ? { hiddenFromDelta: true } : {}),
   };
 }
 
 /**
  * Default calendar:
- *   evt-standup-N   daily 9:00–9:15 standup, 10 days either side of today
+ *   evt-standup-N   daily 9:00–9:15 standup, 10 days either side of today: bare occurrences of
+ *                   evt-standup-series (a master delta does list)
+ *   evt-sync-N      weekly Wed 14:00 "Team sync": bare occurrences of evt-sync-series, a master
+ *                   delta doesn't list (fetched by id)
+ *   evt-bare        tomorrow 16:00 "Quarterly planning": a bare single event (fetched by id)
  *   evt-invite      today 11:00–12:00 "Design review", not yet answered (linked to msg-invite)
  *   evt-lunch       today 13:00–14:00
  *   evt-1on1 / evt-focus   today 15:00–15:45 and 15:30–16:30 (overlap)
@@ -83,12 +101,30 @@ export function makeEvent(s: Spec): GraphEvent {
  */
 export function defaultCalendar(now = new Date()): GraphEvent[] {
   const events: GraphEvent[] = [];
+  // Recurring series, the way calendarView delta delivers them: occurrences carry only
+  // their times; subject, organiser and attendees live on the master.
+  events.push(makeEvent({
+    id: "evt-standup-series", type: "seriesMaster", subject: "Standup", start: localAt(-10, 9, 0, now), end: localAt(-10, 9, 15, now),
+    organizer: SAM, attendees: [ME, PRIYA], join: true,
+  }));
   for (let d = -10; d <= 10; d++) {
     events.push(makeEvent({
-      id: `evt-standup-${d + 10}`, subject: "Standup", start: localAt(d, 9, 0, now), end: localAt(d, 9, 15, now),
-      organizer: SAM, attendees: [ME, PRIYA], join: true,
+      id: `evt-standup-${d + 10}`, subject: "", start: localAt(d, 9, 0, now), end: localAt(d, 9, 15, now),
+      seriesMasterId: "evt-standup-series", bare: true,
     }));
   }
+  const wed = (week: number) => localAt(((3 - now.getDay() + 7) % 7) + 7 * week, 14, 0, now);
+  events.push(makeEvent({
+    id: "evt-sync-series", type: "seriesMaster", subject: "Team sync", start: wed(-8), end: new Date(wed(-8).getTime() + 30 * 60_000),
+    location: "Room 2", organizer: PRIYA, attendees: [ME, SAM], hiddenFromDelta: true,
+  }));
+  for (let w = -2; w <= 2; w++) {
+    events.push(makeEvent({
+      id: `evt-sync-${w + 2}`, subject: "", start: wed(w), end: new Date(wed(w).getTime() + 30 * 60_000),
+      seriesMasterId: "evt-sync-series", bare: true,
+    }));
+  }
+  events.push(makeEvent({ id: "evt-bare", subject: "Quarterly planning", start: localAt(1, 16, 0, now), end: localAt(1, 17, 0, now), location: "Board room", bare: true }));
   events.push(makeEvent({
     id: "evt-invite", subject: "Design review", start: localAt(0, 11, 0, now), end: localAt(0, 12, 0, now),
     location: "Room 4 / Teams", organizer: { name: "Calendar", address: "calendar-noreply@contoso.com" },

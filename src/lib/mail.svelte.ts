@@ -8,6 +8,8 @@ import {
   type OutboxStatus,
   type Preferences,
   type RecentOpen,
+  type Invite,
+  type Rsvp,
   type SplitInfo,
   type SyncStatus,
   type ThreadRow,
@@ -75,6 +77,9 @@ class MailStore {
   thread = $state.raw<MessageRow[]>([]);
   /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
   threadFor = $state<string | null>(null);
+  /** The meeting invite in the open conversation, if any (for the RSVP card and y/m/n). */
+  invite = $state.raw<Invite | null>(null);
+  #inviteSeq = 0;
   /** Remote images allowed for the open conversation. */
   imagesFor = $state<string | null>(null);
 
@@ -211,11 +216,13 @@ class MailStore {
         this.view = "list";
         this.thread = [];
         this.threadFor = null;
+        this.invite = null;
       } else {
         const thread = await api.getThread(cur.accountId, cur.conversationId);
         if (seq !== this.#listSeq) return;
         this.thread = thread;
         this.threadFor = cur.conversationId;
+        this.#loadInvite();
       }
     }
   }
@@ -259,6 +266,7 @@ class MailStore {
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
+    this.#loadInvite();
     this.view = "reader";
     api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
     // Opening a conversation reads it, like every mail client; not worth an undo entry.
@@ -283,12 +291,14 @@ class MailStore {
     if (!t) {
       this.thread = [];
       this.threadFor = null;
+      this.invite = null;
       return;
     }
     const rows = await api.getThread(t.accountId, t.conversationId);
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
+    this.#loadInvite();
     this.#dwellTimer = setTimeout(() => {
       if (this.current?.conversationId !== t.conversationId || !this.previewing) return;
       api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
@@ -388,6 +398,38 @@ class MailStore {
   async actAt(index: number, action: Action) {
     this.selected = index;
     await this.act(action);
+  }
+
+  /** Finds the newest invite in the loaded thread and fetches its event. */
+  async #loadInvite() {
+    const seq = ++this.#inviteSeq;
+    const msg = [...this.thread].reverse().find((m) => m.messageType === "eventMessage");
+    if (!msg) {
+      this.invite = null;
+      return;
+    }
+    try {
+      const invite = await api.inviteEvent(msg.id);
+      if (seq === this.#inviteSeq) this.invite = invite;
+    } catch {
+      if (seq === this.#inviteSeq) this.invite = null;
+    }
+  }
+
+  async rsvp(response: Rsvp) {
+    const inv = this.invite;
+    if (!inv) return;
+    const status = { accept: "accepted", tentative: "tentativelyAccepted", decline: "declined" }[response];
+    // An invite fetch still in flight (e.g. from the refresh after opening) would bring
+    // back the server's old answer; it must not overwrite this one.
+    this.#inviteSeq++;
+    try {
+      await api.respondToEvent(inv.event.accountId, inv.event.remoteId, response);
+      this.invite = { ...inv, event: { ...inv.event, response: status } };
+      this.showToast({ text: { accept: "Accepted", tentative: "Tentatively accepted", decline: "Declined" }[response] });
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
   }
 
   async toggleRead() {

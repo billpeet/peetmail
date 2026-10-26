@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_outbox_search.sql"),
     include_str!("../migrations/0003_recent_opens.sql"),
     include_str!("../migrations/0004_calendar.sql"),
+    include_str!("../migrations/0005_event_series.sql"),
 ];
 
 pub struct Db {
@@ -133,6 +134,8 @@ pub struct MessageRow {
     pub is_flagged: bool,
     /// Role of the folder holding this copy (inbox, sentitems, archive, ...).
     pub folder_role: String,
+    /// "message", or "eventMessage" for meeting invites and responses.
+    pub message_type: String,
 }
 
 /// Fields from one Graph message. `None` means "not in this delta page",
@@ -449,7 +452,7 @@ pub fn count_threads(conn: &Connection, folder_id: i64, filter: &crate::query::F
 pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str) -> Result<Vec<MessageRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.id, m.subject, m.from_name, m.from_address, m.to_json, m.cc_json, m.received_at, m.preview,
-                m.is_read, m.has_attachments, m.is_flagged, COALESCE(f.role, '')
+                m.is_read, m.has_attachments, m.is_flagged, COALESCE(f.role, ''), m.message_type
          FROM messages m JOIN folders f ON f.id = m.folder_id
          WHERE m.account_id = ?1 AND m.conversation_id = ?2 AND COALESCE(f.role, '') <> 'deleteditems'
          ORDER BY m.received_at ASC, m.id ASC",
@@ -470,6 +473,7 @@ pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str) -> 
             has_attachments: r.get(9)?,
             is_flagged: r.get(10)?,
             folder_role: r.get(11)?,
+            message_type: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

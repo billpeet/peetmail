@@ -139,8 +139,10 @@ pub async fn get_message_body(state: State<'_, AppState>, message_id: i64) -> Re
     mail::message_body(&state, message_id).await
 }
 
+/// Ctrl+R: retry anything queued (e.g. after being offline), then pull changes.
 #[tauri::command]
 pub async fn sync_now(app: AppHandle) -> Result<()> {
+    outbox::kick(&app);
     mail::sync_all(&app).await
 }
 
@@ -372,6 +374,28 @@ pub fn list_events(
     to_date: String,
 ) -> Result<Vec<crate::calendar::Event>> {
     state.db.with(|c| crate::calendar::list_events(c, &from, &to, &from_date, &to_date))
+}
+
+/// The event behind a meeting invite (None for ordinary mail).
+#[tauri::command]
+pub async fn invite_event(state: State<'_, AppState>, message_id: i64) -> Result<Option<crate::calendar::Invite>> {
+    crate::calendar::invite_for_message(&state, message_id).await
+}
+
+/// RSVP to an event: updates the calendar at once and sends the reply in the background.
+#[tauri::command]
+pub fn respond_to_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    event_remote_id: String,
+    response: crate::outbox::Rsvp,
+) -> Result<()> {
+    state.db.with(|c| crate::calendar::respond(c, account_id, &event_remote_id, response))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(())
 }
 
 // ---------- images and attachments ----------
