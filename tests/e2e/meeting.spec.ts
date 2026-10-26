@@ -1,6 +1,6 @@
 import { signIn } from "../harness/app.ts";
 import { localAt } from "../harness/calendar-fixtures.ts";
-import { test, expect, row, snap, waitForSyncIdle } from "./fixtures";
+import { test, expect, row, snap, waitForSyncIdle, showRecentPane } from "./fixtures";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
 type Page = import("@playwright/test").Page;
@@ -53,7 +53,7 @@ test("if Graph rejects the meeting-type field, sync falls back and @odata.type s
 });
 
 test("viewing an invite jumps the calendar sidebar to its day and highlights it among that day's events", async ({ inbox: page }, testInfo) => {
-  await expect(page.getByTestId("pane-tab-recent")).toHaveAttribute("aria-selected", "true");
+  await showRecentPane(page); // the sidebar on Recent Opens: viewing the invite switches it, leaving restores it
   await openMovedMeeting(page);
 
   // The sidebar switches to the calendar on the meeting's day.

@@ -1,9 +1,10 @@
-import { test, expect, row, snap } from "./fixtures";
+import { test, expect, row, showRecentPane, snap } from "./fixtures";
 
 const recentIds = (page: import("@playwright/test").Page) =>
   page.getByTestId("recent-item").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.conversationId));
 
 test("opened conversations show in Recent Opens, newest first, and reopen on click", async ({ inbox: page }, testInfo) => {
+  await showRecentPane(page);
   await expect(page.getByTestId("recent-empty")).toBeVisible();
 
   await row(page, "conv-plain").click();
@@ -22,6 +23,7 @@ test("opened conversations show in Recent Opens, newest first, and reopen on cli
 });
 
 test("Recent Opens reopens a conversation that's no longer in the list", async ({ inbox: page }) => {
+  await showRecentPane(page);
   await row(page, "conv-plain").click();
   await page.keyboard.press("e"); // archive; the reader moves on
   await page.getByTestId("reader-back").click();
@@ -47,6 +49,7 @@ test("\ toggles the pane, and both the choice and the history survive a reload",
 
   await page.getByTestId("toggle-pane").click();
   await expect(page.getByTestId("right-pane")).toBeVisible();
+  await showRecentPane(page);
   await expect.poll(() => recentIds(page)).toEqual(["conv-plain"]);
 });
 

@@ -1,4 +1,4 @@
-import { test, expect, row, snap, syncNow } from "./fixtures";
+import { test, expect, row, snap, syncNow, showCalendarPane } from "./fixtures";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
 const serverResponse = async (fake: Fake) => (await fake.control("event?id=evt-invite")).responseStatus.response as string;
@@ -18,7 +18,7 @@ test("an invite shows an RSVP card; y accepts, locally at once and on the server
   expect(fake.state.sent.find((s) => s.kind === "rsvp")).toMatchObject({ eventId: "evt-invite", sendResponse: true });
 
   // The calendar reflects it too.
-  await page.keyboard.press("0");
+  await showCalendarPane(page);
   await expect(page.locator('[data-testid=cal-event][data-remote-id="evt-invite"]')).toHaveAttribute("data-response", "accepted");
 });
 
@@ -42,7 +42,7 @@ test("a queued RSVP survives a stale calendar delta and goes out once the server
   // The server still says "not responded" and reports it through delta.
   await fake.control("event", { id: "evt-invite", response: "notResponded" });
   await syncNow(page, fake);
-  await page.keyboard.press("0");
+  await showCalendarPane(page);
   await expect(page.locator('[data-testid=cal-event][data-remote-id="evt-invite"]')).toHaveAttribute("data-response", "accepted");
 
   // Back online: Ctrl+R retries the queued reply.

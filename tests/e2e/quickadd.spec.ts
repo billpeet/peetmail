@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { parseQuickEvent } from "../../src/lib/quickAdd.ts";
-import { test, expect, snap, syncNow } from "./fixtures";
+import { test, expect, snap, syncNow, showCalendarPane } from "./fixtures";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
 const creates = (fake: Fake) => fake.state.sent.filter((s) => s.kind === "create-event");
@@ -26,7 +26,7 @@ test("Shift+C, type it in plain words, check the preview, Enter creates it", asy
   await expect(page.getByTestId("quick-add")).toHaveCount(0);
   await expect(page.getByTestId("toast")).toContainText("Created");
   // Shows straight away in the sidebar, on its day (the fixture's own "Lunch with Sam" is today).
-  await page.keyboard.press("0");
+  await showCalendarPane(page);
   await expect(page.locator("[data-testid=cal-event][data-remote-id^='local:'], [data-testid=cal-event][data-remote-id^='evt-created-']")).toBeVisible();
 
   // ...and the server gets the right instant (UTC) and location.
@@ -68,7 +68,7 @@ test("if the server rejects it, the placeholder goes away and you're told", asyn
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("quick-add")).toHaveCount(0); // global keys are off until it closes
   await expect(page.getByTestId("toast")).toContainText("Couldn't sync a change", { timeout: 10_000 });
-  await page.keyboard.press("0");
+  await showCalendarPane(page);
   await expect(page.getByTestId("day-label")).toContainText("Tomorrow"); // the view went to the new event's day
   await expect(page.locator("[data-testid=cal-event]", { hasText: "Doomed meeting" })).toHaveCount(0);
 });
@@ -82,7 +82,7 @@ test("a placeholder survives a full calendar resync while the server is unreacha
   await expect(page.getByTestId("quick-add")).toHaveCount(0);
   await fake.control("config", { expireCalendarDelta: true });
   await syncNow(page, fake);
-  await page.keyboard.press("0");
+  await showCalendarPane(page);
   await expect(page.getByTestId("day-label")).toContainText("Tomorrow");
   const ev = page.locator("[data-testid=cal-event]", { hasText: "Patient meeting" });
   await expect(ev).toHaveAttribute("data-remote-id", /^local:/);

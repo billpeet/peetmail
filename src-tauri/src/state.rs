@@ -61,7 +61,7 @@ pub struct Preferences {
     pub layout: String,
     /// Width of the list in the preview layout, in CSS pixels.
     pub list_width: i64,
-    /// What the right pane shows: "recent" (Recent Opens) or "calendar" (day view).
+    /// What the right pane shows: "calendar" (day view, the default) or "recent" (Recent Opens).
     pub right_pane_tab: String,
     /// First day of the week in the calendar: 0 = Sunday, 1 = Monday ... 6 = Saturday.
     pub week_starts_on: i64,
@@ -157,8 +157,9 @@ impl AppState {
                 },
                 list_width: db::get_setting(c, KEY_LIST_WIDTH)?.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_LIST_WIDTH),
                 right_pane_tab: match db::get_setting(c, KEY_RIGHT_PANE_TAB)?.as_deref() {
-                    Some("calendar") => "calendar".into(),
-                    _ => "recent".into(),
+                    // Calendar unless Recent Opens was chosen.
+                    Some("recent") => "recent".into(),
+                    _ => "calendar".into(),
                 },
                 week_starts_on: db::get_setting(c, KEY_WEEK_STARTS_ON)?
                     .and_then(|v| v.parse::<i64>().ok())
@@ -187,7 +188,7 @@ impl AppState {
             db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())?;
             db::set_setting(c, KEY_LAYOUT, if p.layout == "preview" { "preview" } else { "list" })?;
             db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())?;
-            db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "calendar" { "calendar" } else { "recent" })?;
+            db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "recent" { "recent" } else { "calendar" })?;
             db::set_setting(c, KEY_WEEK_STARTS_ON, &p.week_starts_on.rem_euclid(7).to_string())?;
             db::set_setting(c, KEY_UNDO_SEND_SECS, &p.undo_send_secs.clamp(0, 60).to_string())?;
             db::set_setting(c, KEY_NOTIFY, match p.notify.as_str() { "off" => "off", "all" => "all", _ => "focused" })?;

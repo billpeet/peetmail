@@ -131,6 +131,19 @@ export async function syncNow(page: Page, fake: Fake) {
   await waitForSyncIdle(page);
 }
 
+/** Makes sure the right pane shows the calendar (the default; `0` toggles it with Recent Opens). */
+export async function showCalendarPane(page: Page) {
+  await expect(page.getByTestId("right-pane")).toBeVisible();
+  if ((await page.getByTestId("pane-tab-calendar").getAttribute("aria-selected")) !== "true") await page.keyboard.press("0");
+  await expect(page.getByTestId("day-view")).toBeVisible();
+}
+
+/** Switches the right pane to Recent Opens. */
+export async function showRecentPane(page: Page) {
+  await page.getByTestId("pane-tab-recent").click();
+  await expect(page.getByTestId("pane-tab-recent")).toHaveAttribute("aria-selected", "true");
+}
+
 export function row(page: Page, conversationId: string) {
   return page.locator(`[data-testid=thread-row][data-conversation-id="${conversationId}"]`);
 }

@@ -1,4 +1,4 @@
-import { test, expect, row, selectWithKeys, selectedRow, snap, waitForSyncIdle } from "./fixtures";
+import { test, expect, row, selectWithKeys, selectedRow, snap, waitForSyncIdle, showCalendarPane } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { GMAIL_ACCOUNT, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from "../harness/fake-gmail.ts";
 
@@ -148,8 +148,7 @@ async function findInDayView(page: Page, remoteId: string) {
 
 test("with two accounts, calendar events show whose they are, and details link to the right app", async ({ inbox: page }, testInfo) => {
   await addGmail(page);
-  await page.keyboard.press("0"); // calendar in the right pane
-  await expect(page.getByTestId("day-view")).toBeVisible();
+  await showCalendarPane(page);
   await expect.poll(async () => (await gEvents(page)).length, { timeout: 15_000 }).toBeGreaterThan(0);
 
   const google = await findInDayView(page, "gcal-dentist");
