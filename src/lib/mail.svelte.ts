@@ -23,8 +23,8 @@ const TOAST_MS = 5000;
 /** In the preview layout, a conversation counts as read once it's been shown this long. */
 const PREVIEW_DWELL_MS = 1500;
 
-export type View = "list" | "reader";
-export type Overlay = null | "help" | "settings" | "palette";
+export type View = "list" | "reader" | "calendar";
+export type Overlay = null | "help" | "settings" | "palette" | "event";
 
 export type ComposerState = {
   kind: DraftKind;

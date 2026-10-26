@@ -36,11 +36,54 @@ export function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
   return api.listEvents(from.toISOString(), to.toISOString(), localDate(from), localDate(to));
 }
 
+/** Monday of the week containing `d` (local midnight). */
+export function startOfWeek(d: Date): Date {
+  const day = startOfDay(d);
+  const offset = (day.getDay() + 6) % 7; // Mon = 0
+  return addDays(day, -offset);
+}
+
 class CalendarStore {
   /** Day shown in the day view (local midnight). */
   day = $state(startOfDay(new Date()));
   dayEvents = $state.raw<CalendarEvent[]>([]);
+  /** Monday of the week shown in the week view. */
+  weekStart = $state(startOfWeek(new Date()));
+  weekEvents = $state.raw<CalendarEvent[]>([]);
+  /** Event whose details are open. */
+  selected = $state.raw<CalendarEvent | null>(null);
   #seq = 0;
+  #weekSeq = 0;
+
+  get isThisWeek(): boolean {
+    return this.weekStart.getTime() === startOfWeek(new Date()).getTime();
+  }
+
+  async loadWeek() {
+    const seq = ++this.#weekSeq;
+    const events = await fetchEvents(this.weekStart, addDays(this.weekStart, 7));
+    if (seq === this.#weekSeq) this.weekEvents = events;
+  }
+
+  shiftWeek(n: number) {
+    this.weekStart = addDays(this.weekStart, 7 * n);
+    return this.loadWeek();
+  }
+
+  thisWeek() {
+    this.weekStart = startOfWeek(new Date());
+    return this.loadWeek();
+  }
+
+  /** Reloads everything that's showing (after a sync or a change). */
+  async refresh() {
+    await Promise.all([this.load(), this.loadWeek()]);
+    if (this.selected) {
+      const id = this.selected.id;
+      const fresh = [...this.dayEvents, ...this.weekEvents].find((e) => e.id === id);
+      if (fresh) this.selected = fresh;
+    }
+  }
 
   get isToday(): boolean {
     return this.day.getTime() === startOfDay(new Date()).getTime();

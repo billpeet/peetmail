@@ -6,6 +6,7 @@
   import type { RecentOpen } from "$lib/api";
   import ResizeHandle from "./ResizeHandle.svelte";
   import DayView from "./DayView.svelte";
+  import { calendar } from "$lib/calendar.svelte";
 
   const tab = $derived(mail.boot?.preferences.rightPaneTab ?? "recent");
 
@@ -64,7 +65,10 @@
     {/each}
   </div>
   {#if tab === "calendar"}
-    <DayView />
+    <DayView onselect={(e) => {
+      calendar.selected = e;
+      mail.overlay = "event";
+    }} />
   {:else}
   <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
     {#each groups as g (g.label)}

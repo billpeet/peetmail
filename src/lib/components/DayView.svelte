@@ -94,7 +94,11 @@
             data-cols={p.cols}
             onclick={() => onselect?.(e)}
             title="{e.subject}{e.location ? ` · ${e.location}` : ''}"
-            class="absolute overflow-hidden rounded-md px-2 py-1 text-left text-xs leading-tight {tone(e)}"
+            class={[
+              "absolute overflow-hidden rounded-md px-2 text-left leading-tight",
+              px < 22 ? "flex items-center text-[10px]" : "py-1 text-xs",
+              tone(e),
+            ]}
             style:top="{(p.top / 60) * HOUR + 1}px"
             style:height="{px}px"
             style:left="calc({(p.col / p.cols) * 100}% + 1px)"

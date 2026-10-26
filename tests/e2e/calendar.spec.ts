@@ -68,3 +68,54 @@ test("the calendar tab is remembered", async ({ inbox: page }) => {
   await expect(page.getByTestId("thread-row").first()).toBeVisible();
   await expect(page.getByTestId("day-view")).toBeVisible();
 });
+
+test("g c opens the week view; arrows change week, t returns, Esc goes back", async ({ inbox: page }, testInfo) => {
+  await page.keyboard.press("g");
+  await page.keyboard.press("c");
+  const week = page.getByTestId("week-view");
+  await expect(week).toBeVisible();
+  await expect(page.locator("[data-testid=week-day][data-today=true]")).toHaveCount(1);
+  await expect(page.locator('[data-testid=week-event][data-remote-id="evt-invite"]')).toBeVisible();
+  await expect(page.getByTestId("week-now-line")).toBeVisible();
+  await snap(page, testInfo, "week-view");
+
+  // Mail keys are off here: j doesn't move a hidden selection, e doesn't archive.
+  await page.keyboard.press("e");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("[data-testid=week-day][data-today=true]")).toHaveCount(0);
+  await page.keyboard.press("t");
+  await expect(page.locator("[data-testid=week-day][data-today=true]")).toHaveCount(1);
+
+  await page.keyboard.press("Escape");
+  await expect(week).toHaveCount(0);
+  await expect(page.locator('[data-testid=thread-row][data-conversation-id="conv-hostile"]')).toHaveCount(1);
+});
+
+test("all-day events span their days in the week view", async ({ inbox: page }) => {
+  await page.getByTestId("header-calendar").click();
+  const offsite = page.locator('[data-testid=week-all-day][data-remote-id="evt-offsite"]');
+  // The offsite is two days from now, so it may fall in next week.
+  if (!(await offsite.count())) await page.getByTestId("week-next").click();
+  await expect(offsite).toContainText("Team offsite");
+});
+
+test("clicking an event shows its details, from the week view and the day view", async ({ inbox: page }, testInfo) => {
+  await page.getByTestId("header-calendar").click();
+  await page.locator('[data-testid=week-event][data-remote-id="evt-invite"]').click();
+  const details = page.getByTestId("event-details");
+  await expect(page.getByTestId("event-title")).toHaveText("Design review");
+  await expect(page.getByTestId("event-location")).toHaveText("Room 4 / Teams");
+  await expect(page.getByTestId("event-attendees")).toContainText("Sam Carter");
+  await expect(page.getByTestId("event-response")).toContainText("No response");
+  await expect(page.getByTestId("event-join")).toBeVisible();
+  await snap(page, testInfo, "event-details");
+  await page.keyboard.press("Escape");
+  await expect(details).toHaveCount(0);
+
+  await page.keyboard.press("Escape"); // back to the inbox
+  await page.keyboard.press("0");
+  await event(page, "evt-lunch").click();
+  await expect(page.getByTestId("event-title")).toHaveText("Lunch with Sam");
+  await page.getByTestId("event-close").click();
+  await expect(details).toHaveCount(0);
+});
