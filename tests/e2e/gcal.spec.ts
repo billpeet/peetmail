@@ -107,6 +107,7 @@ test("quick add on a Gmail-only setup creates the event on Google Calendar", asy
   await expect(row(page, "g-thread-trip")).toBeVisible({ timeout: 20_000 });
   await waitForSyncIdle(page);
   await page.keyboard.press("Shift+C");
+  await expect(page.getByTestId("quick-add-account")).toHaveCount(0); // one account: no picker
   await page.getByTestId("quick-add-input").fill("Lunch with Sam tomorrow 1pm");
   await page.keyboard.press("Enter");
   await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "create-event").length, { timeout: 10_000 }).toBe(1);
@@ -126,4 +127,57 @@ test("without calendar permission, mail still works and calendar writes say to s
   await page.getByTestId("quick-add-input").fill("Lunch tomorrow 1pm");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("toast")).toContainText("sign in to this Google account again", { timeout: 15_000 });
+});
+
+/** Moves the sidebar day view to the event's local day (fixture times are UTC) and returns it. */
+async function findInDayView(page: Page, remoteId: string) {
+  const event = (await gEvents(page)).find((e) => e.remoteId === remoteId)!;
+  const localDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((localDay(new Date(event.startAt)) - localDay(new Date())) / 86_400_000);
+  for (let i = 0; i < days; i++) await page.getByTestId("day-next").click();
+  const ev = page.locator(`[data-testid=cal-event][data-remote-id="${remoteId}"]`);
+  await expect(ev).toBeVisible();
+  return ev;
+}
+
+test("with two accounts, calendar events show whose they are, and details link to the right app", async ({ inbox: page }, testInfo) => {
+  await addGmail(page);
+  await page.keyboard.press("0"); // calendar in the right pane
+  await expect(page.getByTestId("day-view")).toBeVisible();
+  await expect.poll(async () => (await gEvents(page)).length, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  const google = await findInDayView(page, "gcal-dentist");
+  await expect(google.getByTestId("event-account")).toHaveAttribute("title", GMAIL_ACCOUNT.email);
+  await snap(page, testInfo, "calendar-account-dots");
+  await google.click();
+  await expect(page.getByTestId("event-calendar")).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await expect(page.getByTestId("event-open")).toHaveText("Open in Google Calendar");
+  await page.keyboard.press("Escape");
+
+  await page.getByTestId("day-today").click();
+  const outlook = page.locator("[data-testid=cal-event]:not([data-remote-id^=gcal-])").first();
+  await expect(outlook).toBeVisible();
+  const msEmail = await outlook.getByTestId("event-account").getAttribute("title");
+  expect(msEmail).not.toBe(GMAIL_ACCOUNT.email);
+  await outlook.click();
+  await expect(page.getByTestId("event-calendar")).toContainText(`Outlook calendar · ${msEmail}`);
+  await expect(page.getByTestId("event-open")).toHaveText("Open in Outlook");
+});
+
+test("quick add asks which calendar when there are two, Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {
+  await addGmail(page);
+  await page.keyboard.press("Shift+C");
+  const picker = page.getByTestId("quick-add-account");
+  await expect(picker).toContainText("Outlook calendar");
+  await page.getByTestId("quick-add-input").fill("Climbing tomorrow 6pm");
+  await page.keyboard.press("Tab");
+  await expect(picker).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await expect(page.getByTestId("quick-add-input")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "create-event").length, { timeout: 10_000 }).toBe(1);
+  expect(gmail.state.sent.find((s) => s.kind === "create-event")!.body.summary).toBe("Climbing");
+  expect(fake.state.sent.filter((s: Record<string, any>) => s.kind === "create-event")).toEqual([]);
+
+  await page.keyboard.press("Shift+C");
+  await expect(page.getByTestId("quick-add-account")).toContainText("Google Calendar"); // remembered
 });

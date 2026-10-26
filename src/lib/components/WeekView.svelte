@@ -100,7 +100,7 @@
             data-tone={eventTone(e)}
             onclick={() => select(e)}
             style:grid-column="{from + 1} / {to + 1}"
-            class="mx-0.5 truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{e.subject}</button
+            class="mx-0.5 truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject}</button
           >
         {/each}
       </div>
@@ -140,7 +140,7 @@
               style:left="calc({(p.col / p.cols) * 100}% + 2px)"
               style:width="calc({100 / p.cols}% - 4px)"
             >
-              <span class="block truncate font-semibold">{e.subject || "(no title)"}</span>
+              <span class="block truncate font-semibold">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject || "(no title)"}</span>
               {#if px >= 32}<span class="block truncate text-ink-300">{time(p.item.start)}</span>{/if}
             </button>
           {/each}

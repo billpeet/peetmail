@@ -7,6 +7,8 @@
   import { senderName } from "$lib/format";
 
   const e = $derived(calendar.selected);
+  /** Whose calendar it's on. */
+  const account = $derived(e ? mail.accountOf(e.accountId) : null);
 
   const when = $derived.by(() => {
     if (!e) return "";
@@ -56,6 +58,12 @@
       <div data-testid="event-scroll" class="min-h-0 flex-1 overflow-y-auto px-5">
       <dl class="mt-3 space-y-2 text-sm text-ink-300">
         <div class="flex gap-3"><Clock size={16} class="mt-0.5 shrink-0 text-ink-500" /><span data-testid="event-when">{when}</span></div>
+        {#if account}
+          <div data-testid="event-calendar" class="flex items-center gap-3">
+            <span class="flex w-4 shrink-0 justify-center"><span class={["size-2.5 rounded-full", mail.accountColor(account.id)]}></span></span>
+            <span>{account.provider === "google" ? "Google Calendar" : "Outlook calendar"} · {account.email}</span>
+          </div>
+        {/if}
         {#if e.location}
           <div class="flex gap-3"><MapPin size={16} class="mt-0.5 shrink-0 text-ink-500" /><span data-testid="event-location" class="select-text">{e.location}</span></div>
         {/if}
@@ -91,7 +99,7 @@
         {/if}
         {#if e.webLink}
           <button data-testid="event-open" onclick={() => openUrl(e.webLink!)} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
-            <ExternalLink size={15} /> Open in Outlook
+            <ExternalLink size={15} /> {account?.provider === "google" ? "Open in Google Calendar" : "Open in Outlook"}
           </button>
         {/if}
       </div>

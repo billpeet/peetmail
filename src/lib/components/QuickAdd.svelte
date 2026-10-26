@@ -9,6 +9,20 @@
 
   let text = $state("");
   let busy = $state(false);
+
+  // Which account's calendar it goes on: the last one used (remembered), else the first.
+  const REMEMBER = "peetmail.quickAddAccount";
+  const remembered = Number(localStorage.getItem(REMEMBER));
+  let accountId = $state(mail.accounts.some((a) => a.id === remembered) ? remembered : (mail.account?.id ?? 0));
+  const target = $derived(mail.accountOf(accountId));
+
+  function cycleAccount(step: number) {
+    const list = mail.accounts;
+    if (list.length < 2) return;
+    const i = list.findIndex((a) => a.id === accountId);
+    accountId = list[(i + step + list.length) % list.length].id;
+    localStorage.setItem(REMEMBER, String(accountId));
+  }
   let input: HTMLInputElement | undefined = $state();
 
   const parsed = $derived(text.trim() ? parseQuickEvent(text) : null);
@@ -29,11 +43,11 @@
   });
 
   async function create() {
-    if (!parsed?.ok || !mail.account || busy) return;
+    if (!parsed?.ok || !target || busy) return;
     const e = parsed.event;
     busy = true;
     try {
-      await api.createEvent(mail.account.id, {
+      await api.createEvent(target.id, {
         subject: e.title,
         start: e.allDay ? localDate(e.start) : e.start.toISOString().replace(/\.\d{3}Z$/, "Z"),
         end: e.allDay ? localDate(e.end) : e.end.toISOString().replace(/\.\d{3}Z$/, "Z"),
@@ -57,6 +71,9 @@
     if (e.key === "Enter") {
       e.preventDefault();
       create();
+    } else if (e.key === "Tab" && mail.accounts.length > 1) {
+      e.preventDefault();
+      cycleAccount(e.shiftKey ? -1 : 1);
     }
   }
 
@@ -93,6 +110,20 @@
         <p class="text-ink-500">Try “standup tomorrow 9:30 15m”, “dentist 3 nov 2pm”, “offsite fri all day”.</p>
       {/if}
     </div>
+    {#if mail.accounts.length > 1 && target}
+      <button
+        data-testid="quick-add-account"
+        data-account-id={target.id}
+        onclick={() => cycleAccount(1)}
+        title="Change calendar (Tab)"
+        class="flex w-full items-center gap-2 border-t border-ink-800 px-4 py-2 text-left text-xs text-ink-300 hover:text-ink-100"
+      >
+        <span class="text-ink-500">Add to</span>
+        <span class={["size-2 rounded-full", mail.accountColor(target.id)]}></span>
+        <span>{target.provider === "google" ? "Google Calendar" : "Outlook calendar"} · {target.email}</span>
+        <span class="ml-auto text-ink-500"><kbd>Tab</kbd> change</span>
+      </button>
+    {/if}
     <div class="flex items-center justify-between border-t border-ink-800 px-4 py-2 text-xs text-ink-500">
       <span><kbd>Enter</kbd> create · <kbd>Esc</kbd> cancel</span>
       <span>Adds to your calendar; no invitations are sent.</span>
