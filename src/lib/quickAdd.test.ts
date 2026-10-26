@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseQuickEvent, type QuickEvent } from "./quickAdd";
+import { parseQuickEvent, parseSendTime, type QuickEvent } from "./quickAdd";
 
 // Monday 26 Oct 2026, 11:30 local.
 const now = new Date(2026, 9, 26, 11, 30);
@@ -61,5 +61,32 @@ describe("parseQuickEvent", () => {
   it("explains what's missing", () => {
     expect(parseQuickEvent("just some words", now)).toEqual({ ok: false, reason: expect.stringContaining("time or a day") });
     expect(parseQuickEvent("fri 1pm", now)).toEqual({ ok: false, reason: "Add a title" });
+  });
+});
+
+describe("parseSendTime", () => {
+  const send = (s: string) => {
+    const r = parseSendTime(s, now);
+    if (!r.ok) throw new Error(`"${s}" failed: ${r.reason}`);
+    return r.at;
+  };
+
+  it("reads times, days and relative offsets", () => {
+    expect(send("tomorrow 9am")).toEqual(at(27, 9));
+    expect(send("3pm")).toEqual(at(26, 15));
+    expect(send("fri")).toEqual(at(30, 8)); // a day alone: 8am
+    expect(send("tomorrow")).toEqual(at(27, 8));
+    expect(send("in 2 hours")).toEqual(at(26, 13, 30));
+    expect(send("in 45 min")).toEqual(at(26, 12, 15));
+    expect(send("3 nov 14:00")).toEqual(new Date(2026, 10, 3, 14));
+    expect(send("mon 9am")).toEqual(new Date(2026, 10, 2, 9)); // today is Monday, 9am has gone: next week
+    expect(send("mon 3pm")).toEqual(at(26, 15)); // still to come today
+  });
+
+  it("rejects the past and leftovers", () => {
+    expect(parseSendTime("today", now)).toEqual({ ok: false, reason: "That time has already passed" }); // 8am today
+    expect(parseSendTime("tomorrow 9am please", now)).toEqual({ ok: false, reason: 'Didn\'t understand "please"' });
+    expect(parseSendTime("whenever", now)).toMatchObject({ ok: false });
+    expect(parseSendTime("", now)).toMatchObject({ ok: false });
   });
 });

@@ -181,3 +181,36 @@ function cleanTitle(rest: string): string {
     .trim();
   return t ? t[0].toUpperCase() + t.slice(1) : "";
 }
+
+export type SendTimeResult = { ok: true; at: Date } | { ok: false; reason: string };
+
+/** Morning default for "send tomorrow" and other dates without a time. */
+const SEND_MORNING_HOUR = 8;
+
+/**
+ * When to send a scheduled message: "tomorrow 9am", "mon", "in 2 hours", "3 nov 14:00".
+ * Reuses the quick add parser; a date with no time means 8am that day.
+ */
+export function parseSendTime(input: string, now = new Date()): SendTimeResult {
+  const text = input.trim();
+  if (!text) return { ok: false, reason: "Type a time, e.g. \"tomorrow 9am\"" };
+  const rel = text.match(/^in\s+(\d+(?:\.\d+)?)\s*(m|min|mins|minutes?|h|hrs?|hours?)$/i);
+  if (rel) {
+    const mins = Number(rel[1]) * (/^h/i.test(rel[2]) ? 60 : 1);
+    return { ok: true, at: new Date(now.getTime() + Math.round(mins) * 60_000) };
+  }
+  // A dummy title soaks up the parse; anything else left over wasn't understood.
+  const r = parseQuickEvent(`Send ${text}`, now);
+  if (!r.ok) return { ok: false, reason: "Add a time or a day, e.g. \"tomorrow 9am\"" };
+  if (r.event.title !== "Send") return { ok: false, reason: `Didn't understand "${r.event.title.replace(/^Send\s*/, "")}"` };
+  if (r.event.location) return { ok: false, reason: `Didn't understand "@ ${r.event.location}"` };
+  let at = r.event.allDay
+    ? new Date(r.event.start.getFullYear(), r.event.start.getMonth(), r.event.start.getDate(), SEND_MORNING_HOUR)
+    : r.event.start;
+  // "mon 9am" on a Monday afternoon: next Monday, not this morning.
+  if (at.getTime() <= now.getTime() && WEEKDAY_WORD.test(text)) at = new Date(at.getFullYear(), at.getMonth(), at.getDate() + 7, at.getHours(), at.getMinutes());
+  if (at.getTime() <= now.getTime()) return { ok: false, reason: "That time has already passed" };
+  return { ok: true, at };
+}
+
+const WEEKDAY_WORD = new RegExp(String.raw`\b(?:${WD})\b`, "i");

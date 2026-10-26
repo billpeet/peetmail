@@ -99,6 +99,24 @@ pub struct Draft {
     pub subject: String,
     /// Plain text as typed; converted to HTML when sent.
     pub body: String,
+    /// When the user scheduled it (UTC RFC 3339). None: sent after the undo delay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_at: Option<String>,
+    /// Local id of the message replied to or forwarded, so a cancelled send can reopen
+    /// the composer as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_message_id: Option<i64>,
+}
+
+/// A send waiting in the outbox (undo window or scheduled).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedSend {
+    pub id: i64,
+    pub account_id: i64,
+    /// When it goes out (UTC).
+    pub send_at: String,
+    pub draft: Draft,
 }
 
 #[derive(Clone, Serialize)]
@@ -133,6 +151,44 @@ pub fn enqueue(conn: &Connection, account_id: i64, remote_id: Option<&str>, op: 
     )?)
 }
 
+/// Queues an op to run at an absolute time (UTC RFC 3339).
+pub fn enqueue_at(conn: &Connection, account_id: i64, remote_id: Option<&str>, op: &Op, at: chrono::DateTime<chrono::Utc>) -> Result<i64> {
+    // Same text format as strftime('%Y-%m-%dT%H:%M:%fZ'), since `take_due` compares strings.
+    let at = at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    Ok(conn.query_row(
+        "INSERT INTO outbox (account_id, remote_id, op, not_before) VALUES (?1, ?2, ?3, ?4) RETURNING id",
+        params![account_id, remote_id, serde_json::to_string(op)?, at],
+        |r| r.get(0),
+    )?)
+}
+
+/// Sends that haven't gone out yet, soonest first. `scheduled_only` skips ones that are
+/// just waiting out the undo delay.
+pub fn queued_sends(conn: &Connection, scheduled_only: bool) -> Result<Vec<QueuedSend>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_id, not_before, op FROM outbox
+         WHERE status = 'pending' AND json_extract(op, '$.type') = 'send' ORDER BY not_before, id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, account_id, send_at, op) = row?;
+        if let Op::Send(draft) = serde_json::from_str(&op)? {
+            if !scheduled_only || draft.send_at.is_some() {
+                out.push(QueuedSend { id, account_id, send_at, draft });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Takes a send back out of the queue before it goes. None if it has already started
+/// (or doesn't exist).
+pub fn take_send(conn: &Connection, id: i64) -> Result<Option<QueuedSend>> {
+    let Some(q) = queued_sends(conn, false)?.into_iter().find(|q| q.id == id) else { return Ok(None) };
+    Ok(cancel(conn, id)?.then_some(q))
+}
+
 /// Deletes a queued op if it hasn't started. Returns true if it was cancelled.
 pub fn cancel(conn: &Connection, id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM outbox WHERE id = ?1 AND status = 'pending'", [id])? == 1)
@@ -156,7 +212,11 @@ pub fn reset_inflight(conn: &Connection) -> Result<()> {
 
 pub fn status(conn: &Connection) -> Result<OutboxStatus> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FILTER (WHERE status IN ('pending', 'inflight')),
+        // Sends still waiting for their time (undo delay, scheduled) aren't "changes
+        // waiting to sync"; they have their own UI.
+        "SELECT COUNT(*) FILTER (WHERE status = 'inflight' OR (status = 'pending' AND NOT (
+                    json_extract(op, '$.type') = 'send' AND attempts = 0
+                    AND not_before > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))),
                 COUNT(*) FILTER (WHERE status = 'failed'),
                 (SELECT last_error FROM outbox WHERE status = 'failed' ORDER BY id DESC LIMIT 1)
          FROM outbox",
@@ -209,13 +269,19 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
     let mut sent_any = false;
     loop {
         let Some(row) = state.db.with(|c| take_due(c))? else {
-            // Nothing due now. If something is waiting out its grace period, sleep and retry.
+            // Nothing due now. While anything is waiting (grace period, undo delay, a
+            // scheduled send, a retry backoff), keep watching in short naps, so an op queued
+            // meanwhile (a 2s triage op during a send's undo delay) doesn't wait for the
+            // longer one, and scheduled sends go out on time.
+            if std::mem::take(&mut sent_any) {
+                sync_soon(app); // don't hold it back while a later op waits
+            }
             match state.db.with(|c| next_due_in(c))? {
-                Some(wait) if wait <= Duration::from_secs(30) => {
-                    tokio::time::sleep(wait + Duration::from_millis(20)).await;
+                Some(wait) => {
+                    tokio::time::sleep(wait.min(Duration::from_secs(1)) + Duration::from_millis(20)).await;
                     continue;
                 }
-                _ => break,
+                None => break,
             }
         };
 
@@ -269,13 +335,17 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
         }
     }
     if sent_any {
-        // Pull the server's view (sent copies, moved folders) promptly.
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = mail::sync_all(&app).await;
-        });
+        sync_soon(app);
     }
     Ok(())
+}
+
+/// Pulls the server's view (sent copies, moved folders) promptly after ops went out.
+fn sync_soon(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = mail::sync_all(&app).await;
+    });
 }
 
 fn is_permanent(e: &AppError) -> bool {
@@ -300,7 +370,14 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
             msg_url(rid()?),
             json!({ "flag": { "flagStatus": if *value { "flagged" } else { "notFlagged" } } }),
         ),
-        Op::Move { destination } => (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination })),
+        Op::Move { destination } => {
+            let destination = if destination == crate::actions::SNOOZE_DEST {
+                snooze_folder(state, row.account_id).await?
+            } else {
+                destination.clone()
+            };
+            (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination }))
+        }
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
         Op::Respond { response } => (
             Method::POST,
@@ -315,6 +392,42 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
         &[PREFER_IMMUTABLE]
     };
     mail::graph_call(state, row.account_id, method, &url, Some(&body), prefer).await
+}
+
+const SNOOZE_FOLDER_NAME: &str = "PeetMail Snoozed";
+
+/// The server folder snoozed mail waits in: found by name, or created hidden (so other
+/// mail apps don't list it). Its id is cached in settings.
+async fn snooze_folder(state: &AppState, account_id: i64) -> Result<String> {
+    let key = format!("snooze_folder:{account_id}");
+    if let Some(id) = state.db.with(|c| crate::db::get_setting(c, &key))? {
+        return Ok(id);
+    }
+    let base = graph::base();
+    let list = mail::graph_call(state, account_id, Method::GET, &format!("{base}/me/mailFolders?includeHiddenFolders=true&$top=250"), None, &[PREFER_IMMUTABLE]).await?;
+    let found = list["value"]
+        .as_array()
+        .and_then(|v| v.iter().find(|f| f["displayName"] == SNOOZE_FOLDER_NAME))
+        .and_then(|f| f["id"].as_str())
+        .map(String::from);
+    let id = match found {
+        Some(id) => id,
+        None => {
+            let url = format!("{base}/me/mailFolders");
+            let hidden = json!({ "displayName": SNOOZE_FOLDER_NAME, "isHidden": true });
+            let created = match mail::graph_call(state, account_id, Method::POST, &url, Some(&hidden), &[PREFER_IMMUTABLE]).await {
+                Ok(v) => v,
+                // Not every mailbox accepts hidden folders; a visible one still works.
+                Err(AppError::Graph { status: 400, .. }) => {
+                    mail::graph_call(state, account_id, Method::POST, &url, Some(&json!({ "displayName": SNOOZE_FOLDER_NAME })), &[PREFER_IMMUTABLE]).await?
+                }
+                Err(e) => return Err(e),
+            };
+            created["id"].as_str().map(String::from).ok_or_else(|| AppError::Other("created folder has no id".into()))?
+        }
+    };
+    state.db.with(|c| crate::db::set_setting(c, &key, &id))?;
+    Ok(id)
 }
 
 /// POST /me/events body. Timed events go in UTC; all-day events are midnights in the
@@ -382,7 +495,7 @@ mod tests {
 
     #[test]
     fn op_json_round_trips() {
-        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into() });
+        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into(), send_at: None, reference_message_id: Some(7) });
         let s = serde_json::to_string(&op).unwrap();
         assert!(s.contains(r#""type":"send""#));
         assert!(s.contains(r#""kind":"replyAll""#));
@@ -407,6 +520,39 @@ mod tests {
 
             reset_inflight(c)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(now));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn sends_wait_in_the_queue_until_due_and_can_be_taken_back() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
+            let draft = |send_at: Option<&str>| Draft {
+                kind: DraftKind::New, to: vec!["p@x.com".into()], cc: vec![], subject: "Hi".into(), body: "b".into(),
+                send_at: send_at.map(String::from), reference_message_id: None,
+            };
+            let later = chrono::Utc::now() + chrono::Duration::hours(20);
+            let undo_window = enqueue(c, a, None, &Op::Send(draft(None)), Duration::from_secs(10))?;
+            let scheduled = enqueue_at(c, a, None, &Op::Send(draft(Some(&later.to_rfc3339()))), later)?;
+            assert!(take_due(c)?.is_none(), "nothing is due yet");
+            assert_eq!(status(c)?.pending, 0, "waiting sends aren't unsynced changes");
+
+            let all = queued_sends(c, false)?;
+            assert_eq!(all.iter().map(|q| q.id).collect::<Vec<_>>(), vec![undo_window, scheduled]);
+            assert_eq!(queued_sends(c, true)?.iter().map(|q| q.id).collect::<Vec<_>>(), vec![scheduled]);
+            assert!(all[1].send_at.starts_with(&later.format("%Y-%m-%dT%H:%M").to_string()));
+
+            let back = take_send(c, undo_window)?.expect("still queued");
+            assert_eq!(back.draft.subject, "Hi");
+            assert!(take_send(c, undo_window)?.is_none(), "already taken");
+
+            // Once it's in flight it can't be taken back.
+            c.execute("UPDATE outbox SET not_before = '2000-01-01T00:00:00.000Z' WHERE id = ?1", [scheduled])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(scheduled));
+            assert!(take_send(c, scheduled)?.is_none());
             Ok(())
         })
         .unwrap();
@@ -440,7 +586,7 @@ mod tests {
 
     #[test]
     fn builds_send_requests() {
-        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into() };
+        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into(), send_at: None, reference_message_id: None };
         let (m, url, body) = send_request("https://g", Some("R1"), &d).unwrap();
         assert_eq!(m, Method::POST);
         assert_eq!(url, "https://g/me/messages/R1/forward");

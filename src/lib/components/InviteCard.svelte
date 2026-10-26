@@ -25,7 +25,7 @@
 
   /** You answered an earlier version of this meeting in this thread. */
   const earlierAnswer = $derived.by(() => {
-    const me = mail.account?.email.toLowerCase();
+    const me = mail.accountOf(mail.invite?.event.accountId ?? -1)?.email.toLowerCase() ?? mail.account?.email.toLowerCase();
     const requests = mail.thread.filter((m) => m.meetingMessageType === "meetingRequest");
     const latest = requests.at(-1)?.receivedAt ?? "";
     return [...mail.thread]

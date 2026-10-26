@@ -36,8 +36,7 @@
     return out;
   });
 
-  const me = $derived(mail.account?.email.toLowerCase());
-  const who = (r: RecentOpen) => (r.fromAddress?.toLowerCase() === me ? "Me" : senderName(r.fromName, r.fromAddress));
+  const who = (r: RecentOpen) => (mail.isMe(r.fromAddress) ? "Me" : senderName(r.fromName, r.fromAddress));
   const isOpen = (r: RecentOpen) => mail.view === "reader" && mail.current?.conversationId === r.conversationId;
 </script>
 

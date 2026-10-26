@@ -125,7 +125,12 @@ pub fn list_threads(
         Some(tab) => query::split_filter(&split_queries(&state)?, tab),
         None => query::compile(query.as_deref().unwrap_or("")),
     };
-    let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::AllMail);
+    // No folder: a split tab means the unified inbox, plain search means all mail.
+    let scope = match (folder_id, split) {
+        (Some(f), _) => Scope::Folder(f),
+        (None, Some(_)) => Scope::Inboxes,
+        (None, None) => Scope::AllMail,
+    };
     state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))
 }
 
@@ -201,6 +206,83 @@ pub fn thread_action(
     Ok(ActionOutcome { label, changed })
 }
 
+/// Snoozes a conversation until `until` (RFC 3339). Undoable like any triage action.
+#[tauri::command]
+pub fn snooze_thread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    conversation_id: String,
+    until: String,
+) -> Result<ActionOutcome> {
+    let until = chrono::DateTime::parse_from_rfc3339(&until).map_err(|_| AppError::Other(format!("\"{until}\" isn't a time")))?.with_timezone(&chrono::Utc);
+    if until <= chrono::Utc::now() {
+        return Err(AppError::Other("that time has already passed".into()));
+    }
+    let entry = state.db.with(|c| actions::snooze(c, account_id, &conversation_id, until))?;
+    let changed = entry.snooze.is_some() as usize;
+    if changed > 0 {
+        let mut undo = state.undo.lock().expect("undo mutex");
+        undo.push(entry);
+        let excess = undo.len().saturating_sub(50);
+        undo.drain(..excess);
+    }
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    mail_changed(&app, account_id);
+    Ok(ActionOutcome { label: (changed > 0).then(|| "Snoozed".into()), changed })
+}
+
+/// Brings a snoozed conversation back to the inbox now.
+#[tauri::command]
+pub fn unsnooze_thread(app: AppHandle, state: State<'_, AppState>, account_id: i64, conversation_id: String) -> Result<()> {
+    state.db.with(|c| actions::wake(c, Some((account_id, &conversation_id))))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    mail_changed(&app, account_id);
+    Ok(())
+}
+
+// ---------- desktop: start with Windows, quit ----------
+
+/// Tests and the drive CLI keep "start with Windows" in settings instead of the real
+/// registry Run key (PEETMAIL_FAKE_AUTOSTART=1, debug builds only).
+fn fake_autostart() -> bool {
+    crate::testenv::flag("PEETMAIL_FAKE_AUTOSTART")
+}
+
+#[tauri::command]
+pub fn get_autostart(app: AppHandle, state: State<'_, AppState>) -> Result<bool> {
+    if fake_autostart() {
+        return Ok(state.db.with(|c| db::get_setting(c, "fake_autostart"))?.as_deref() == Some("1"));
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Starts PeetMail (hidden, in the tray) when you sign in to Windows.
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<()> {
+    if fake_autostart() {
+        return state.db.with(|c| db::set_setting(c, "fake_autostart", if enabled { "1" } else { "0" }));
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    let l = app.autolaunch();
+    if enabled { l.enable() } else { l.disable() }.map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Really quits (closing the window only hides it to the tray).
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+/// Snoozed conversations, soonest back first.
+#[tauri::command]
+pub fn list_snoozed(state: State<'_, AppState>) -> Result<Vec<actions::SnoozedThread>> {
+    state.db.with(|c| actions::list_snoozed(c))
+}
+
 /// Undoes the most recent action. Returns its label ("Archived") or None if nothing to undo.
 #[tauri::command]
 pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>> {
@@ -233,11 +315,25 @@ pub struct SendInput {
     #[serde(default)]
     subject: String,
     body: String,
+    /// Send later, at this time (RFC 3339). None: after the undo delay.
+    #[serde(default)]
+    send_at: Option<String>,
 }
 
-/// Queues a message for sending and returns immediately.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendOutcome {
+    /// Outbox id, for undo / cancel.
+    id: i64,
+    /// When it goes out (UTC).
+    send_at: String,
+    scheduled: bool,
+}
+
+/// Queues a message for sending and returns immediately. It waits out the undo delay,
+/// or until `send_at` when scheduled.
 #[tauri::command]
-pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<()> {
+pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<SendOutcome> {
     let reference = match input.reference_message_id {
         Some(id) => Some(state.db.with(|c| db::message_remote(c, id))?.ok_or_else(|| AppError::Other("original message not found".into()))?.1),
         None => None,
@@ -246,17 +342,57 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         return Err(AppError::Other("replies and forwards need the original message".into()));
     }
     let clean = |v: Vec<String>| v.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect::<Vec<_>>();
-    let draft = Draft { kind: input.kind, to: clean(input.to), cc: clean(input.cc), subject: input.subject, body: input.body };
+    let when = match &input.send_at {
+        Some(s) => {
+            let t = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| AppError::Other(format!("\"{s}\" isn't a time")))?.with_timezone(&chrono::Utc);
+            if t <= chrono::Utc::now() {
+                return Err(AppError::Other("that time has already passed".into()));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    let draft = Draft {
+        kind: input.kind,
+        to: clean(input.to),
+        cc: clean(input.cc),
+        subject: input.subject,
+        body: input.body,
+        send_at: when.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        reference_message_id: input.reference_message_id,
+    };
     if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
     }
     if let Some(bad) = draft.to.iter().chain(&draft.cc).find(|a| !a.contains('@')) {
         return Err(AppError::Other(format!("\"{bad}\" isn't an email address")));
     }
-    state.db.with(|c| outbox::enqueue(c, input.account_id, reference.as_deref(), &Op::Send(draft), std::time::Duration::ZERO))?;
+    let delay = state.preferences()?.undo_send_secs;
+    let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
+    let id = state.db.with(|c| outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at))?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
-    Ok(())
+    let _ = app.emit(EVENT_SCHEDULED, ());
+    Ok(SendOutcome { id, send_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), scheduled: when.is_some() })
+}
+
+/// Fired when the set of queued sends changes (scheduled list).
+pub const EVENT_SCHEDULED: &str = "scheduled-changed";
+
+/// Takes a send back before it goes (undo send, or cancelling a scheduled one).
+/// Returns the draft so the composer can reopen, or None if it has already gone.
+#[tauri::command]
+pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<Option<outbox::QueuedSend>> {
+    let taken = state.db.with(|c| outbox::take_send(c, id))?;
+    outbox::emit_status(&app, &state);
+    let _ = app.emit(EVENT_SCHEDULED, ());
+    Ok(taken)
+}
+
+/// Messages scheduled to send later, soonest first.
+#[tauri::command]
+pub fn scheduled_sends(state: State<'_, AppState>) -> Result<Vec<outbox::QueuedSend>> {
+    state.db.with(|c| outbox::queued_sends(c, true))
 }
 
 #[tauri::command]
@@ -322,7 +458,7 @@ fn split_queries(state: &AppState) -> Result<Vec<String>> {
 /// Tabs of the split inbox for the given inbox folder: the built-in Inbox first, then the
 /// user's splits, each with conversation counts. Every message lands in exactly one tab.
 #[tauri::command]
-pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<SplitInfo>> {
+pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>) -> Result<Vec<SplitInfo>> {
     let splits = load_splits(&state)?;
     let queries: Vec<String> = splits.iter().map(|s| s.query.clone()).collect();
     let tabs = std::iter::once(("Inbox".to_string(), String::new(), true))
@@ -330,7 +466,8 @@ pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<Spl
     state.db.with(|c| {
         tabs.enumerate()
             .map(|(i, (name, query, builtin))| {
-                let (count, unread) = db::count_threads(c, folder_id, &query::split_filter(&queries, i))?;
+                let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::Inboxes);
+                let (count, unread) = db::count_threads(c, scope, &query::split_filter(&queries, i))?;
                 Ok(SplitInfo { name, query, builtin, count, unread })
             })
             .collect()
@@ -347,6 +484,56 @@ pub fn set_splits(state: State<'_, AppState>, splits: Vec<Split>) -> Result<()> 
         .filter(|s| !s.name.is_empty() && !s.query.is_empty())
         .collect();
     state.db.with(|c| db::set_setting(c, KEY_SPLITS, &serde_json::to_string(&splits)?))
+}
+
+// ---------- snippets ----------
+
+const KEY_SNIPPETS: &str = "snippets";
+
+/// Reusable text for the composer (`;name`). The body may use {first_name}, {name},
+/// {my_first_name} and {my_name}; the frontend fills them in.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub name: String,
+    pub body: String,
+}
+
+/// Trims, drops blank rows and rejects duplicate names (case-insensitive), so `;name`
+/// always means one snippet.
+fn clean_snippets(snippets: Vec<Snippet>) -> Result<Vec<Snippet>> {
+    let mut out: Vec<Snippet> = Vec::new();
+    for s in snippets {
+        let name = s.name.trim().to_string();
+        let body = s.body.trim_end().to_string();
+        if name.is_empty() && body.trim().is_empty() {
+            continue;
+        }
+        if name.is_empty() {
+            return Err(AppError::Other("every snippet needs a name".into()));
+        }
+        if name.contains(char::is_whitespace) {
+            return Err(AppError::Other(format!("snippet names can't contain spaces (\"{name}\")")));
+        }
+        if out.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
+            return Err(AppError::Other(format!("there's already a snippet called \"{name}\"")));
+        }
+        out.push(Snippet { name, body });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    let raw = state.db.with(|c| db::get_setting(c, KEY_SNIPPETS))?;
+    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn set_snippets(state: State<'_, AppState>, snippets: Vec<Snippet>) -> Result<Vec<Snippet>> {
+    let clean = clean_snippets(snippets)?;
+    state.db.with(|c| db::set_setting(c, KEY_SNIPPETS, &serde_json::to_string(&clean)?))?;
+    Ok(clean)
 }
 
 // ---------- recent opens ----------
@@ -454,6 +641,17 @@ pub async fn download_attachment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snippets_are_trimmed_blank_rows_dropped_and_names_unique() {
+        use super::{clean_snippets, Snippet};
+        let snip = |name: &str, body: &str| Snippet { name: name.into(), body: body.into() };
+        let clean = clean_snippets(vec![snip(" thanks ", "Thanks {first_name}!\n\n"), snip("", "  "), snip("intro", "Hi")]).unwrap();
+        assert_eq!(clean, vec![snip("thanks", "Thanks {first_name}!"), snip("intro", "Hi")]);
+        assert!(clean_snippets(vec![snip("a", "x"), snip("A", "y")]).unwrap_err().to_string().contains("already"));
+        assert!(clean_snippets(vec![snip("", "body only")]).unwrap_err().to_string().contains("needs a name"));
+        assert!(clean_snippets(vec![snip("two words", "x")]).unwrap_err().to_string().contains("spaces"));
+    }
+
     #[test]
     fn migration_drops_only_the_old_important_default() {
         let split = |n: &str, q: &str| super::Split { name: n.into(), query: q.into() };

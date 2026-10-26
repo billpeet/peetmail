@@ -16,6 +16,8 @@ enum Term {
     Subject(String),
     Is(String),
     HasAttachment,
+    /// account:work — mail of accounts whose address contains this.
+    Account(String),
     Text(String),
     Phrase(String),
 }
@@ -76,6 +78,7 @@ fn parse(input: &str) -> Vec<Clause> {
                     "subject" => Term::Subject(unquote(v)),
                     "is" => Term::Is(v.to_ascii_lowercase()),
                     "has" if v.starts_with("attach") => Term::HasAttachment,
+                    "account" | "in" => Term::Account(unquote(v)),
                     _ => Term::Text(unquote(&body)),
                 },
                 _ if body.starts_with('"') => Term::Phrase(unquote(&body)),
@@ -107,6 +110,10 @@ pub fn compile(input: &str) -> Filter {
     let mut params = Vec::new();
     for Clause { negated, term } in parse(input) {
         let cond = match term {
+            Term::Account(v) => {
+                params.push(like(&v));
+                "m.account_id IN (SELECT id FROM accounts WHERE email LIKE ? ESCAPE '\\')".to_string()
+            }
             Term::From(v) => {
                 params.extend([like(&v), like(&v)]);
                 "(m.from_address LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\')".to_string()

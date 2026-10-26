@@ -66,6 +66,7 @@ test("if the server rejects it, the placeholder goes away and you're told", asyn
   await fake.control("config", { failWrites: 400 });
   await quickAdd(page, "Doomed meeting tomorrow 3pm");
   await page.keyboard.press("Enter");
+  await expect(page.getByTestId("quick-add")).toHaveCount(0); // global keys are off until it closes
   await expect(page.getByTestId("toast")).toContainText("Couldn't sync a change", { timeout: 10_000 });
   await page.keyboard.press("0");
   await expect(page.getByTestId("day-label")).toContainText("Tomorrow"); // the view went to the new event's day
@@ -76,6 +77,9 @@ test("a placeholder survives a full calendar resync while the server is unreacha
   await fake.control("config", { failWrites: 500 }); // transient, but not a throttle (503 is retried in-call for ~30s)
   await quickAdd(page, "Patient meeting tomorrow 4pm");
   await page.keyboard.press("Enter");
+  // Global keys (Ctrl+R below) are off while the dialog is open, and it closes only once
+  // the create call returns; under load a key pressed sooner is dropped.
+  await expect(page.getByTestId("quick-add")).toHaveCount(0);
   await fake.control("config", { expireCalendarDelta: true });
   await syncNow(page, fake);
   await page.keyboard.press("0");

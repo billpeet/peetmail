@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_calendar.sql"),
     include_str!("../migrations/0005_event_series.sql"),
     include_str!("../migrations/0006_meeting_messages.sql"),
+    include_str!("../migrations/0007_snooze.sql"),
 ];
 
 pub struct Db {
@@ -117,6 +118,10 @@ pub struct ThreadRow {
     pub unread_count: i64,
     pub is_flagged: bool,
     pub has_attachments: bool,
+    /// What the list sorts by: received_at, or the wake time of a snooze.
+    pub sort_at: String,
+    /// Back from a snooze (sorted by its wake time, not its date).
+    pub reminder: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -289,10 +294,10 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
     conn.execute(
         "INSERT INTO messages (account_id, folder_id, remote_id, conversation_id, subject, from_name, from_address,
                                to_json, cc_json, received_at, preview, is_read, is_flagged, has_attachments,
-                               importance, inference, message_type, meeting_message_type)
+                               importance, inference, message_type, meeting_message_type, sort_at)
          SELECT ?1, ?2, ?3, COALESCE(?4, ?3), COALESCE(?5, ''), ?6, ?7, COALESCE(?8, '[]'), COALESCE(?9, '[]'),
                 ?10, COALESCE(?11, ''), COALESCE(?12, 0), COALESCE(?13, 0), COALESCE(?14, 0), ?15, ?16,
-                COALESCE(?17, 'message'), ?18
+                COALESCE(?17, 'message'), ?18, ?10
          WHERE ?10 IS NOT NULL
          ON CONFLICT (account_id, remote_id) DO UPDATE SET
            folder_id       = excluded.folder_id,
@@ -303,6 +308,8 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
            to_json         = COALESCE(?8,  to_json),
            cc_json         = COALESCE(?9,  cc_json),
            received_at     = COALESCE(?10, received_at),
+           -- A wake time (later than the date) survives resyncs.
+           sort_at         = MAX(sort_at, COALESCE(?10, sort_at)),
            preview         = COALESCE(?11, preview),
            is_read         = COALESCE(?12, is_read),
            is_flagged      = COALESCE(?13, is_flagged),
@@ -361,16 +368,35 @@ pub fn prune_older_than(conn: &Connection, folder_id: i64, cutoff_iso: &str) -> 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cursor {
-    pub received_at: String,
+    /// The last row's `sort_at`.
+    pub sort_at: String,
     pub message_id: i64,
 }
 
 /// Which messages a thread listing draws from.
 pub enum Scope {
-    /// One folder (the inbox, a split).
+    /// One folder.
     Folder(i64),
+    /// The inbox of every signed-in account (the unified inbox and its splits).
+    Inboxes,
     /// Every cached folder except Deleted Items (search).
     AllMail,
+}
+
+impl Scope {
+    /// SQL condition on `m` (messages), pushing any parameter it needs.
+    fn sql(&self, params: &mut Vec<rusqlite::types::Value>) -> String {
+        match self {
+            Scope::Folder(id) => {
+                params.push(rusqlite::types::Value::Integer(*id));
+                "m.folder_id = ?".to_string()
+            }
+            Scope::Inboxes => "m.folder_id IN (SELECT f.id FROM folders f JOIN accounts a ON a.id = f.account_id
+                                WHERE f.role = 'inbox' AND a.token_blob IS NOT NULL)"
+                .to_string(),
+            Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')".to_string(),
+        }
+    }
 }
 
 /// One row per conversation (its newest matching message), newest first, keyset-paginated.
@@ -384,19 +410,13 @@ pub fn list_threads(
 ) -> Result<Vec<ThreadRow>> {
     use rusqlite::types::Value as V;
     let mut params: Vec<V> = Vec::new();
-    let scope_sql = match scope {
-        Scope::Folder(id) => {
-            params.push(V::Integer(id));
-            "m.folder_id = ?".to_string()
-        }
-        Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')".to_string(),
-    };
+    let scope_sql = scope.sql(&mut params);
     params.extend(filter.params.iter().cloned());
     let cursor_sql = match cursor {
         Some(c) => {
-            params.push(V::Text(c.received_at.clone()));
+            params.push(V::Text(c.sort_at.clone()));
             params.push(V::Integer(c.message_id));
-            "AND (received_at, id) < (?, ?)"
+            "AND (sort_at, id) < (?, ?)"
         }
         None => "",
     };
@@ -405,17 +425,17 @@ pub fn list_threads(
         "WITH ranked AS (
            SELECT m.*,
                   ROW_NUMBER()     OVER w AS rn,
-                  COUNT(*)         OVER (PARTITION BY conversation_id) AS cnt,
-                  SUM(1 - is_read) OVER (PARTITION BY conversation_id) AS unread
+                  COUNT(*)         OVER (PARTITION BY account_id, conversation_id) AS cnt,
+                  SUM(1 - is_read) OVER (PARTITION BY account_id, conversation_id) AS unread
            FROM messages m
            WHERE {scope_sql} AND ({filter})
-           WINDOW w AS (PARTITION BY conversation_id ORDER BY received_at DESC, id DESC)
+           WINDOW w AS (PARTITION BY account_id, conversation_id ORDER BY received_at DESC, id DESC)
          )
          SELECT id, account_id, conversation_id, subject, from_name, from_address, received_at, preview,
-                cnt, unread, is_flagged, has_attachments
+                cnt, unread, is_flagged, has_attachments, sort_at
          FROM ranked
          WHERE rn = 1 {cursor_sql}
-         ORDER BY received_at DESC, id DESC
+         ORDER BY sort_at DESC, id DESC
          LIMIT ?",
         filter = filter.sql
     );
@@ -434,19 +454,23 @@ pub fn list_threads(
             unread_count: r.get(9)?,
             is_flagged: r.get(10)?,
             has_attachments: r.get(11)?,
+            reminder: r.get::<_, String>(12)? > r.get::<_, String>(6)?,
+            sort_at: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Conversations (and unread conversations) in a folder matching a filter. Used for split tab counts.
-pub fn count_threads(conn: &Connection, folder_id: i64, filter: &crate::query::Filter) -> Result<(i64, i64)> {
-    use rusqlite::types::Value as V;
-    let mut params: Vec<V> = vec![V::Integer(folder_id)];
+/// Conversations (and unread conversations) in a scope matching a filter. Used for split tab counts.
+pub fn count_threads(conn: &Connection, scope: Scope, filter: &crate::query::Filter) -> Result<(i64, i64)> {
+    let mut params = Vec::new();
+    let scope_sql = scope.sql(&mut params);
     params.extend(filter.params.iter().cloned());
+    // Conversation ids are per account, so count (account, conversation) pairs.
     let sql = format!(
-        "SELECT COUNT(DISTINCT conversation_id), COUNT(DISTINCT CASE WHEN is_read = 0 THEN conversation_id END)
-         FROM messages m WHERE m.folder_id = ? AND ({})",
+        "SELECT COUNT(DISTINCT account_id || ':' || conversation_id),
+                COUNT(DISTINCT CASE WHEN is_read = 0 THEN account_id || ':' || conversation_id END)
+         FROM messages m WHERE {scope_sql} AND ({})",
         filter.sql
     );
     Ok(conn.query_row(&sql, rusqlite::params_from_iter(params), |r| Ok((r.get(0)?, r.get(1)?)))?)
@@ -511,6 +535,12 @@ pub fn conversation_states(
         Ok(MessageState { id: r.get(0)?, remote_id: r.get(1)?, folder_id: r.get(2)?, is_read: r.get(3)?, is_flagged: r.get(4)? })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Puts a message at the top of its list (a snooze waking up).
+pub fn surface(conn: &Connection, message_id: i64, at: &str) -> Result<()> {
+    conn.execute("UPDATE messages SET sort_at = ?2 WHERE id = ?1", params![message_id, at])?;
+    Ok(())
 }
 
 pub fn restore_state(conn: &Connection, s: &MessageState) -> Result<()> {
@@ -588,7 +618,7 @@ pub fn recent_opens(conn: &Connection, limit: i64) -> Result<Vec<RecentOpen>> {
                   w AS (PARTITION BY m.account_id, m.conversation_id ORDER BY m.received_at DESC, m.id DESC)
          )
          SELECT l.id, l.account_id, l.conversation_id, l.subject, l.from_name, l.from_address, l.received_at,
-                l.preview, l.cnt, l.unread, l.is_flagged, l.has_attachments, r.opened_at
+                l.preview, l.cnt, l.unread, l.is_flagged, l.has_attachments, r.opened_at, l.sort_at
          FROM recent_opens r
          JOIN latest l ON l.account_id = r.account_id AND l.conversation_id = r.conversation_id AND l.rn = 1
          ORDER BY r.opened_at DESC
@@ -609,6 +639,8 @@ pub fn recent_opens(conn: &Connection, limit: i64) -> Result<Vec<RecentOpen>> {
                 unread_count: r.get(9)?,
                 is_flagged: r.get(10)?,
                 has_attachments: r.get(11)?,
+                reminder: r.get::<_, String>(13)? > r.get::<_, String>(6)?,
+                sort_at: r.get(13)?,
             },
             opened_at: r.get(12)?,
         })
@@ -758,10 +790,37 @@ mod tests {
             assert_eq!(t[0].unread_count, 1);
             assert_eq!(t[1].conversation_id, "c2");
 
-            let cur = Cursor { received_at: t[0].received_at.clone(), message_id: t[0].message_id };
+            let cur = Cursor { sort_at: t[0].sort_at.clone(), message_id: t[0].message_id };
             let page2 = list_threads(c, Scope::Folder(f), &crate::query::compile(""), Some(&cur), 10)?;
             assert_eq!(page2.len(), 1);
             assert_eq!(page2[0].conversation_id, "c2");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unified_inbox_spans_signed_in_accounts() {
+        let (db, a, f) = seed();
+        db.with(|c| {
+            let b = upsert_account(c, "microsoft", "boris@work.example", None, b"t")?.id;
+            let fb = insert_folder(c, b, "B-INBOX", "inbox", "Inbox")?.id;
+            let b_sent = insert_folder(c, b, "B-SENT", "sentitems", "Sent")?.id;
+            upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
+            upsert_message(c, b, fb, &msg("w1", "c1", "2026-10-02T10:00:00Z", true))?; // same conversation id, other account
+            upsert_message(c, b, b_sent, &msg("w2", "c9", "2026-10-03T10:00:00Z", true))?;
+            let all = |q: &str| list_threads(c, Scope::Inboxes, &crate::query::compile(q), None, 10).unwrap();
+
+            let t = all("");
+            assert_eq!(t.iter().map(|t| (t.account_id, t.conversation_id.as_str())).collect::<Vec<_>>(), vec![(b, "c1"), (a, "c1")]);
+            assert!(t.iter().all(|t| t.message_count == 1), "conversations don't merge across accounts");
+            assert_eq!(count_threads(c, Scope::Inboxes, &crate::query::compile(""))?, (2, 1));
+            assert_eq!(all("account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![b]);
+            assert_eq!(all("-account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![a]);
+
+            // A signed-out account's cached mail leaves the unified inbox.
+            c.execute("UPDATE accounts SET token_blob = NULL WHERE id = ?1", [b])?;
+            assert_eq!(all("").len(), 1);
             Ok(())
         })
         .unwrap();

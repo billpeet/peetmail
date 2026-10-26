@@ -3,10 +3,23 @@
   import { mail } from "$lib/mail.svelte";
   import ClientIdForm from "./ClientIdForm.svelte";
   import SplitEditor from "./SplitEditor.svelte";
+  import SnippetEditor from "./SnippetEditor.svelte";
+  import AccountsSection from "./AccountsSection.svelte";
 
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
   let error = $state<string | null>(null);
+  let autostart = $state(false);
+  api.getAutostart().then((v) => (autostart = v)).catch(() => {});
+
+  async function setAutostart(on: boolean) {
+    try {
+      await api.setAutostart(on);
+      autostart = on;
+    } catch (err) {
+      error = String(err);
+    }
+  }
 
   let first: HTMLInputElement | undefined = $state();
   $effect(() => first?.focus());
@@ -22,14 +35,6 @@
     }
   }
 
-  async function signOut() {
-    if (!mail.account) return;
-    await api.signOut(mail.account.id);
-    mail.overlay = null;
-    mail.threads = [];
-    mail.folder = null;
-    await mail.init();
-  }
 </script>
 
 <div data-testid="settings" onclick={(e) => e.target === e.currentTarget && (mail.overlay = null)} role="presentation" class="fixed inset-x-0 top-9 bottom-0 z-20 grid place-items-center bg-black/60">
@@ -37,7 +42,12 @@
     <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
 
     <section class="space-y-2">
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft account</h3>
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Accounts</h3>
+      <AccountsSection />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft app (client ID)</h3>
       <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
       <ClientIdForm onsaved={() => (mail.overlay = null)} />
     </section>
@@ -45,6 +55,60 @@
     <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Split inboxes</h3>
       <SplitEditor />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Snippets</h3>
+      <SnippetEditor />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Sending</h3>
+      <label class="flex items-center justify-between text-sm text-ink-300">
+        Undo send window
+        <select
+          data-testid="undo-send-select"
+          value={mail.boot?.preferences.undoSendSecs ?? 10}
+          onchange={(e) => mail.setPreference("undoSendSecs", Number(e.currentTarget.value))}
+          class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"
+        >
+          {#each [0, 5, 10, 20, 30] as s (s)}
+            <option value={s}>{s ? `${s} seconds` : "Off"}</option>
+          {/each}
+        </select>
+      </label>
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Desktop</h3>
+      <label class="flex items-center justify-between text-sm text-ink-300">
+        New mail notifications
+        <select
+          data-testid="notify-select"
+          value={mail.boot?.preferences.notify ?? "focused"}
+          onchange={(e) => mail.setPreference("notify", e.currentTarget.value as "off" | "focused" | "all")}
+          class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"
+        >
+          <option value="focused">Focused mail</option>
+          <option value="all">All mail</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2 text-sm text-ink-300">
+        <input
+          type="checkbox"
+          data-testid="close-to-tray"
+          checked={mail.boot?.preferences.closeToTray ?? true}
+          onchange={(e) => mail.setPreference("closeToTray", e.currentTarget.checked)}
+          class="accent-accent"
+        />
+        Keep running in the tray when the window is closed
+      </label>
+      <label class="flex items-center gap-2 text-sm text-ink-300">
+        <input type="checkbox" data-testid="autostart" checked={autostart} onchange={(e) => setAutostart(e.currentTarget.checked)} class="accent-accent" />
+        Start with Windows (in the tray)
+      </label>
+      <p class="text-xs text-ink-500">Notifications only show while PeetMail isn't the window you're using. <kbd>Ctrl</kbd> <kbd>Q</kbd> quits.</p>
     </section>
 
     <section class="space-y-2">
@@ -89,10 +153,7 @@
 
     {#if error}<p class="text-sm text-red-300">{error}</p>{/if}
 
-    <div class="flex items-center justify-between pt-2">
-      <button type="button" onclick={signOut} class="text-sm text-ink-500 hover:text-red-300">
-        Sign out {mail.account?.email}
-      </button>
+    <div class="flex items-center justify-end pt-2">
       <button class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">Save <kbd class="ml-1">Enter</kbd></button>
     </div>
   </form>

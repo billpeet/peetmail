@@ -3,7 +3,7 @@
   // so a 50k-thread inbox costs the same to render as a 50-thread one.
   import { mail } from "$lib/mail.svelte";
   import { listDate, senderName } from "$lib/format";
-  import { Archive, Flag, Mail, MailOpen, Paperclip, Trash2 } from "@lucide/svelte";
+  import { AlarmClock, Archive, Flag, Mail, MailOpen, Paperclip, Trash2 } from "@lucide/svelte";
 
   // One line per row in the list layout; three (sender + date, subject, preview) in the
   // narrower preview layout, like Outlook.
@@ -40,7 +40,7 @@
     </div>
   {:else}
     <div style:height="{mail.threads.length * ROW}px" class="relative">
-      {#each visible as t, i (t.conversationId)}
+      {#each visible as t, i (t.accountId + ":" + t.conversationId)}
         {@const index = start + i}
         {@const selected = index === mail.selected}
         {@const unread = t.unreadCount > 0}
@@ -49,6 +49,7 @@
           role="option"
           data-testid="thread-row"
           data-conversation-id={t.conversationId}
+          data-account-id={t.accountId}
           data-unread={unread}
           tabindex="-1"
           aria-selected={selected}
@@ -64,9 +65,10 @@
             <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
               <span class="flex items-baseline gap-2">
                 <span class={["min-w-0 flex-1 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-                  {senderName(t.fromName, t.fromAddress)}
+                  {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
                   {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
                 </span>
+                {#if t.reminder}<span data-testid="thread-reminder" class="text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
                 {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={13} /></span>{/if}
                 {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={13} fill="currentColor" /></span>{/if}
                 <span class={["shrink-0 text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>{listDate(t.receivedAt)}</span>
@@ -76,13 +78,14 @@
             </span>
           {:else}
             <span class={["w-48 shrink-0 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-              {senderName(t.fromName, t.fromAddress)}
+              {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
               {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
             </span>
             <span class="min-w-0 flex-1 truncate">
               <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{t.subject || "(no subject)"}</span>
               <span class="ml-2 text-ink-500">{t.preview}</span>
             </span>
+            {#if t.reminder}<span data-testid="thread-reminder" class="shrink-0 text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
             {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={14} /></span>{/if}
             {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={14} fill="currentColor" /></span>{/if}
             <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
@@ -90,7 +93,10 @@
             </span>
           {/if}
           <!-- Quick actions replace the date on hover. -->
-          <span data-testid="row-actions" class={["hidden shrink-0 justify-end group-hover:flex", mail.previewing ? "absolute top-1 right-3 rounded-md bg-ink-800" : "w-20"]}>
+          <span data-testid="row-actions" class={["hidden shrink-0 justify-end group-hover:flex", mail.previewing ? "absolute top-1 right-3 rounded-md bg-ink-800" : "w-28"]}>
+            <button data-testid="row-snooze" title="Snooze (H)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.selected = index; mail.startSnooze(t); }}>
+              <AlarmClock size={15} />
+            </button>
             <button data-testid="row-archive" title="Archive (E)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "archive"); }}>
               <Archive size={15} />
             </button>

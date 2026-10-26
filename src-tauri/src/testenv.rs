@@ -11,6 +11,9 @@
 //! | PEETMAIL_SYNC_INTERVAL_SECS   | Background sync interval (default 60)                    |
 //! | PEETMAIL_HEADLESS=1           | Window hidden, no taskbar entry, never takes focus       |
 //! | PEETMAIL_DOWNLOAD_DIR         | Attachments save here and Explorer isn't opened          |
+//! | PEETMAIL_UNDO_SEND_SECS       | Default undo-send delay (a saved setting still wins)     |
+//! | PEETMAIL_NOTIFY_LOG           | Toasts are appended here as JSON lines, not shown        |
+//! | PEETMAIL_FAKE_AUTOSTART=1     | "Start with Windows" lives in settings, not the registry |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

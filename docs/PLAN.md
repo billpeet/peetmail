@@ -93,12 +93,17 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `#` | Delete | ✓ |
 | `u` | Toggle read | ✓ |
 | `s` | Flag | ✓ |
-| `h` | Snooze / remind | 3 |
+| `h` | Snooze: presets (later today, this evening, tomorrow, weekend, next week) or a typed time | ✓ |
+| `g h` | Snoozed conversations (`Enter` read, `h` change time, `u` back now) | ✓ |
 | `r` / `a` / `f` | Reply / reply all / forward | ✓ |
 | `c` | Compose | ✓ |
 | `/` | Search | ✓ |
 | `Tab` / `Shift+Tab` | Next / previous split | ✓ |
-| `z` | Undo last action | ✓ |
+| `z` | Undo last action (also takes back a send during its undo window) | ✓ |
+| `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
+| `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
+| `Ctrl+Q` | Quit (closing the window keeps PeetMail in the tray) | ✓ |
+| `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
 | `v` | Toggle the reading pane (list only, or list + preview) | ✓ |
@@ -153,11 +158,11 @@ Deferred from Phase 1:
 
 ### Phase 3: polish
 
-- Snooze and reminders (local scheduler; on the server, move to a hidden folder)
-- Undo send (delay window), scheduled send
-- Snippets
-- Multiple accounts in one unified view
-- Windows notifications, start with Windows, tray icon
+- [x] Snooze (`h`). The conversation moves to a hidden "PeetMail Snoozed" server folder (visible if the mailbox refuses hidden folders), so other clients stop showing it too. PeetMail wakes it on time (a 1s local check; on next start if it was closed): back to the inbox, newest message unread, sorted on top by its wake time (`messages.sort_at`) with a Reminder badge. Undoable. Not done: "remind me if nobody replies".
+- [x] Undo send (delay window, 10s by default, set in Settings), scheduled send. Both wait in the local outbox, so a scheduled message only goes out while PeetMail is running (or as soon as it next starts). Server-side deferred delivery (`PR_DEFERRED_SEND_TIME`) would send with the PC off, but needs the draft-then-send flow; revisit if that matters.
+- [x] Snippets: made in Settings (name + text); in the composer type `;name` or press `Ctrl+;`, pick with ↑/↓, Enter inserts. Placeholders `{first_name}` `{name}` (first recipient; guessed from the address when there's no name) and `{my_first_name}` `{my_name}`. Stored in settings as JSON.
+- [x] Multiple accounts in one unified view. Settings > Accounts adds (the browser sign-in asks which account) and signs out accounts. The inbox, split tabs and counts span every signed-in account's inbox (`Scope::Inboxes`); search spans all mail. With two or more accounts each row gets an account-coloured dot, the composer a From picker (replies and forwards go from the account the mail came to), and `account:` (alias `in:`) filters by account in search and splits. Conversations never merge across accounts. Calendar already showed every account's events.
+- [x] Windows notifications, start with Windows, tray icon. Toasts for new unread inbox mail (focused only by default; all or off in Settings), only while PeetMail isn't the active window; more than three at once become one summary; snoozes coming back raise a reminder. A per-account watermark on the local row id means the first sync, a backlog and mail older than a day never notify. Tray icon (click opens; menu: Open, Sync now, Quit); closing the window hides to the tray (setting); `Ctrl+Q` quits. Start with Windows (HKCU Run key via tauri-plugin-autostart) launches hidden with `--minimized`. Single instance outside tests: a second launch shows the running window. Clicking a toast doesn't open the conversation (the notification plugin has no click callback on Windows).
 - Gmail provider behind the same provider interface
 
 ## Entra app registration

@@ -1,5 +1,6 @@
 // Typed wrappers around the Rust commands in src-tauri/src/commands.rs.
 // Keep these in sync by hand for now (tauri-specta codegen is a candidate for later).
+import type { Snippet } from "./snippets";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -36,7 +37,14 @@ export type ThreadRow = {
   unreadCount: number;
   isFlagged: boolean;
   hasAttachments: boolean;
+  /** What the list sorts by: receivedAt, or when a snooze brought it back. */
+  sortAt: string;
+  /** Back from a snooze. */
+  reminder: boolean;
 };
+
+/** A snoozed conversation and when it comes back (UTC). */
+export type SnoozedThread = ThreadRow & { until: string };
 
 export type Recipient = { name: string | null; address: string | null };
 
@@ -71,7 +79,21 @@ export type SendInput = {
   cc: string[];
   subject: string;
   body: string;
+  /** Send later (UTC ISO). Omitted: after the undo delay. */
+  sendAt?: string;
 };
+export type SendOutcome = { id: number; sendAt: string; scheduled: boolean };
+export type Draft = {
+  kind: DraftKind;
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+  sendAt?: string;
+  referenceMessageId?: number;
+};
+/** A send that hasn't gone out yet. */
+export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
 export type Contact = { name: string | null; address: string };
 export type Split = { name: string; query: string };
 /** A tab of the split inbox. The first is the built-in Inbox (`builtin`): mail no split claims. */
@@ -93,6 +115,12 @@ export type Preferences = {
   rightPaneTab: "recent" | "calendar";
   /** First day of the week: 0 = Sunday, 1 = Monday ... 6 = Saturday. */
   weekStartsOn: number;
+  /** Seconds a sent message waits so it can be undone (0: at once). */
+  undoSendSecs: number;
+  /** New-mail notifications. */
+  notify: "off" | "focused" | "all";
+  /** Closing the window keeps PeetMail running in the tray. */
+  closeToTray: boolean;
 };
 
 export type Attendee = { name: string | null; address: string | null; response: string | null; type: string | null };
@@ -126,7 +154,7 @@ export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLim
 /** A conversation from the Recent Opens pane: its newest message, plus when it was opened. */
 export type RecentOpen = ThreadRow & { openedAt: string };
 
-export type Cursor = { receivedAt: string; messageId: number };
+export type Cursor = { sortAt: string; messageId: number };
 
 export type SyncStatus = { state: "syncing" | "idle" | "error"; message: string | null };
 
@@ -158,13 +186,25 @@ export const api = {
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
     invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
+  snoozeThread: (accountId: number, conversationId: string, until: string) =>
+    invoke<ActionOutcome>("snooze_thread", { accountId, conversationId, until }),
+  unsnoozeThread: (accountId: number, conversationId: string) => invoke<void>("unsnooze_thread", { accountId, conversationId }),
+  listSnoozed: () => invoke<SnoozedThread[]>("list_snoozed"),
+  listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  quitApp: () => invoke<void>("quit_app"),
+  setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
-  sendMessage: (input: SendInput) => invoke<void>("send_message", { input }),
+  sendMessage: (input: SendInput) => invoke<SendOutcome>("send_message", { input }),
+  cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
+  scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
-  listSplits: (folderId: number) => invoke<SplitInfo[]>("list_splits", { folderId }),
+  /** `folderId` null: the unified inbox (every signed-in account). */
+  listSplits: (folderId: number | null) => invoke<SplitInfo[]>("list_splits", { folderId }),
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
   getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
   listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),
@@ -200,6 +240,8 @@ export type Invite = {
   previousLocation: string | null;
   event: CalendarEvent;
 };
+
+export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => listen("scheduled-changed", () => cb());
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 

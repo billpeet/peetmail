@@ -65,9 +65,21 @@ export type FakeConfig = {
   rejectMeetingSelect: boolean;
 };
 
-export type FakeOptions = { port?: number; mailbox?: GraphMessage[]; count?: number; seed?: number; verbose?: boolean };
+export type FakeOptions = {
+  port?: number;
+  mailbox?: GraphMessage[];
+  count?: number;
+  seed?: number;
+  verbose?: boolean;
+  /** Whose mailbox this is (default: the fixtures' ACCOUNT). */
+  account?: { displayName: string; mail: string };
+  /** Prefix for codes and tokens, so a proxy can tell two fakes' tokens apart (fake-pair.ts). */
+  prefix?: string;
+  /** Calendar events (default: the fixtures' calendar). */
+  calendar?: GraphEvent[];
+};
 
-export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose = false }: FakeOptions = {}) {
+export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose = false, account = ACCOUNT, prefix = "", calendar }: FakeOptions = {}) {
   const state = {
     messages: new Map<string, GraphMessage>(),
     seq: 0,
@@ -84,6 +96,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     eventChanges: [] as { seq: number; id: string; removed: boolean }[],
     /** Writes the app made: sends, replies, moves, patches. */
     sent: [] as Json[],
+    /** Folders the app created (POST /me/mailFolders), by id. */
+    extraFolders: new Map<string, { id: string; displayName: string; isHidden: boolean }>(),
   };
 
   const defaults = { count, seed };
@@ -93,8 +107,9 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.events.clear();
     state.eventChanges = [];
     state.eventSeq = 0;
-    for (const e of defaultCalendar()) state.events.set(e.id, e);
+    for (const e of calendar ?? defaultCalendar()) state.events.set(e.id, e);
     state.sent = [];
+    state.extraFolders.clear();
     state.sessions.clear();
     state.seq = 0;
     for (const m of messages ?? mailbox ?? defaultMailbox({ count, seed })) state.messages.set(m.id, m);
@@ -169,7 +184,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       if (q.get("code_challenge_method") !== "S256" || !q.get("code_challenge")) {
         return reply(400, "<h1>PKCE required</h1>");
       }
-      const code = b64url(randomBytes(16));
+      const code = prefix + b64url(randomBytes(16));
       const redirectUri = q.get("redirect_uri") ?? "";
       state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri });
       const back = new URL(redirectUri);
@@ -201,8 +216,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   }
 
   function issueTokens() {
-    const access = `at-${b64url(randomBytes(12))}`;
-    const refresh = `rt-${b64url(randomBytes(12))}`;
+    const access = `${prefix}at-${b64url(randomBytes(12))}`;
+    const refresh = `${prefix}rt-${b64url(randomBytes(12))}`;
     state.accessTokens.set(access, Date.now() + state.config.tokenTtl * 1000);
     state.refreshTokens.add(refresh);
     return { token_type: "Bearer", access_token: access, refresh_token: refresh, expires_in: state.config.tokenTtl, scope: "Mail.ReadWrite" };
@@ -229,13 +244,27 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return graphError(reply, state.config.failWrites, "ErrorInternalServerError", "Write failed (test)");
     }
 
-    if (p === "/me") return reply(200, { ...ACCOUNT, userPrincipalName: ACCOUNT.mail });
+    if (p === "/me") return reply(200, { ...account, userPrincipalName: account.mail });
     if (p === "/me/calendarView/delta") return calendarDelta(req, url, reply);
 
+    if (p === "/me/mailFolders" && method === "GET") {
+      // Hidden folders only show with includeHiddenFolders=true, like Graph.
+      const hidden = url.searchParams.get("includeHiddenFolders") === "true";
+      const builtIn = Object.entries(FOLDER_IDS).map(([name, id]) => ({ id, displayName: FOLDER_NAMES[name as FolderName], isHidden: false }));
+      return reply(200, { value: [...builtIn, ...state.extraFolders.values()].filter((f) => hidden || !f.isHidden) });
+    }
+    if (p === "/me/mailFolders" && method === "POST") {
+      const b = await readBody(req);
+      const f = { id: `folder-${state.extraFolders.size + 1}`, displayName: String(b.displayName ?? ""), isHidden: !!b.isHidden };
+      state.extraFolders.set(f.id, f);
+      state.sent.push({ kind: "create-folder", ...f });
+      return reply(201, f);
+    }
     const folder = p.match(/^\/me\/mailFolders\/([^/]+)$/);
     if (folder) {
       const id = folderId(decodeURIComponent(folder[1]));
       if (!id) return graphError(reply, 404, "ErrorFolderNotFound", "Folder not found");
+      if (state.extraFolders.has(id)) return reply(200, state.extraFolders.get(id)!);
       const name = Object.entries(FOLDER_IDS).find(([, v]) => v === id)![0];
       return reply(200, { id, displayName: FOLDER_NAMES[name as FolderName] });
     }
@@ -268,7 +297,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         return reply(201, metadata(msg));
       }
       const kind = action[2] as "reply" | "replyAll" | "forward";
-      const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== ACCOUNT.mail);
+      const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== account.mail);
       const to =
         b.toRecipients ?? b.message?.toRecipients ??
         (kind === "forward" ? [] : kind === "reply" ? [msg.from] : [msg.from, ...others(msg.toRecipients)]);
@@ -380,6 +409,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   /** Accepts a well-known name or a folder id. */
   function folderId(nameOrId: string): string | undefined {
     if (nameOrId in FOLDER_IDS) return FOLDER_IDS[nameOrId as FolderName];
+    if (state.extraFolders.has(nameOrId)) return nameOrId;
     return Object.values(FOLDER_IDS).find((v) => v === nameOrId);
   }
 
