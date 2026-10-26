@@ -18,3 +18,8 @@ export function longDate(iso: string): string {
 export function senderName(name: string | null, address: string | null): string {
   return name?.trim() || address || "(unknown sender)";
 }
+
+/** "1 conversation", "3 conversations". `plural` defaults to `singular + "s"`. */
+export function count(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}

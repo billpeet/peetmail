@@ -157,3 +157,38 @@ test("empty splits can be hidden; the tab you're on stays until you leave it", a
   await page.keyboard.press("Escape");
   await expect(tabs).toHaveText([/Inbox/, /Other/, /Invites/, /Nobody/]);
 });
+
+test("split tabs show their total, in bold only when something is unread", async ({ inbox: page }, testInfo) => {
+  // An extra split that only ever holds read mail.
+  await page.keyboard.press("Control+,");
+  await page.getByTestId("split-add").click();
+  const editor = page.getByTestId("split-editor");
+  await editor.getByTestId("split-name").last().fill("Read");
+  await editor.getByTestId("split-query").last().fill("is:read");
+  await page.getByTestId("split-save").click();
+  await page.keyboard.press("Escape");
+
+  const tabs = page.getByTestId("split-tab");
+  await expect(tabs).toHaveText([/Inbox/, /Other/, /Read/]);
+
+  // Each badge is the tab's conversation count, which matches the list when you open it.
+  for (let i = 0; i < 3; i++) {
+    const badge = (await tabs.nth(i).getByTestId("split-count").textContent())!.trim();
+    await tabs.nth(i).click();
+    const n = Number(badge);
+    await expect(page.getByTestId("thread-count")).toHaveText(`${n} ${n === 1 ? "conversation" : "conversations"}`);
+  }
+
+  // Inbox has unread mail: bold. "Read" never does: regular weight, even while active.
+  await expect(tabs.nth(0)).toHaveAttribute("data-unread", "true");
+  await expect(tabs.nth(2)).toHaveAttribute("data-unread", "false");
+  const weight = (i: number) => tabs.nth(i).evaluate((el) => Number(getComputedStyle(el).fontWeight));
+  expect(await weight(0)).toBeGreaterThanOrEqual(600);
+  expect(await weight(2)).toBeLessThan(600);
+  await snap(page, testInfo, "split-tab-counts");
+});
+
+test("a single conversation is counted in the singular", async ({ inbox: page }) => {
+  await search(page, "is:invite");
+  await expect(page.getByTestId("thread-count")).toHaveText("1 conversation");
+});

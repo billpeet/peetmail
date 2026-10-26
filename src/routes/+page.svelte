@@ -10,6 +10,7 @@
   import Settings from "$lib/components/Settings.svelte";
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
+  import { count } from "$lib/format";
   import { Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
 
   // `ready`: signed in, nothing modal open. Every mail binding hangs off it.
@@ -121,15 +122,22 @@
             <button
               data-testid="split-tab"
               data-active={i === mail.splitIndex}
+              data-unread={s.unread > 0}
+              title={`${count(s.count, "conversation")}, ${s.unread} unread`}
               onclick={() => mail.switchSplit(i)}
-              class={["rounded-md px-3 py-1.5", i === mail.splitIndex ? "bg-ink-800 font-semibold text-ink-100" : "text-ink-500 hover:bg-ink-900 hover:text-ink-100"]}
+              class={[
+                "rounded-md px-3 py-1.5",
+                i === mail.splitIndex ? "bg-ink-800 text-ink-100" : "text-ink-500 hover:bg-ink-900 hover:text-ink-100",
+                // Bold means "has unread", on any tab.
+                s.unread > 0 && "font-semibold",
+              ]}
             >
               {s.name}
-              {#if s.unread}<span class="ml-1 text-xs font-normal text-accent">{s.unread}</span>{/if}
+              <span data-testid="split-count" class="ml-1 text-xs tabular-nums">{s.count}</span>
             </button>
           {/each}
         </nav>
-        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{mail.threads.length} conversations</span>
+        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
       {:else}
         <Search size={16} class="ml-2 text-ink-500" />
         <input
@@ -143,7 +151,7 @@
           autocomplete="off"
           class="min-w-0 flex-1 bg-transparent px-1 text-ink-100 outline-none select-text"
         />
-        <span data-testid="thread-count" class="text-xs text-ink-500">{mail.threads.length} conversations</span>
+        <span data-testid="thread-count" class="text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
         <button data-testid="search-close" title="Close search (Esc)" aria-label="Close search" onclick={() => mail.endSearch()} class="icon-btn"><X size={16} /></button>
       {/if}
       <span class="ml-auto flex items-center gap-1 pl-4">
@@ -164,7 +172,7 @@
 
     <footer class="flex h-8 shrink-0 items-center gap-4 border-t border-ink-800 bg-chrome px-4 text-xs text-ink-500">
       <span data-testid="sync-status" data-state={mail.sync.state} class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>
-      {#if mail.outbox.pending && mail.outboxSlow}<span data-testid="outbox-pending">Sending {mail.outbox.pending} change{mail.outbox.pending === 1 ? "" : "s"}…</span>{/if}
+      {#if mail.outbox.pending && mail.outboxSlow}<span data-testid="outbox-pending">Sending {count(mail.outbox.pending, "change")}…</span>{/if}
       {#if mail.outbox.failed}<span data-testid="outbox-failed" class="text-red-300" title={mail.outbox.lastError ?? ""}>{mail.outbox.failed} failed</span>{/if}
       {#if keymap.pending.length}<span class="text-ink-300">{keymap.pending.join(" ")} …</span>{/if}
       <span class="ml-auto flex items-center gap-3">

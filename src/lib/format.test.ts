@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listDate, senderName } from "./format";
+import { count, listDate, senderName } from "./format";
 
 describe("listDate", () => {
   const now = new Date("2026-10-23T15:00:00");
@@ -19,5 +19,14 @@ describe("senderName", () => {
     expect(senderName("Sam", "sam@x.com")).toBe("Sam");
     expect(senderName("  ", "sam@x.com")).toBe("sam@x.com");
     expect(senderName(null, null)).toBe("(unknown sender)");
+  });
+});
+
+describe("count", () => {
+  it("pluralises everything except exactly one", () => {
+    expect(count(1, "conversation")).toBe("1 conversation");
+    expect(count(0, "conversation")).toBe("0 conversations");
+    expect(count(3, "change")).toBe("3 changes");
+    expect(count(2, "reply", "replies")).toBe("2 replies");
   });
 });
