@@ -12,8 +12,9 @@
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
-  import { CalendarDays, Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import { Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
   import WeekView from "$lib/components/WeekView.svelte";
+  import Rail from "$lib/components/Rail.svelte";
   import EventDetails from "$lib/components/EventDetails.svelte";
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
@@ -92,6 +93,8 @@
       { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
+      { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
+      { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "search", keys: "/", label: "Search", group: "Go to", when: base, run: focusSearch },
       { id: "calendar.prev", keys: "ArrowLeft", label: "Previous week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(-1) },
       { id: "calendar.next", keys: "ArrowRight", label: "Next week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(1) },
@@ -159,6 +162,7 @@
     <Setup />
   {:else}
     <div class="flex min-h-0 flex-1">
+    <Rail />
     {#if mail.view === "calendar"}
       <WeekView />
     {:else}
@@ -208,7 +212,6 @@
         {#if mail.search === null}
           <button data-testid="header-search" title="Search (/)" aria-label="Search" onclick={focusSearch} class="icon-btn"><Search size={17} /></button>
         {/if}
-        <button data-testid="header-calendar" title="Calendar (G then C)" aria-label="Calendar" onclick={() => (mail.view = "calendar")} class="icon-btn"><CalendarDays size={17} /></button>
         <button
           data-testid="toggle-layout"
           title={mail.previewing ? "List only (V)" : "List and reading pane (V)"}

@@ -92,7 +92,7 @@ test("g c opens the week view; arrows change week, t returns, Esc goes back", as
 });
 
 test("all-day events span their days in the week view", async ({ inbox: page }) => {
-  await page.getByTestId("header-calendar").click();
+  await page.getByTestId("rail-calendar").click();
   const offsite = page.locator('[data-testid=week-all-day][data-remote-id="evt-offsite"]');
   // The offsite is two days from now, so it may fall in next week.
   if (!(await offsite.count())) await page.getByTestId("week-next").click();
@@ -100,7 +100,7 @@ test("all-day events span their days in the week view", async ({ inbox: page }) 
 });
 
 test("clicking an event shows its details, from the week view and the day view", async ({ inbox: page }, testInfo) => {
-  await page.getByTestId("header-calendar").click();
+  await page.getByTestId("rail-calendar").click();
   await page.locator('[data-testid=week-event][data-remote-id="evt-invite"]').click();
   const details = page.getByTestId("event-details");
   await expect(page.getByTestId("event-title")).toHaveText("Design review");
@@ -144,4 +144,29 @@ test("recurring meetings and bare events show their details (subject, organiser,
 
   expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-sync-series")).toHaveLength(1);
   expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-standup-series")).toHaveLength(0);
+});
+
+test("the left sidebar switches between Mail and Calendar, and so do 1 and 2", async ({ inbox: page }, testInfo) => {
+  const railMail = page.getByTestId("rail-mail");
+  const railCal = page.getByTestId("rail-calendar");
+  await expect(railMail).toHaveAttribute("data-active", "true");
+  await snap(page, testInfo, "rail");
+
+  await page.keyboard.press("2");
+  await expect(page.getByTestId("week-view")).toBeVisible();
+  await expect(railCal).toHaveAttribute("data-active", "true");
+  await page.keyboard.press("1");
+  await expect(page.getByTestId("thread-list")).toBeVisible();
+  await expect(railMail).toHaveAttribute("data-active", "true");
+
+  await railCal.click();
+  await expect(page.getByTestId("week-view")).toBeVisible();
+  await railMail.click();
+  await expect(page.getByTestId("thread-list")).toBeVisible();
+
+  // Typing a 2 in the composer stays text.
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-body").pressSequentially("2 tickets");
+  await expect(page.getByTestId("compose-body")).toHaveValue("2 tickets");
+  await expect(page.getByTestId("week-view")).toHaveCount(0);
 });

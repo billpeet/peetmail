@@ -325,6 +325,11 @@ class MailStore {
     await this.open();
   }
 
+  /** `1` / the rail: back to mail from wherever you are (the calendar, the reader stays). */
+  showMail() {
+    if (this.view === "calendar") this.view = "list";
+  }
+
   back() {
     this.view = "list";
     this.pinned = null;
