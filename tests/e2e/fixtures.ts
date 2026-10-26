@@ -12,14 +12,24 @@ import { test as base, expect, type Page, type TestInfo } from "@playwright/test
 import { readFile } from "node:fs/promises";
 import { startFakeGraph } from "../harness/fake-graph.ts";
 import { startFakePair } from "../harness/fake-pair.ts";
+import { startFakeGmail } from "../harness/fake-gmail.ts";
 import { launchApp, signIn } from "../harness/app.ts";
 import { defaultMailbox, FOLDER_IDS } from "../harness/fixtures.ts";
 
 type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
 type Pair = Awaited<ReturnType<typeof startFakePair>>;
+type Gmail = Awaited<ReturnType<typeof startFakeGmail>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmail: Gmail }>({
+  /** Serve a fake Gmail too (`test.use({ withGmail: true })`), as `gmail`. */
+  withGmail: [false, { option: true }],
+  gmail: async ({ withGmail }, use) => {
+    if (!withGmail) return use(null as unknown as Gmail);
+    const gmail = await startFakeGmail();
+    await use(gmail);
+    await gmail.close();
+  },
   /** Serve a second mailbox too (`test.use({ secondAccount: true })`), then use `pair`. */
   secondAccount: [false, { option: true }],
   /** The two-mailbox fake (only with secondAccount): `pair.second`, `pair.signInAs("b")`. */
@@ -37,8 +47,9 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs }, use, testInfo) => {
-    const app = await launchApp({ fake, undoSendSecs });
+  app: async ({ fake, undoSendSecs, gmail }, use, testInfo) => {
+    const extraEnv = gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl } : undefined;
+    const app = await launchApp({ fake, undoSendSecs, extraEnv });
     const consoleLines: string[] = [];
     app.page.on("console", (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));
     app.page.on("pageerror", (e) => consoleLines.push(`[pageerror] ${e.stack ?? e.message}`));

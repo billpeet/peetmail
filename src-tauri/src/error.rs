@@ -10,7 +10,7 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("Microsoft Graph returned {status}: {message}")]
+    #[error("the mail server returned {status}: {message}")]
     Graph { status: u16, message: String },
     #[error("sign-in failed: {0}")]
     Auth(String),

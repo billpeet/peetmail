@@ -149,7 +149,15 @@ export type CalendarEvent = {
   preview: string;
 };
 
-export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
+export type Bootstrap = {
+  clientId: string | null;
+  /** Google OAuth client ID, if configured. */
+  googleClientId: string | null;
+  accounts: Account[];
+  cacheLimits: CacheLimits;
+  preferences: Preferences;
+};
+export type Provider = "microsoft" | "google";
 
 /** A conversation from the Recent Opens pane: its newest message, plus when it was opened. */
 export type RecentOpen = ThreadRow & { openedAt: string };
@@ -161,7 +169,8 @@ export type SyncStatus = { state: "syncing" | "idle" | "error"; message: string 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   setClientId: (clientId: string) => invoke<void>("set_client_id", { clientId }),
-  signIn: () => invoke<Account>("sign_in"),
+  signIn: (provider: Provider = "microsoft") => invoke<Account>("sign_in", { provider }),
+  setGoogleClient: (clientId: string, clientSecret: string | null) => invoke<void>("set_google_client", { clientId, clientSecret }),
   cancelSignIn: () => invoke<void>("cancel_sign_in"),
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),
   listFolders: (accountId: number) => invoke<Folder[]>("list_folders", { accountId }),

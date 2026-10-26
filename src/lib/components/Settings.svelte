@@ -5,6 +5,7 @@
   import SplitEditor from "./SplitEditor.svelte";
   import SnippetEditor from "./SnippetEditor.svelte";
   import AccountsSection from "./AccountsSection.svelte";
+  import GoogleClientForm from "./GoogleClientForm.svelte";
 
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
@@ -50,6 +51,11 @@
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft app (client ID)</h3>
       <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
       <ClientIdForm onsaved={() => (mail.overlay = null)} />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Google app (client ID)</h3>
+      <GoogleClientForm />
     </section>
 
     <section class="space-y-2">

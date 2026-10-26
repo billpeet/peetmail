@@ -1,16 +1,16 @@
 <script lang="ts">
   // Settings > Accounts: every mailbox in the unified inbox, add another, sign one out.
-  import { api } from "$lib/api";
+  import { api, type Provider } from "$lib/api";
   import { mail } from "$lib/mail.svelte";
 
   let busy = $state(false);
   let error = $state<string | null>(null);
 
-  async function add() {
+  async function add(provider: Provider) {
     busy = true;
     error = null;
     try {
-      await api.signIn();
+      await api.signIn(provider);
       await mail.init();
     } catch (err) {
       const msg = String(err);
@@ -36,6 +36,7 @@
     {#each mail.boot?.accounts ?? [] as a (a.id)}
       <li data-testid="account-row" data-email={a.email} class="flex items-center gap-2 text-sm">
         <span class={["size-2 shrink-0 rounded-full", mail.accountColor(a.id)]}></span>
+        <span class="w-14 shrink-0 text-xs text-ink-500">{a.provider === "google" ? "Gmail" : "Microsoft"}</span>
         <span class="min-w-0 flex-1 truncate text-ink-100">
           {a.email}
           {#if a.displayName}<span class="text-ink-500"> · {a.displayName}</span>{/if}
@@ -53,8 +54,17 @@
       <span data-testid="account-adding" class="text-xs text-ink-300">Finish signing in in your browser…</span>
       <button onclick={() => api.cancelSignIn()} class="text-xs text-ink-500 hover:text-ink-100">Cancel</button>
     {:else}
-      <button data-testid="account-add" onclick={add} class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100">
-        + Add account
+      <button data-testid="account-add" onclick={() => add("microsoft")} class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100">
+        + Add Microsoft account
+      </button>
+      <button
+        data-testid="account-add-google"
+        onclick={() => add("google")}
+        disabled={!mail.boot?.googleClientId}
+        title={mail.boot?.googleClientId ? "" : "Set the Google client ID below first"}
+        class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100 disabled:opacity-40"
+      >
+        + Add Google account
       </button>
     {/if}
   </div>

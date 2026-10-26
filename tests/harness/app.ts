@@ -22,6 +22,8 @@ export type LaunchOptions = {
   syncIntervalSecs?: number;
   /** Undo-send delay. 0 (the default here) sends at once, so tests don't wait out the app's 10s. */
   undoSendSecs?: number;
+  /** More environment for the app (e.g. the fake Gmail's URLs). */
+  extraEnv?: Record<string, string>;
   headed?: boolean;
   /** Run `pnpm tauri dev` (hot reload) instead of the prebuilt debug exe. */
   dev?: boolean;
@@ -179,12 +181,12 @@ export function killTree(pid: number | undefined) {
  * Starts the app. Returns { page, browser, proc, dataDir, cdpPort, logPath, close }.
  * `dev: true` runs `pnpm tauri dev` (hot reload) instead of the prebuilt exe.
  */
-export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, headed, dev = false, detached = false }: LaunchOptions): Promise<LaunchedApp> {
+export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, extraEnv, headed, dev = false, detached = false }: LaunchOptions): Promise<LaunchedApp> {
   dataDir ??= await mkdtemp(join(tmpdir(), "peetmail-test-"));
   mkdirSync(dataDir, { recursive: true });
   cdpPort ??= await freePort();
   const logPath = join(dataDir, "app-stdout.log");
-  const env = { ...process.env, ...testEnv({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, headed }) };
+  const env = { ...process.env, ...testEnv({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, headed }), ...extraEnv };
 
   const out = detached ? "ignore" : createWriteStream(logPath);
   const proc = dev

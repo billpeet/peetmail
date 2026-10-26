@@ -1,5 +1,6 @@
-//! Microsoft identity platform sign-in: authorization code + PKCE over a loopback redirect.
-//! PeetMail is a public client, so there is no client secret.
+//! OAuth sign-in for Microsoft and Google: authorization code + PKCE over a loopback
+//! redirect. PeetMail is a public client; Google's "Desktop app" clients come with a
+//! secret that isn't confidential (Google says so), which is sent when configured.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -27,6 +28,56 @@ static AUTHORITY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 pub const SCOPES: &str =
     "offline_access openid profile email User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite";
 
+const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
+/// gmail.modify: read, label, send (no permanent delete). Calendar comes with its slice.
+pub const GOOGLE_SCOPES: &str = "openid email profile https://www.googleapis.com/auth/gmail.modify";
+
+/// Where and how one identity provider signs in.
+pub struct OAuthConfig {
+    authorize_url: String,
+    token_url: String,
+    client_id: String,
+    client_secret: Option<String>,
+    scopes: &'static str,
+    /// Extra authorize parameters.
+    extra: &'static [(&'static str, &'static str)],
+    /// Loopback host for the redirect (Entra wants "localhost", Google "127.0.0.1").
+    redirect_host: &'static str,
+    /// Entra wants the scopes repeated on token requests; Google doesn't.
+    scope_on_token: bool,
+}
+
+impl OAuthConfig {
+    pub fn microsoft(client_id: &str) -> Self {
+        Self {
+            authorize_url: format!("{}/authorize", *AUTHORITY),
+            token_url: format!("{}/token", *AUTHORITY),
+            client_id: client_id.into(),
+            client_secret: None,
+            scopes: SCOPES,
+            extra: &[("response_mode", "query"), ("prompt", "select_account")],
+            redirect_host: "localhost",
+            scope_on_token: true,
+        }
+    }
+
+    pub fn google(client_id: &str, client_secret: Option<&str>) -> Self {
+        let base = crate::testenv::get("PEETMAIL_GOOGLE_AUTH_URL");
+        Self {
+            authorize_url: base.as_ref().map(|b| format!("{b}/authorize")).unwrap_or_else(|| GOOGLE_AUTHORIZE.into()),
+            token_url: base.as_ref().map(|b| format!("{b}/token")).unwrap_or_else(|| GOOGLE_TOKEN.into()),
+            client_id: client_id.into(),
+            client_secret: client_secret.filter(|s| !s.is_empty()).map(String::from),
+            scopes: GOOGLE_SCOPES,
+            // offline + consent: always hand back a refresh token, even on a repeat sign-in.
+            extra: &[("access_type", "offline"), ("prompt", "consent select_account")],
+            redirect_host: "127.0.0.1",
+            scope_on_token: false,
+        }
+    }
+}
+
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +99,16 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: i64,
+    id_token: Option<String>,
+}
+
+/// The display name in an OpenID id_token (its signature doesn't matter here: it came
+/// straight from the token endpoint over TLS).
+pub fn id_token_name(id_token: &str) -> Option<String> {
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v["name"].as_str().filter(|s| !s.is_empty()).map(String::from)
 }
 
 #[derive(Deserialize)]
@@ -68,34 +129,32 @@ pub fn pkce_challenge(verifier: &str) -> String {
 
 /// Opens the system browser, waits for the redirect, and exchanges the code for tokens.
 /// Resolves early with an error if `cancel` fires (user pressed Esc, or started another sign-in).
+/// Returns the tokens and, when the provider sends one, the OpenID id_token.
 pub async fn sign_in(
     app: &AppHandle,
     http: &reqwest::Client,
-    client_id: &str,
+    cfg: &OAuthConfig,
     cancel: tokio::sync::oneshot::Receiver<()>,
-) -> Result<TokenSet> {
+) -> Result<(TokenSet, Option<String>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    // Entra allows any port on a registered `http://localhost` redirect for desktop apps.
-    let redirect_uri = format!("http://localhost:{port}");
+    // Both providers allow any port on a registered loopback redirect for desktop apps.
+    let redirect_uri = format!("http://{}:{port}", cfg.redirect_host);
     let verifier = random_b64(64);
     let state = random_b64(16);
 
-    let auth_url = Url::parse_with_params(
-        &format!("{}/authorize", *AUTHORITY),
-        &[
-            ("client_id", client_id),
-            ("response_type", "code"),
-            ("redirect_uri", &redirect_uri),
-            ("response_mode", "query"),
-            ("scope", SCOPES),
-            ("state", &state),
-            ("code_challenge", &pkce_challenge(&verifier)),
-            ("code_challenge_method", "S256"),
-            ("prompt", "select_account"),
-        ],
-    )
-    .map_err(|e| AppError::Auth(e.to_string()))?;
+    let challenge = pkce_challenge(&verifier);
+    let mut params: Vec<(&str, &str)> = vec![
+        ("client_id", &cfg.client_id),
+        ("response_type", "code"),
+        ("redirect_uri", &redirect_uri),
+        ("scope", cfg.scopes),
+        ("state", &state),
+        ("code_challenge", &challenge),
+        ("code_challenge_method", "S256"),
+    ];
+    params.extend(cfg.extra.iter().copied());
+    let auth_url = Url::parse_with_params(&cfg.authorize_url, &params).map_err(|e| AppError::Auth(e.to_string()))?;
 
     if crate::testenv::flag("PEETMAIL_AUTH_AUTOFOLLOW") {
         // Test harness: the fake authority redirects straight back to the loopback listener.
@@ -121,30 +180,35 @@ pub async fn sign_in(
         _ = cancel => return Err(AppError::Auth("cancelled".into())),
     };
 
-    let form = [
-        ("client_id", client_id),
+    let mut form = vec![
+        ("client_id", cfg.client_id.as_str()),
         ("grant_type", "authorization_code"),
         ("code", &code),
         ("redirect_uri", &redirect_uri),
         ("code_verifier", &verifier),
-        ("scope", SCOPES),
     ];
-    token_request(http, &form, None).await
+    token_request(http, cfg, &mut form, None).await
 }
 
-pub async fn refresh(http: &reqwest::Client, client_id: &str, refresh_token: &str) -> Result<TokenSet> {
-    let form = [
-        ("client_id", client_id),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("scope", SCOPES),
-    ];
-    token_request(http, &form, Some(refresh_token)).await
+pub async fn refresh(http: &reqwest::Client, cfg: &OAuthConfig, refresh_token: &str) -> Result<TokenSet> {
+    let mut form = vec![("client_id", cfg.client_id.as_str()), ("grant_type", "refresh_token"), ("refresh_token", refresh_token)];
+    Ok(token_request(http, cfg, &mut form, Some(refresh_token)).await?.0)
 }
 
-async fn token_request(http: &reqwest::Client, form: &[(&str, &str)], old_refresh: Option<&str>) -> Result<TokenSet> {
+async fn token_request<'a>(
+    http: &reqwest::Client,
+    cfg: &'a OAuthConfig,
+    form: &mut Vec<(&'a str, &'a str)>,
+    old_refresh: Option<&str>,
+) -> Result<(TokenSet, Option<String>)> {
+    if cfg.scope_on_token {
+        form.push(("scope", cfg.scopes));
+    }
+    if let Some(secret) = &cfg.client_secret {
+        form.push(("client_secret", secret));
+    }
     // No Origin header here: Entra treats requests with one as SPA traffic and rejects them.
-    let res = http.post(format!("{}/token", *AUTHORITY)).form(form).send().await?;
+    let res = http.post(&cfg.token_url).form(&*form).send().await?;
     if !res.status().is_success() {
         let err: TokenError = res.json().await?;
         return Err(AppError::Auth(format!(
@@ -158,11 +222,10 @@ async fn token_request(http: &reqwest::Client, form: &[(&str, &str)], old_refres
         .refresh_token
         .or_else(|| old_refresh.map(String::from))
         .ok_or_else(|| AppError::Auth("no refresh token returned (is offline_access granted?)".into()))?;
-    Ok(TokenSet {
-        access_token: t.access_token,
-        refresh_token,
-        expires_at: chrono::Utc::now().timestamp() + t.expires_in,
-    })
+    Ok((
+        TokenSet { access_token: t.access_token, refresh_token, expires_at: chrono::Utc::now().timestamp() + t.expires_in },
+        t.id_token,
+    ))
 }
 
 async fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String> {
@@ -222,6 +285,13 @@ mod tests {
             pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
+    }
+
+    #[test]
+    fn reads_the_name_from_an_id_token() {
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"email":"b@gmail.com","name":"Boris Dragon"}"#);
+        assert_eq!(id_token_name(&format!("eyJhbGciOiJub25lIn0.{payload}.")), Some("Boris Dragon".into()));
+        assert_eq!(id_token_name("not-a-jwt"), None);
     }
 
     #[test]

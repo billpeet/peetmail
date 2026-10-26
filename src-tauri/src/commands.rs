@@ -16,6 +16,8 @@ use crate::{auth, mail, query};
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
     client_id: Option<String>,
+    /// Google OAuth client ID, if set (the secret stays in Rust).
+    google_client_id: Option<String>,
     accounts: Vec<Account>,
     cache_limits: CacheLimits,
     preferences: Preferences,
@@ -25,6 +27,7 @@ pub struct Bootstrap {
 pub fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap> {
     Ok(Bootstrap {
         client_id: state.client_id()?,
+        google_client_id: state.google_client()?.map(|g| g.0),
         accounts: state.db.with(|c| db::list_accounts(c))?,
         cache_limits: state.cache_limits()?,
         preferences: state.preferences()?,
@@ -52,9 +55,34 @@ pub async fn set_client_id(state: State<'_, AppState>, client_id: String) -> Res
     cancel_pending_sign_in(&state);
     state.db.with(|c| {
         db::set_setting(c, KEY_CLIENT_ID, &id)?;
-        db::clear_all_tokens(c)
+        db::clear_provider_tokens(c, "microsoft")
     })?;
     state.forget_all_tokens().await;
+    Ok(())
+}
+
+/// Saves the Google OAuth client (from a "Desktop app" client in Google Cloud). Changing
+/// the ID signs Google accounts out; their cached mail is kept.
+#[tauri::command]
+pub async fn set_google_client(state: State<'_, AppState>, client_id: String, client_secret: Option<String>) -> Result<()> {
+    let id = client_id.trim().to_string();
+    if !id.ends_with(".apps.googleusercontent.com") {
+        return Err(AppError::Other("That doesn't look like a Google client ID. It ends in .apps.googleusercontent.com.".into()));
+    }
+    let secret = client_secret.map(|s| s.trim().to_string()).unwrap_or_default();
+    let changed = state.google_client()?.map(|g| g.0).as_deref() != Some(id.as_str());
+    cancel_pending_sign_in(&state);
+    state.db.with(|c| {
+        db::set_setting(c, crate::state::KEY_GOOGLE_CLIENT_ID, &id)?;
+        db::set_setting(c, crate::state::KEY_GOOGLE_CLIENT_SECRET, &secret)?;
+        if changed {
+            db::clear_provider_tokens(c, "google")?;
+        }
+        Ok(())
+    })?;
+    if changed {
+        state.forget_all_tokens().await;
+    }
     Ok(())
 }
 
@@ -76,18 +104,23 @@ pub fn cancel_sign_in(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub async fn sign_in(app: AppHandle, state: State<'_, AppState>) -> Result<Account> {
-    let client_id = state.require_client_id()?;
+pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Option<String>) -> Result<Account> {
+    let provider = if provider.as_deref() == Some("google") { "google" } else { "microsoft" };
+    let cfg = state.oauth_for(provider)?;
     // Starting a new sign-in abandons any earlier one still waiting on the browser.
     cancel_pending_sign_in(&state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     *state.sign_in_cancel.lock().expect("cancel mutex") = Some(tx);
-    let tokens = auth::sign_in(&app, &state.http, &client_id, rx).await?;
-    let (email, display_name) = mail::fetch_profile(&state.http, &tokens.access_token).await?;
+    let (tokens, id_token) = auth::sign_in(&app, &state.http, &cfg, rx).await?;
+    let (email, display_name) = if provider == "google" {
+        (crate::gmail::fetch_profile(&state.http, &tokens.access_token).await?, id_token.as_deref().and_then(auth::id_token_name))
+    } else {
+        mail::fetch_profile(&state.http, &tokens.access_token).await?
+    };
     let blob = AppState::store_tokens_blob(&tokens)?;
     let account = state
         .db
-        .with(|c| db::upsert_account(c, "microsoft", &email, display_name.as_deref(), &blob))?;
+        .with(|c| db::upsert_account(c, provider, &email, display_name.as_deref(), &blob))?;
     state.remember_tokens(account.id, tokens).await;
 
     let app2 = app.clone();
@@ -334,6 +367,10 @@ pub struct SendOutcome {
 /// or until `send_at` when scheduled.
 #[tauri::command]
 pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<SendOutcome> {
+    // Until Gmail sending lands, refuse here so the composer keeps the text.
+    if state.db.with(|c| db::account_provider(c, input.account_id))? == "google" {
+        return Err(AppError::Other("Sending from Gmail isn't supported yet; nothing was sent".into()));
+    }
     let reference = match input.reference_message_id {
         Some(id) => Some(state.db.with(|c| db::message_remote(c, id))?.ok_or_else(|| AppError::Other("original message not found".into()))?.1),
         None => None,
@@ -573,6 +610,9 @@ pub fn create_event(
 ) -> Result<crate::calendar::Event> {
     if event.subject.trim().is_empty() {
         return Err(AppError::Other("an event needs a title".into()));
+    }
+    if state.db.with(|c| db::account_provider(c, account_id))? == "google" {
+        return Err(AppError::Other("Google Calendar isn't supported yet".into()));
     }
     let created = state.db.with(|c| {
         let accounts = db::list_accounts(c)?;

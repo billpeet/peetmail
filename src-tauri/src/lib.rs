@@ -4,6 +4,7 @@ mod calendar;
 mod commands;
 mod db;
 mod error;
+mod gmail;
 mod graph;
 mod mail;
 mod notify;
@@ -216,6 +217,7 @@ pub fn run() {
             commands::unsnooze_thread,
             commands::list_snoozed,
             commands::list_snippets,
+            commands::set_google_client,
             commands::get_autostart,
             commands::set_autostart,
             commands::quit_app,

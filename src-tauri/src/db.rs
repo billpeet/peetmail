@@ -221,11 +221,20 @@ pub fn set_token_blob(conn: &Connection, account_id: i64, blob: &[u8]) -> Result
     Ok(())
 }
 
-/// Tokens are bound to the client ID that issued them, so changing the ID invalidates all of them.
-/// Cached mail is kept and reattached when the same mailbox signs in again.
-pub fn clear_all_tokens(conn: &Connection) -> Result<()> {
-    conn.execute("UPDATE accounts SET token_blob = NULL", [])?;
+/// Tokens are bound to the client ID that issued them, so changing a provider's ID
+/// invalidates its accounts' tokens. Cached mail is kept and reattached when the same
+/// mailbox signs in again.
+pub fn clear_provider_tokens(conn: &Connection, provider: &str) -> Result<()> {
+    conn.execute("UPDATE accounts SET token_blob = NULL WHERE provider = ?1", [provider])?;
     Ok(())
+}
+
+/// "microsoft" or "google".
+pub fn account_provider(conn: &Connection, account_id: i64) -> Result<String> {
+    Ok(conn
+        .query_row("SELECT provider FROM accounts WHERE id = ?1", [account_id], |r| r.get(0))
+        .optional()?
+        .unwrap_or_else(|| "microsoft".into()))
 }
 
 pub fn delete_account(conn: &Connection, account_id: i64) -> Result<()> {
@@ -850,7 +859,7 @@ mod tests {
         let (db, a, f) = seed();
         db.with(|c| {
             upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
-            clear_all_tokens(c)?;
+            clear_provider_tokens(c, "microsoft")?;
             let accounts = list_accounts(c)?;
             assert!(!accounts[0].signed_in);
             assert!(get_token_blob(c, a)?.is_none());

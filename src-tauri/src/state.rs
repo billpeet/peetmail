@@ -8,6 +8,8 @@ use crate::error::{AppError, Result};
 use crate::secure;
 
 pub const KEY_CLIENT_ID: &str = "ms_client_id";
+pub const KEY_GOOGLE_CLIENT_ID: &str = "google_client_id";
+pub const KEY_GOOGLE_CLIENT_SECRET: &str = "google_client_secret";
 pub const KEY_CACHE_DAYS: &str = "cache_days";
 pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 
@@ -103,6 +105,25 @@ impl AppState {
         Ok(stored
             .or_else(|| option_env!("PEETMAIL_MS_CLIENT_ID").map(String::from))
             .filter(|s| !s.trim().is_empty()))
+    }
+
+    /// Google OAuth client (ID, secret). The secret of a Desktop-app client isn't
+    /// confidential (Google says so), but Google may still require it on token requests.
+    pub fn google_client(&self) -> Result<Option<(String, Option<String>)>> {
+        let (id, secret) = self.db.with(|c| Ok((db::get_setting(c, KEY_GOOGLE_CLIENT_ID)?, db::get_setting(c, KEY_GOOGLE_CLIENT_SECRET)?)))?;
+        let id = id.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_ID").map(String::from)).filter(|s| !s.trim().is_empty());
+        let secret = secret.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_SECRET").map(String::from)).filter(|s| !s.trim().is_empty());
+        Ok(id.map(|id| (id, secret)))
+    }
+
+    /// How an account's provider signs in and refreshes.
+    pub fn oauth_for(&self, provider: &str) -> Result<auth::OAuthConfig> {
+        if provider == "google" {
+            let (id, secret) = self.google_client()?.ok_or_else(|| AppError::Other("no Google client ID configured".into()))?;
+            Ok(auth::OAuthConfig::google(&id, secret.as_deref()))
+        } else {
+            Ok(auth::OAuthConfig::microsoft(&self.require_client_id()?))
+        }
     }
 
     pub fn require_client_id(&self) -> Result<String> {
@@ -221,8 +242,8 @@ impl AppState {
             cache.insert(account_id, current.clone());
             return Ok(current.access_token);
         }
-        let client_id = self.require_client_id()?;
-        let fresh = auth::refresh(&self.http, &client_id, &current.refresh_token).await?;
+        let provider = self.db.with(|c| db::account_provider(c, account_id))?;
+        let fresh = auth::refresh(&self.http, &self.oauth_for(&provider)?, &current.refresh_token).await?;
         let blob = Self::store_tokens_blob(&fresh)?;
         self.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
         let token = fresh.access_token.clone();
