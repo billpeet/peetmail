@@ -178,8 +178,9 @@ export const api = {
    * `folderId` null searches all mail. `split` picks a split-inbox tab (0 = Inbox) and wins over
    * `query`, which uses the query language (src-tauri/src/query.rs).
    */
-  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number) =>
-    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit }),
+  /** `hidden`: accounts toggled off in the footer legend. */
+  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number, hidden: number[] = []) =>
+    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit, hidden }),
   getThread: (accountId: number, conversationId: string) =>
     invoke<MessageRow[]>("get_thread", { accountId, conversationId }),
   getMessageBody: (messageId: number) => invoke<string>("get_message_body", { messageId }),
@@ -213,7 +214,7 @@ export const api = {
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
   /** `folderId` null: the unified inbox (every signed-in account). */
-  listSplits: (folderId: number | null) => invoke<SplitInfo[]>("list_splits", { folderId }),
+  listSplits: (folderId: number | null, hidden: number[] = []) => invoke<SplitInfo[]>("list_splits", { folderId, hidden }),
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
   getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
   listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),

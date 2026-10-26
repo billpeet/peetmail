@@ -292,22 +292,22 @@
         <button data-testid="footer-palette" onclick={() => (mail.overlay = "palette")} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>K</kbd> commands</button>
         <button data-testid="footer-help" onclick={() => (mail.overlay = "help")} class="hover:text-ink-100"><kbd>?</kbd> shortcuts</button>
         <!-- With several accounts, a legend for the coloured dots on mail and events; click
-             one to see only that account's mail. -->
+             one to hide or show that account's mail and events. -->
         <span data-testid="footer-accounts" class="flex items-center gap-3 text-ink-500">
           {#if mail.accounts.length > 1}
             {#each mail.accounts as a (a.id)}
+              {@const hidden = mail.hiddenIds.includes(a.id)}
               <button
                 data-testid="footer-account"
                 data-email={a.email}
-                onclick={() => {
-                  mail.startSearch();
-                  mail.setSearch(`account:${a.email}`);
-                }}
-                title="{a.provider === 'google' ? 'Gmail' : 'Microsoft'} · show only this account (account:{a.email})"
-                class="flex max-w-56 items-center gap-1.5 hover:text-ink-100"
+                data-hidden={hidden}
+                aria-pressed={!hidden}
+                onclick={() => mail.toggleAccount(a.id)}
+                title="{a.provider === 'google' ? 'Gmail' : 'Microsoft'} · click to {hidden ? 'show' : 'hide'} this account's mail and events"
+                class={["flex max-w-56 items-center gap-1.5 hover:text-ink-100", hidden && "opacity-50"]}
               >
-                <span class={["size-2 shrink-0 rounded-full", mail.accountColor(a.id)]}></span>
-                <span class="truncate">{a.email}</span>
+                <span class={["size-2 shrink-0 rounded-full", hidden ? "border border-ink-500 bg-transparent" : mail.accountColor(a.id)]}></span>
+                <span class={["truncate", hidden && "line-through"]}>{a.email}</span>
               </button>
             {/each}
           {:else}

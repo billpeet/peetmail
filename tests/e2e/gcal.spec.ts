@@ -129,12 +129,18 @@ test("without calendar permission, mail still works and calendar writes say to s
   await expect(page.getByTestId("toast")).toContainText("sign in to this Google account again", { timeout: 15_000 });
 });
 
-/** Moves the sidebar day view to the event's local day (fixture times are UTC) and returns it. */
-async function findInDayView(page: Page, remoteId: string) {
+/** Moves the sidebar day view (from today) to the event's local day; fixture times are UTC. */
+async function findDayOf(page: Page, remoteId: string) {
   const event = (await gEvents(page)).find((e) => e.remoteId === remoteId)!;
   const localDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((localDay(new Date(event.startAt)) - localDay(new Date())) / 86_400_000);
+  if (await page.getByTestId("day-today").isEnabled()) await page.getByTestId("day-today").click();
   for (let i = 0; i < days; i++) await page.getByTestId("day-next").click();
+}
+
+/** Moves the sidebar day view to the event's day and returns its block. */
+async function findInDayView(page: Page, remoteId: string) {
+  await findDayOf(page, remoteId);
   const ev = page.locator(`[data-testid=cal-event][data-remote-id="${remoteId}"]`);
   await expect(ev).toBeVisible();
   return ev;
@@ -162,6 +168,14 @@ test("with two accounts, calendar events show whose they are, and details link t
   await outlook.click();
   await expect(page.getByTestId("event-calendar")).toContainText(`Outlook calendar · ${msEmail}`);
   await expect(page.getByTestId("event-open")).toHaveText("Open in Outlook");
+  await page.keyboard.press("Escape");
+
+  // Toggling the Google account off in the footer takes its events out of the calendar too.
+  await page.locator(`[data-testid=footer-account][data-email="${GMAIL_ACCOUNT.email}"]`).click();
+  await findDayOf(page, "gcal-dentist");
+  await expect(page.locator('[data-testid=cal-event][data-remote-id="gcal-dentist"]')).toHaveCount(0);
+  await page.locator(`[data-testid=footer-account][data-email="${GMAIL_ACCOUNT.email}"]`).click();
+  await expect(page.locator('[data-testid=cal-event][data-remote-id="gcal-dentist"]')).toBeVisible();
 });
 
 test("quick add asks which calendar when there are two, Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {

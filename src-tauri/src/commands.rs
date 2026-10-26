@@ -152,12 +152,15 @@ pub fn list_threads(
     split: Option<usize>,
     cursor: Option<Cursor>,
     limit: Option<i64>,
+    hidden: Option<Vec<i64>>,
 ) -> Result<Vec<ThreadRow>> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
     let filter = match split {
         Some(tab) => query::split_filter(&split_queries(&state)?, tab),
         None => query::compile(query.as_deref().unwrap_or("")),
     };
+    // Accounts toggled off in the footer.
+    let filter = query::exclude_accounts(filter, hidden.as_deref().unwrap_or_default());
     // No folder: a split tab means the unified inbox, plain search means all mail.
     let scope = match (folder_id, split) {
         (Some(f), _) => Scope::Folder(f),
@@ -505,7 +508,8 @@ fn split_queries(state: &AppState) -> Result<Vec<String>> {
 /// Tabs of the split inbox for the given inbox folder: the built-in Inbox first, then the
 /// user's splits, each with conversation counts. Every message lands in exactly one tab.
 #[tauri::command]
-pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>) -> Result<Vec<SplitInfo>> {
+pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>, hidden: Option<Vec<i64>>) -> Result<Vec<SplitInfo>> {
+    let hidden = hidden.unwrap_or_default();
     let splits = load_splits(&state)?;
     let queries: Vec<String> = splits.iter().map(|s| s.query.clone()).collect();
     let tabs = std::iter::once(("Inbox".to_string(), String::new(), true))
@@ -514,7 +518,8 @@ pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>) -> Result
         tabs.enumerate()
             .map(|(i, (name, query, builtin))| {
                 let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::Inboxes);
-                let (count, unread) = db::count_threads(c, scope, &query::split_filter(&queries, i))?;
+                let filter = query::exclude_accounts(query::split_filter(&queries, i), &hidden);
+                let (count, unread) = db::count_threads(c, scope, &filter)?;
                 Ok(SplitInfo { name, query, builtin, count, unread })
             })
             .collect()

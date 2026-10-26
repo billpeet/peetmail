@@ -1,4 +1,5 @@
 // Calendar state for the day view (right pane) and, later, the week view.
+import { visibility } from "./accounts.svelte";
 import { api, type CalendarEvent } from "./api";
 
 const DAY = 86_400_000;
@@ -32,8 +33,10 @@ export function eventTimes(e: CalendarEvent): { start: Date; end: Date } {
 }
 
 /** Events overlapping local days `[from, to)`. */
-export function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
-  return api.listEvents(from.toISOString(), to.toISOString(), localDate(from), localDate(to));
+export async function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
+  // Accounts toggled off in the footer legend stay out of the calendar.
+  const events = await api.listEvents(from.toISOString(), to.toISOString(), localDate(from), localDate(to));
+  return events.filter((e) => !visibility.isHidden(e.accountId));
 }
 
 /** First day of the week containing `d` (local midnight). `weekStartsOn`: 0 = Sunday ... 6 = Saturday. */
