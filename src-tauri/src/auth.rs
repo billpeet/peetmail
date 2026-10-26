@@ -30,8 +30,10 @@ pub const SCOPES: &str =
 
 const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
-/// gmail.modify: read, label, send (no permanent delete). Calendar comes with its slice.
-pub const GOOGLE_SCOPES: &str = "openid email profile https://www.googleapis.com/auth/gmail.modify";
+/// gmail.modify: read, label, send (no permanent delete). calendar.events: read and write
+/// events on your calendars.
+pub const GOOGLE_SCOPES: &str =
+    "openid email profile https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events";
 
 /// Where and how one identity provider signs in.
 pub struct OAuthConfig {

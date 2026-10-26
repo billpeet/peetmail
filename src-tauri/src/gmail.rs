@@ -383,6 +383,8 @@ pub struct Parts {
     /// cid -> (mime type, data or attachment id, is attachment id)
     pub inline: HashMap<String, (String, String, bool)>,
     pub attachments: Vec<mail::Attachment>,
+    /// An invitation's text/calendar part.
+    pub calendar: Option<(String, bool, String)>,
 }
 
 fn charset_of(part: &Value) -> String {
@@ -413,6 +415,12 @@ fn walk(part: &Value, out: &mut Parts) {
         (None, Some(id)) => (id.to_string(), true),
         _ => return,
     };
+    if (mime == "text/calendar" || mime == "application/ics") && out.calendar.is_none() {
+        out.calendar = Some((content.clone(), is_id, charset_of(part)));
+        if filename.is_empty() {
+            return;
+        }
+    }
     let cid = header(part, "Content-ID").map(|c| c.trim().trim_matches(['<', '>']).to_string());
     let inline_disposition = header(part, "Content-Disposition").is_some_and(|d| d.trim().to_ascii_lowercase().starts_with("inline"));
     if !filename.is_empty() || (cid.is_some() && mime.starts_with("image/")) {
@@ -457,10 +465,28 @@ pub(crate) async fn content_bytes(state: &AppState, account_id: i64, remote_id: 
 
 const MAX_INLINE_BYTES: usize = 5 * 1024 * 1024;
 
-/// Sanitized HTML for a message (not cached here; mail::message_body caches).
-pub async fn fetch_body(state: &AppState, account_id: i64, remote_id: &str) -> Result<String> {
+/// An invitation's iCalendar text, if the message has one.
+pub async fn calendar_part(state: &AppState, account_id: i64, remote_id: &str) -> Result<Option<String>> {
+    let v = get(state, account_id, &format!("{}/messages/{remote_id}?format=full", base())).await?;
+    calendar_text(state, account_id, remote_id, &collect_parts(&v["payload"])).await
+}
+
+async fn calendar_text(state: &AppState, account_id: i64, remote_id: &str, parts: &Parts) -> Result<Option<String>> {
+    match &parts.calendar {
+        Some((content, is_id, cs)) => Ok(Some(decode_charset(&content_bytes(state, account_id, remote_id, content, *is_id).await?, cs))),
+        None => Ok(None),
+    }
+}
+
+/// Sanitized HTML for a message, and its invitation's iCalendar text if any (not cached
+/// here; mail::message_body caches).
+pub async fn fetch_body(state: &AppState, account_id: i64, remote_id: &str) -> Result<(String, Option<String>)> {
     let v = get(state, account_id, &format!("{}/messages/{remote_id}?format=full", base())).await?;
     let parts = collect_parts(&v["payload"]);
+    let ics = calendar_text(state, account_id, remote_id, &parts).await.unwrap_or_else(|e| {
+        log::info!("calendar part of {remote_id}: {e}");
+        None
+    });
     let mut html = if let Some((content, is_id, cs)) = &parts.html {
         sanitize::clean_html(&decode_charset(&content_bytes(state, account_id, remote_id, content, *is_id).await?, cs))
     } else if let Some((content, is_id, cs)) = &parts.text {
@@ -484,7 +510,7 @@ pub async fn fetch_body(state: &AppState, account_id: i64, remote_id: &str) -> R
         }
         html = sanitize::rewrite_img_src(&html, |src| src.strip_prefix("cid:").and_then(|cid| by_cid.get(cid).cloned()));
     }
-    Ok(html)
+    Ok((html, ics))
 }
 
 /// A message resource ("full", "metadata", ...).
@@ -843,7 +869,7 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
             }
         }
         Op::Send(d) => crate::gmail_send::send(state, account_id, remote_id, d).await,
-        Op::Respond { .. } | Op::CreateEvent(_) => Err(AppError::Graph { status: 400, message: "Google Calendar isn't supported yet".into() }),
+        Op::Respond { .. } | Op::CreateEvent(_) => crate::gcal::execute(state, account_id, remote_id, op).await,
     }
 }
 

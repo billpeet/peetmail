@@ -4,6 +4,7 @@ mod calendar;
 mod commands;
 mod db;
 mod error;
+mod gcal;
 mod gmail;
 mod gmail_send;
 mod graph;

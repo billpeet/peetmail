@@ -607,9 +607,6 @@ pub fn create_event(
     if event.subject.trim().is_empty() {
         return Err(AppError::Other("an event needs a title".into()));
     }
-    if state.db.with(|c| db::account_provider(c, account_id))? == "google" {
-        return Err(AppError::Other("Google Calendar isn't supported yet".into()));
-    }
     let created = state.db.with(|c| {
         let accounts = db::list_accounts(c)?;
         let me = accounts.iter().find(|a| a.id == account_id).ok_or_else(|| AppError::Other("unknown account".into()))?;

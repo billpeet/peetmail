@@ -50,7 +50,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
   },
 
   app: async ({ fake, undoSendSecs, gmail }, use, testInfo) => {
-    const extraEnv = gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl } : undefined;
+    const extraEnv = gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : undefined;
     const app = await launchApp({ fake, undoSendSecs, extraEnv });
     const consoleLines: string[] = [];
     app.page.on("console", (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));

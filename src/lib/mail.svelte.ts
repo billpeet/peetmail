@@ -522,9 +522,13 @@ class MailStore {
     // The newest actual request (invite or update); responses and cancellations don't get
     // RSVP buttons. Fall back to any meeting message if its kind isn't known yet.
     const newestFirst = [...this.thread].reverse();
+    // Gmail doesn't mark invitations; the backend checks the newest received message's
+    // text/calendar part (cached after the first look) and answers null for ordinary mail.
+    const google = this.accountOf(this.current?.accountId ?? -1)?.provider === "google";
     const msg =
       newestFirst.find((m) => m.meetingMessageType === "meetingRequest") ??
-      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType);
+      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType) ??
+      (google ? newestFirst.find((m) => m.folderRole !== "sentitems") : undefined);
     if (!msg) {
       this.invite = null;
       calendar.clearContext();

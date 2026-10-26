@@ -1,0 +1,407 @@
+//! Google Calendar (primary calendar), mapped onto the same `events` table as Graph.
+//!
+//! Sync: the first run lists the rolling window with singleEvents=true (recurring series
+//! expanded into instances) and keeps the nextSyncToken; later runs send only that token
+//! and get what changed (deleted instances come back with status "cancelled"). A 410 means
+//! the token expired: full resync. RSVP patches your attendee entry (sendUpdates=all, so
+//! the organiser hears back); quick add creates an event. Invite cards for Gmail come from
+//! the invitation's text/calendar part: its UID is looked up with iCalUID.
+
+use std::collections::HashSet;
+
+use reqwest::Method;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
+
+use crate::calendar::{self, EventUpsert, Invite};
+use crate::error::{AppError, Result};
+use crate::outbox::{NewEvent, Op, Rsvp};
+use crate::state::AppState;
+
+const DEFAULT_BASE: &str = "https://www.googleapis.com/calendar/v3";
+static BASE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| crate::testenv::get("PEETMAIL_GCAL_URL").unwrap_or_else(|| DEFAULT_BASE.to_string()));
+
+fn events_url() -> String {
+    format!("{}/calendars/primary/events", *BASE)
+}
+
+/// Calendar call. A Google account that signed in before calendar access was requested
+/// gets "insufficient authentication scopes": say what to do about it.
+async fn call(state: &AppState, account_id: i64, method: Method, url: &str, body: Option<&Value>) -> Result<Value> {
+    match crate::gmail::call(state, account_id, method, url, body).await {
+        Err(AppError::Graph { status: 403, message }) if message.to_ascii_lowercase().contains("insufficient") => Err(AppError::Graph {
+            status: 403,
+            message: "Google Calendar needs permission: sign in to this Google account again (Settings → Accounts → Add Google account)".into(),
+        }),
+        other => other,
+    }
+}
+
+// ---------- parsing ----------
+
+/// RFC 3339 with any offset -> "YYYY-MM-DDTHH:MM:SSZ".
+fn to_utc(s: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Google's attendee responseStatus -> the Graph vocabulary the UI speaks.
+fn response_word(s: &str) -> &'static str {
+    match s {
+        "accepted" => "accepted",
+        "tentative" => "tentativelyAccepted",
+        "declined" => "declined",
+        _ => "notResponded",
+    }
+}
+
+pub fn parse_event(v: &Value) -> Option<EventUpsert> {
+    let s = |p: &str| v.pointer(p).and_then(Value::as_str).map(String::from);
+    let id = s("/id")?;
+    let (start_at, end_at, is_all_day) = match (s("/start/dateTime"), s("/start/date")) {
+        (Some(st), _) => (to_utc(&st)?, to_utc(&s("/end/dateTime")?)?, false),
+        (None, Some(d)) => (d, s("/end/date")?, true),
+        _ => return None,
+    };
+    let attendees: Vec<&Value> = v["attendees"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let me = attendees.iter().find(|a| a["self"].as_bool() == Some(true));
+    let is_organizer = v.pointer("/organizer/self").and_then(Value::as_bool).unwrap_or(false)
+        || me.and_then(|a| a["organizer"].as_bool()).unwrap_or(false);
+    let response = match me {
+        Some(a) if !is_organizer => Some(response_word(a["responseStatus"].as_str().unwrap_or("needsAction")).to_string()),
+        _ if is_organizer => Some("organizer".into()),
+        _ => Some("none".into()),
+    };
+    let attendees_json: Vec<Value> = attendees
+        .iter()
+        .map(|a| {
+            json!({
+                "name": a["displayName"],
+                "address": a["email"],
+                "response": a["responseStatus"].as_str().map(response_word),
+                "type": if a["optional"].as_bool() == Some(true) { "optional" } else { "required" },
+            })
+        })
+        .collect();
+    let join_url = s("/hangoutLink").or_else(|| {
+        v.pointer("/conferenceData/entryPoints")
+            .and_then(Value::as_array)
+            .and_then(|eps| eps.iter().find(|e| e["entryPointType"] == "video"))
+            .and_then(|e| e["uri"].as_str())
+            .map(String::from)
+    });
+    let description = s("/description").unwrap_or_default();
+    let preview: String = crate::sanitize::html_to_text(&crate::sanitize::clean_html(&description)).chars().take(255).collect();
+    let recurring_master = v.get("recurrence").is_some_and(|r| r.is_array());
+    Some(EventUpsert {
+        remote_id: id,
+        subject: s("/summary").unwrap_or_default(),
+        start_at,
+        end_at,
+        is_all_day,
+        location: s("/location").filter(|l| !l.trim().is_empty()),
+        organizer_name: s("/organizer/displayName"),
+        organizer_address: s("/organizer/email"),
+        attendees_json: Value::Array(attendees_json).to_string(),
+        response,
+        is_organizer,
+        is_cancelled: s("/status").as_deref() == Some("cancelled"),
+        show_as: Some(if s("/transparency").as_deref() == Some("transparent") { "free" } else { "busy" }.into()),
+        join_url,
+        web_link: s("/htmlLink"),
+        preview,
+        event_type: if recurring_master {
+            "seriesMaster".into()
+        } else if v.get("recurringEventId").is_some() {
+            "occurrence".into()
+        } else {
+            "singleInstance".into()
+        },
+        series_master_id: s("/recurringEventId"),
+        has_details: true,
+    })
+}
+
+// ---------- sync ----------
+
+pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> {
+    let stored = state.db.with(|c| calendar::sync_state(c, account_id))?;
+    let mut sync = match stored {
+        Some(s) if !calendar::window_is_stale(&s.window_start, &s.window_end) => s,
+        _ => {
+            let (window_start, window_end) = calendar::fresh_window();
+            calendar::SyncState { delta_link: None, window_start, window_end }
+        }
+    };
+    let mut restarted = false;
+    'full: loop {
+        let full = sync.delta_link.is_none();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut changed = false;
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut q: Vec<(&str, String)> = vec![("singleEvents", "true".into()), ("maxResults", "250".into())];
+            match &sync.delta_link {
+                Some(token) => q.push(("syncToken", token.clone())),
+                None => {
+                    q.push(("timeMin", sync.window_start.clone()));
+                    q.push(("timeMax", sync.window_end.clone()));
+                }
+            }
+            if let Some(p) = &page_token {
+                q.push(("pageToken", p.clone()));
+            }
+            let url = url::Url::parse_with_params(&events_url(), &q).expect("valid url").to_string();
+            let page = match call(state, account_id, Method::GET, &url, None).await {
+                Ok(p) => p,
+                Err(AppError::Graph { status: 410, .. }) if !restarted => {
+                    log::warn!("google calendar sync token expired for account {account_id}, resyncing");
+                    restarted = true;
+                    sync.delta_link = None;
+                    continue 'full;
+                }
+                Err(e) => return Err(e),
+            };
+            let items = page["items"].as_array().cloned().unwrap_or_default();
+            if !items.is_empty() {
+                changed = true;
+                state.db.with(|c| {
+                    let busy = crate::outbox::busy_remote_ids(c, account_id)?;
+                    let tx = c.transaction()?;
+                    for item in &items {
+                        let Some(id) = item["id"].as_str() else { continue };
+                        if busy.contains(id) {
+                            seen.insert(id.to_string());
+                            continue;
+                        }
+                        if item["status"] == "cancelled" {
+                            calendar::delete_event(&tx, account_id, id)?;
+                        } else if let Some(e) = parse_event(item) {
+                            seen.insert(e.remote_id.clone());
+                            calendar::upsert_event(&tx, account_id, &e)?;
+                        }
+                    }
+                    tx.commit()?;
+                    Ok(())
+                })?;
+            }
+            match page["nextPageToken"].as_str() {
+                Some(p) => page_token = Some(p.to_string()),
+                None => {
+                    // Without a token the next sync is a full one again.
+                    sync.delta_link = page["nextSyncToken"].as_str().map(String::from);
+                    break;
+                }
+            }
+        }
+        state.db.with(|c| {
+            if full {
+                changed |= calendar::sweep_unseen(c, account_id, &seen)?;
+            }
+            calendar::save_sync_state(c, account_id, &sync)
+        })?;
+        if changed {
+            let _ = app.emit(calendar::EVENT_CALENDAR_CHANGED, json!({ "accountId": account_id }));
+        }
+        return Ok(());
+    }
+}
+
+// ---------- writes (outbox) ----------
+
+fn create_body(e: &NewEvent) -> Value {
+    let (start, end) = if e.all_day {
+        (json!({ "date": e.start }), json!({ "date": e.end }))
+    } else {
+        (json!({ "dateTime": e.start, "timeZone": "UTC" }), json!({ "dateTime": e.end, "timeZone": "UTC" }))
+    };
+    let mut body = json!({ "summary": e.subject, "start": start, "end": end, "transparency": if e.all_day { "transparent" } else { "opaque" } });
+    if let Some(l) = &e.location {
+        body["location"] = json!(l);
+    }
+    body
+}
+
+fn google_status(r: Rsvp) -> &'static str {
+    match r {
+        Rsvp::Accept => "accepted",
+        Rsvp::Tentative => "tentative",
+        Rsvp::Decline => "declined",
+    }
+}
+
+pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>, op: &Op) -> Result<Value> {
+    match op {
+        Op::CreateEvent(e) => call(state, account_id, Method::POST, &events_url(), Some(&create_body(e))).await,
+        Op::Respond { response } => {
+            let id = remote_id.ok_or_else(|| AppError::Other("RSVP has no event".into()))?;
+            let url = format!("{}/{id}", events_url());
+            let event = call(state, account_id, Method::GET, &url, None).await?;
+            let mut attendees = event["attendees"].as_array().cloned().unwrap_or_default();
+            let Some(me) = attendees.iter_mut().find(|a| a["self"].as_bool() == Some(true)) else {
+                return Ok(Value::Null); // not an invitation (your own event): nothing to answer
+            };
+            me["responseStatus"] = json!(google_status(*response));
+            // PATCH replaces the attendee list, so send it whole. sendUpdates tells the organiser.
+            call(state, account_id, Method::PATCH, &format!("{url}?sendUpdates=all"), Some(&json!({ "attendees": attendees }))).await
+        }
+        _ => Err(AppError::Graph { status: 400, message: "not a calendar operation".into() }),
+    }
+}
+
+// ---------- invites ----------
+
+/// What an invitation's text/calendar part says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ics {
+    pub uid: String,
+    /// REQUEST | CANCEL | REPLY | ...
+    pub method: String,
+    /// For REPLY: the attendee's answer (ACCEPTED / DECLINED / TENTATIVE).
+    pub partstat: Option<String>,
+}
+
+pub fn parse_ics(text: &str) -> Option<Ics> {
+    let unfolded = text.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "");
+    let mut method = String::from("PUBLISH");
+    let (mut uid, mut partstat, mut in_event) = (None, None, false);
+    for line in unfolded.lines() {
+        let line = line.trim_end_matches('\r');
+        let (key, value) = line.split_once(':').unwrap_or((line, ""));
+        let name = key.split(';').next().unwrap_or("").to_ascii_uppercase();
+        match name.as_str() {
+            "METHOD" if !in_event => method = value.trim().to_ascii_uppercase(),
+            "BEGIN" if value.eq_ignore_ascii_case("VEVENT") => in_event = true,
+            "END" if value.eq_ignore_ascii_case("VEVENT") => break,
+            "UID" if in_event && uid.is_none() => uid = Some(value.trim().to_string()),
+            "ATTENDEE" if in_event && partstat.is_none() => {
+                partstat = key.split(';').find_map(|p| p.to_ascii_uppercase().strip_prefix("PARTSTAT=").map(String::from));
+            }
+            _ => {}
+        }
+    }
+    Some(Ics { uid: uid.filter(|u| !u.is_empty())?, method, partstat })
+}
+
+fn meeting_type(ics: &Ics) -> &'static str {
+    match (ics.method.as_str(), ics.partstat.as_deref()) {
+        ("CANCEL", _) => "meetingCancelled",
+        ("REPLY", Some("DECLINED")) => "meetingDeclined",
+        ("REPLY", Some("TENTATIVE")) => "meetingTentativelyAccepted",
+        ("REPLY", _) => "meetingAccepted",
+        _ => "meetingRequest",
+    }
+}
+
+/// Remembers what a message's calendar part said (None: it has none), so opening it again
+/// doesn't refetch the message.
+pub fn record_invite(conn: &Connection, message_id: i64, ics: Option<&Ics>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO message_invites (message_id, uid, method, partstat) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (message_id) DO UPDATE SET uid = excluded.uid, method = excluded.method, partstat = excluded.partstat",
+        params![message_id, ics.map(|i| &i.uid), ics.map(|i| &i.method), ics.and_then(|i| i.partstat.as_ref())],
+    )?;
+    Ok(())
+}
+
+/// Some(None): checked, no invitation. None: not checked yet.
+fn recorded_invite(conn: &Connection, message_id: i64) -> Result<Option<Option<Ics>>> {
+    Ok(conn
+        .query_row("SELECT uid, method, partstat FROM message_invites WHERE message_id = ?1", [message_id], |r| {
+            Ok(r.get::<_, Option<String>>(0)?.map(|uid| Ics { uid, method: r.get::<_, Option<String>>(1).ok().flatten().unwrap_or_default(), partstat: r.get(2).ok().flatten() }))
+        })
+        .optional()?)
+}
+
+/// The calendar event behind a Gmail invitation, via the UID in its text/calendar part.
+pub async fn invite_for_message(state: &AppState, message_id: i64, account_id: i64, remote_id: &str) -> Result<Option<Invite>> {
+    let ics = match state.db.with(|c| recorded_invite(c, message_id))? {
+        Some(known) => known,
+        None => {
+            let ics = crate::gmail::calendar_part(state, account_id, remote_id).await?.as_deref().and_then(parse_ics);
+            state.db.with(|c| record_invite(c, message_id, ics.as_ref()))?;
+            ics
+        }
+    };
+    let Some(ics) = ics else { return Ok(None) };
+    let url = url::Url::parse_with_params(&events_url(), &[("iCalUID", ics.uid.as_str())]).expect("valid url").to_string();
+    let found = call(state, account_id, Method::GET, &url, None).await?;
+    let Some(parsed) = found["items"].as_array().and_then(|i| i.first()).and_then(parse_event) else { return Ok(None) };
+    let event = state.db.with(|c| {
+        let busy = crate::outbox::busy_remote_ids(c, account_id)?;
+        if !busy.contains(&parsed.remote_id) || calendar::event_by_remote(c, account_id, &parsed.remote_id)?.is_none() {
+            calendar::upsert_event(c, account_id, &parsed)?;
+        }
+        calendar::event_by_remote(c, account_id, &parsed.remote_id)?.ok_or_else(|| AppError::Other("event vanished".into()))
+    })?;
+    Ok(Some(Invite {
+        meeting_message_type: Some(meeting_type(&ics).into()),
+        meeting_request_type: None,
+        previous_start: None,
+        previous_end: None,
+        previous_location: None,
+        event,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_events_invitations_series_and_all_day() {
+        let invite = json!({
+            "kind": "calendar#event", "id": "ev1", "status": "confirmed", "summary": "Team lunch", "location": "Café",
+            "htmlLink": "https://calendar.google.com/event?eid=1", "hangoutLink": "https://meet.google.com/abc",
+            "start": { "dateTime": "2026-10-28T12:00:00+11:00" }, "end": { "dateTime": "2026-10-28T13:00:00+11:00" },
+            "organizer": { "email": "kim@x", "displayName": "Kim" },
+            "attendees": [
+                { "email": "kim@x", "organizer": true, "responseStatus": "accepted" },
+                { "email": "me@gmail.com", "self": true, "responseStatus": "needsAction" }
+            ],
+            "description": "<b>Bring</b> ideas"
+        });
+        let e = parse_event(&invite).unwrap();
+        assert_eq!((e.start_at.as_str(), e.end_at.as_str()), ("2026-10-28T01:00:00Z", "2026-10-28T02:00:00Z"));
+        assert_eq!(e.response.as_deref(), Some("notResponded"));
+        assert!(!e.is_organizer);
+        assert_eq!(e.join_url.as_deref(), Some("https://meet.google.com/abc"));
+        assert_eq!(e.preview, "Bring ideas");
+        assert_eq!(e.show_as.as_deref(), Some("busy"));
+
+        let mine = json!({ "id": "ev2", "summary": "Dentist", "start": { "date": "2026-11-02" }, "end": { "date": "2026-11-03" },
+            "organizer": { "email": "me@gmail.com", "self": true }, "transparency": "transparent" });
+        let e = parse_event(&mine).unwrap();
+        assert!(e.is_all_day && e.is_organizer);
+        assert_eq!((e.start_at.as_str(), e.response.as_deref(), e.show_as.as_deref()), ("2026-11-02", Some("organizer"), Some("free")));
+
+        let instance = json!({ "id": "yoga_20261029T070000Z", "recurringEventId": "yoga", "summary": "Yoga",
+            "start": { "dateTime": "2026-10-29T07:00:00Z" }, "end": { "dateTime": "2026-10-29T08:00:00Z" } });
+        let e = parse_event(&instance).unwrap();
+        assert_eq!((e.event_type.as_str(), e.series_master_id.as_deref()), ("occurrence", Some("yoga")));
+        let master = json!({ "id": "yoga", "recurrence": ["RRULE:FREQ=WEEKLY"], "summary": "Yoga",
+            "start": { "dateTime": "2026-10-01T07:00:00Z" }, "end": { "dateTime": "2026-10-01T08:00:00Z" } });
+        assert_eq!(parse_event(&master).unwrap().event_type, "seriesMaster");
+    }
+
+    #[test]
+    fn reads_the_uid_and_method_of_an_invitation() {
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:X\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:lunch-1\r\n 23@google.com\r\nATTENDEE;CN=Me;PARTSTAT=NEEDS-ACTION:mailto:me@gmail.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(parse_ics(ics), Some(Ics { uid: "lunch-123@google.com".into(), method: "REQUEST".into(), partstat: Some("NEEDS-ACTION".into()) }));
+        let i = parse_ics(&ics.replace("METHOD:REQUEST", "METHOD:CANCEL")).unwrap();
+        assert_eq!(meeting_type(&i), "meetingCancelled");
+        let r = parse_ics(&ics.replace("METHOD:REQUEST", "METHOD:REPLY").replace("NEEDS-ACTION", "DECLINED")).unwrap();
+        assert_eq!(meeting_type(&r), "meetingDeclined");
+        assert_eq!(parse_ics("BEGIN:VCALENDAR\r\nEND:VCALENDAR"), None);
+    }
+
+    #[test]
+    fn create_bodies() {
+        let e = NewEvent { subject: "Lunch".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(), all_day: false, location: None, time_zone: "UTC".into() };
+        assert_eq!(create_body(&e)["start"], json!({ "dateTime": "2026-10-30T02:00:00Z", "timeZone": "UTC" }));
+        let d = NewEvent { start: "2026-11-06".into(), end: "2026-11-07".into(), all_day: true, location: Some("Home".into()), ..e };
+        let b = create_body(&d);
+        assert_eq!((b["start"].clone(), b["location"].clone(), b["transparency"].clone()), (json!({ "date": "2026-11-06" }), json!("Home"), json!("transparent")));
+    }
+}

@@ -40,7 +40,57 @@ export type FakeGmailMessage = {
   references?: string;
   /** For messages the app sent: the raw RFC 2822 text. */
   raw?: string;
+  /** An invitation's iCalendar text (a text/calendar part). */
+  ics?: string;
 };
+
+export type GEvent = Json;
+
+/** iCalendar text of an invitation. */
+export function inviteIcs(uid: string, method = "REQUEST", partstat = "NEEDS-ACTION") {
+  return [
+    "BEGIN:VCALENDAR", "PRODID:-//Google Inc//Google Calendar 70.9054//EN", "VERSION:2.0", `METHOD:${method}`,
+    "BEGIN:VEVENT", "DTSTART:20261029T010000Z", "DTEND:20261029T020000Z", `UID:${uid}`,
+    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=${partstat};CN=${GMAIL_ACCOUNT.email}:mailto:${GMAIL_ACCOUNT.email}`,
+    "SUMMARY:Team lunch", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n");
+}
+
+const day = 86_400_000;
+const at = (now: number, days: number, hour: number, min = 0) => {
+  const d = new Date(now + days * day);
+  d.setUTCHours(hour, min, 0, 0);
+  return d.toISOString().replace(".000Z", "Z");
+};
+const date = (now: number, days: number) => new Date(now + days * day).toISOString().slice(0, 10);
+const me = { email: GMAIL_ACCOUNT.email, displayName: GMAIL_ACCOUNT.name, self: true };
+
+/** A small Google calendar, relative to `now`. Series are given as master + instances. */
+export function defaultGcal(now = Date.now()): GEvent[] {
+  const yoga = (i: number, days: number) => ({
+    kind: "calendar#event", id: `gcal-yoga_${i}`, status: "confirmed", summary: "Yoga", recurringEventId: "gcal-yoga", iCalUID: "yoga@google.com",
+    start: { dateTime: at(now, days, 7) }, end: { dateTime: at(now, days, 8) }, organizer: me, transparency: "transparent", htmlLink: "https://calendar.google.com/yoga",
+  });
+  return [
+    { kind: "calendar#event", id: "gcal-dentist", status: "confirmed", summary: "Dentist", iCalUID: "dentist@google.com", location: "12 Main St",
+      start: { dateTime: at(now, 1, 22) }, end: { dateTime: at(now, 1, 22, 30) }, organizer: me, htmlLink: "https://calendar.google.com/dentist" },
+    { kind: "calendar#event", id: "gcal-lunch", status: "confirmed", summary: "Team lunch", iCalUID: "lunch-123@google.com", location: "Café Beetroot",
+      start: { dateTime: at(now, 2, 1) }, end: { dateTime: at(now, 2, 2) }, hangoutLink: "https://meet.google.com/abc-defg-hij",
+      organizer: { email: "kim@friends.example", displayName: "Kim Park" },
+      attendees: [
+        { email: "kim@friends.example", displayName: "Kim Park", organizer: true, responseStatus: "accepted" },
+        { ...me, responseStatus: "needsAction" },
+        { email: "lee@friends.example", displayName: "Lee Wong", responseStatus: "tentative", optional: true },
+      ] },
+    { kind: "calendar#event", id: "gcal-yoga", status: "confirmed", summary: "Yoga", iCalUID: "yoga@google.com", recurrence: ["RRULE:FREQ=WEEKLY"],
+      start: { dateTime: at(now, 1, 7) }, end: { dateTime: at(now, 1, 8) }, organizer: me, transparency: "transparent" },
+    yoga(1, 1), yoga(2, 8), yoga(3, 15),
+    { kind: "calendar#event", id: "gcal-holiday", status: "confirmed", summary: "Public holiday", iCalUID: "holiday@google.com",
+      start: { date: date(now, 3) }, end: { date: date(now, 4) }, organizer: me, transparency: "transparent" },
+    { kind: "calendar#event", id: "gcal-old", status: "confirmed", summary: "Long ago", iCalUID: "old@google.com",
+      start: { dateTime: at(now, -60, 9) }, end: { dateTime: at(now, -60, 10) }, organizer: me },
+  ];
+}
 
 const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
 const PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -64,6 +114,7 @@ export function defaultGmail(now = Date.now()): FakeGmailMessage[] {
     { id: "g-5", threadId: "g-thread-latin", labelIds: ["INBOX", "CATEGORY_PERSONAL"], internalDate: now - 8 * h, from: "Café Lisboa <ola@cafe.example>", to: me, subject: "Reserva", snippet: "Obrigado pela reserva", htmlBytes: Buffer.from("<p>Caf\xe9 confirmado</p>", "latin1"), htmlCharset: "ISO-8859-1" },
     { id: "g-6", threadId: "g-thread-trip", labelIds: ["SENT"], internalDate: now - 45 * 60_000, from: me, to: "Kim Park <kim@friends.example>", subject: "Re: Ski trip in January", snippet: "Yes! Send me the link.", text: "Yes! Send me the link." },
     { id: "g-7", threadId: "g-thread-old-archived", labelIds: ["CATEGORY_PERSONAL"], internalDate: now - 20 * h, from: "Bank <no-reply@bank.example>", to: me, subject: "Statement ready", snippet: "Your statement is ready", text: "Your statement is ready" },
+    { id: "g-9", threadId: "g-thread-invite", labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: now - 2 * h, from: "Kim Park <kim@friends.example>", to: me, subject: "Invitation: Team lunch", snippet: "You have been invited to Team lunch", html: "<p>You have been invited to <b>Team lunch</b>.</p>", ics: inviteIcs("lunch-123@google.com") },
     { id: "g-8", threadId: "g-thread-ancient", labelIds: ["INBOX"], internalDate: now - 400 * 24 * h, from: "Old Friend <old@friends.example>", to: me, subject: "Long ago", snippet: "Remember this?", text: "Remember this?" },
   ];
 }
@@ -111,6 +162,7 @@ function payloadOf(m: FakeGmailMessage, format: string): Json {
     ...(m.references ? [{ name: "References", value: m.references }] : []),
   ];
   const alt: Json[] = [];
+  if (m.ics) alt.push({ partId: "0.2", mimeType: "text/calendar", filename: "", headers: [{ name: "Content-Type", value: "text/calendar; charset=UTF-8; method=REQUEST" }], body: { size: m.ics.length, data: b64u(m.ics) } });
   if (m.text) alt.push({ partId: "0.0", mimeType: "text/plain", filename: "", headers: [{ name: "Content-Type", value: "text/plain; charset=UTF-8" }], body: { size: m.text.length, data: b64u(m.text) } });
   if (m.html || m.htmlBytes) {
     const bytes = m.htmlBytes ?? Buffer.from(m.html!);
@@ -176,11 +228,22 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
     },
     usage: [] as { at: number; cost: number }[],
     quotaErrors: 0,
+    events: new Map<string, GEvent>(),
+    eventSeq: 1,
+    /** event id -> the seq of its last change (for sync tokens). */
+    eventChanged: new Map<string, number>(),
+    minSyncToken: 0,
+    /** false: the token lacks calendar access (an account that signed in before the scope). */
+    grantCalendar: true,
     requests: [] as { method: string; path: string; status: number }[],
     /** Writes the app made (modify, trash, label creation). */
     sent: [] as Json[],
   };
   for (const m of [...(mailbox ?? defaultGmail()), ...fillerGmail(extra)]) state.messages.set(m.id, m);
+  for (const e of defaultGcal()) state.events.set(e.id, e);
+  function touchEvent(id: string) {
+    state.eventChanged.set(id, ++state.eventSeq);
+  }
 
   function log(entry: Json) {
     state.historyId++;
@@ -268,6 +331,7 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
       return reply(400, { error: "unsupported_grant_type" });
     }
 
+    if (p.startsWith("/calendar/v3/")) return calendar(req, url, reply);
     const uploadSend = p === "/upload/gmail/v1/users/me/messages/send";
     const base = "/gmail/v1/users/me";
     if (!p.startsWith(base) && !uploadSend) return reply(404, err(404, "Not found"));
@@ -383,6 +447,58 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
     reply(404, err(404, `No fake route for ${method} ${rest}`));
   }
 
+  async function calendar(req: IncomingMessage, url: URL, reply: (s: number, b: unknown) => void) {
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
+    if (!state.grantCalendar) return reply(403, { error: { code: 403, message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }], status: "PERMISSION_DENIED" } });
+    const method = req.method ?? "GET";
+    const rest = url.pathname.slice("/calendar/v3/calendars/primary/events".length);
+    const q = url.searchParams;
+    if (rest === "" && method === "GET") {
+      if (q.get("iCalUID")) {
+        // Like Google: the event itself (the series master for recurring ones).
+        const items = [...state.events.values()].filter((e) => e.iCalUID === q.get("iCalUID") && !e.recurringEventId);
+        return reply(200, { kind: "calendar#events", items });
+      }
+      const sync = q.get("syncToken");
+      if (sync !== null) {
+        if (q.get("timeMin") || q.get("timeMax")) return reply(400, err(400, "syncToken can't be combined with timeMin/timeMax"));
+        if (Number(sync) < state.minSyncToken) return reply(410, { error: { code: 410, message: "Sync token is no longer valid, a full sync is required.", errors: [{ reason: "fullSyncRequired" }] } });
+        const items = [...state.eventChanged.entries()]
+          .filter(([, seq]) => seq > Number(sync))
+          .map(([id]) => state.events.get(id) ?? { kind: "calendar#event", id, status: "cancelled" })
+          .filter((e) => !e.recurrence);
+        return reply(200, { kind: "calendar#events", items, nextSyncToken: String(state.eventSeq) });
+      }
+      const min = q.get("timeMin") ?? "0000", max = q.get("timeMax") ?? "9999";
+      const startOf = (e: GEvent) => e.start.dateTime ?? `${e.start.date}T00:00:00Z`;
+      const endOf = (e: GEvent) => e.end.dateTime ?? `${e.end.date}T00:00:00Z`;
+      const items = [...state.events.values()].filter((e) => !e.recurrence && e.status !== "cancelled" && startOf(e) < max && endOf(e) > min);
+      return reply(200, { kind: "calendar#events", items, nextSyncToken: String(state.eventSeq) });
+    }
+    if (rest === "" && method === "POST") {
+      const b = await readBody(req);
+      const id = `gcal-created-${state.events.size + 1}`;
+      const ev = { kind: "calendar#event", id, status: "confirmed", iCalUID: `${id}@google.com`, organizer: me, htmlLink: `https://calendar.google.com/${id}`, ...b };
+      state.events.set(id, ev);
+      touchEvent(id);
+      state.sent.push({ kind: "create-event", id, body: b });
+      return reply(200, ev);
+    }
+    const one = rest.match(/^\/([^/]+)$/);
+    const ev = one ? state.events.get(decodeURIComponent(one[1])) : undefined;
+    if (one && !ev) return reply(404, err(404, "Not Found"));
+    if (one && method === "GET") return reply(200, ev);
+    if (one && method === "PATCH") {
+      const b = await readBody(req);
+      Object.assign(ev!, b);
+      touchEvent(ev!.id);
+      state.sent.push({ kind: "rsvp", id: ev!.id, sendUpdates: q.get("sendUpdates"), attendees: b.attendees });
+      return reply(200, ev);
+    }
+    reply(404, err(404, `No fake calendar route for ${method} ${rest}`));
+  }
+
   let delivered = 0;
   async function control(req: IncomingMessage, url: URL, reply: (s: number, b: unknown) => void) {
     const route = url.pathname.slice("/_test/".length);
@@ -410,6 +526,27 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
         state.messages.delete(b.id);
         if (msg) log({ messagesDeleted: [{ message: { id: msg.id, threadId: msg.threadId } }] });
         return reply(200, {});
+      }
+      case "gcal-add": {
+        const e: GEvent = { kind: "calendar#event", status: "confirmed", organizer: me, ...b };
+        state.events.set(e.id, e);
+        touchEvent(e.id);
+        return reply(200, e);
+      }
+      case "gcal-cancel": {
+        state.events.delete(b.id);
+        touchEvent(b.id);
+        return reply(200, {});
+      }
+      case "gcal-expire-sync":
+        state.minSyncToken = state.eventSeq + 1;
+        return reply(200, {});
+      case "gcal-access":
+        state.grantCalendar = !!b.granted;
+        return reply(200, {});
+      case "event": {
+        const e = state.events.get(url.searchParams.get("id") ?? "");
+        return e ? reply(200, e) : reply(404, { error: "no such event" });
       }
       case "expire-history":
         state.minHistory = state.historyId + 1;

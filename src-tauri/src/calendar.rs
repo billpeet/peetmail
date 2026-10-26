@@ -254,13 +254,14 @@ pub fn event_by_remote(conn: &Connection, account_id: i64, remote_id: &str) -> R
         .optional()?)
 }
 
-struct SyncState {
-    delta_link: Option<String>,
-    window_start: String,
-    window_end: String,
+pub(crate) struct SyncState {
+    /// Graph delta link, or Google's sync token.
+    pub delta_link: Option<String>,
+    pub window_start: String,
+    pub window_end: String,
 }
 
-fn sync_state(conn: &Connection, account_id: i64) -> Result<Option<SyncState>> {
+pub(crate) fn sync_state(conn: &Connection, account_id: i64) -> Result<Option<SyncState>> {
     Ok(conn
         .query_row(
             "SELECT delta_link, window_start, window_end FROM calendar_sync WHERE account_id = ?1",
@@ -270,7 +271,7 @@ fn sync_state(conn: &Connection, account_id: i64) -> Result<Option<SyncState>> {
         .optional()?)
 }
 
-fn save_sync_state(conn: &Connection, account_id: i64, s: &SyncState) -> Result<()> {
+pub(crate) fn save_sync_state(conn: &Connection, account_id: i64, s: &SyncState) -> Result<()> {
     conn.execute(
         "INSERT INTO calendar_sync (account_id, delta_link, window_start, window_end) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (account_id) DO UPDATE SET delta_link = excluded.delta_link,
@@ -282,14 +283,14 @@ fn save_sync_state(conn: &Connection, account_id: i64, s: &SyncState) -> Result<
 
 // ---------- sync ----------
 
-fn fresh_window() -> (String, String) {
+pub(crate) fn fresh_window() -> (String, String) {
     let today = Utc::now().date_naive();
     let fmt = |d: NaiveDate| format!("{d}T00:00:00Z");
     (fmt(today - Duration::days(WINDOW_BACK_DAYS)), fmt(today + Duration::days(WINDOW_AHEAD_DAYS)))
 }
 
 /// True when the stored window no longer covers enough around today.
-fn window_is_stale(start: &str, end: &str) -> bool {
+pub(crate) fn window_is_stale(start: &str, end: &str) -> bool {
     let now = Utc::now();
     let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&Utc));
     match (parse(start), parse(end)) {
@@ -366,26 +367,7 @@ pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) ->
 
         state.db.with(|c| {
             if full {
-                // Anything the full listing didn't mention is gone (or now outside the window).
-                // Series masters are kept while an occurrence still points at them.
-                // Placeholders for events still being created aren't on the server yet either.
-                let mut stmt = c.prepare(
-                    "SELECT remote_id FROM events WHERE account_id = ?1 AND event_type <> 'seriesMaster' AND remote_id NOT LIKE 'local:%'",
-                )?;
-                let stale: Vec<String> = stmt
-                    .query_map([account_id], |r| r.get::<_, String>(0))?
-                    .filter_map(|r| r.ok())
-                    .filter(|id| !seen.contains(id))
-                    .collect();
-                for id in &stale {
-                    delete_event(c, account_id, id)?;
-                }
-                changed |= !stale.is_empty();
-                c.execute(
-                    "DELETE FROM events WHERE account_id = ?1 AND event_type = 'seriesMaster'
-                       AND remote_id NOT IN (SELECT series_master_id FROM events WHERE account_id = ?1 AND series_master_id IS NOT NULL)",
-                    [account_id],
-                )?;
+                changed |= sweep_unseen(c, account_id, &seen)?;
             }
             save_sync_state(c, account_id, &sync)
         })?;
@@ -395,6 +377,29 @@ pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) ->
         }
         return Ok(());
     }
+}
+
+/// After a full listing: anything it didn't mention is gone (or now outside the window).
+/// Series masters are kept while an occurrence still points at them. Placeholders for
+/// events still being created aren't on the server yet either. Returns whether any went.
+pub(crate) fn sweep_unseen(c: &Connection, account_id: i64, seen: &HashSet<String>) -> Result<bool> {
+    let mut stmt = c.prepare(
+        "SELECT remote_id FROM events WHERE account_id = ?1 AND event_type <> 'seriesMaster' AND remote_id NOT LIKE 'local:%'",
+    )?;
+    let stale: Vec<String> = stmt
+        .query_map([account_id], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .filter(|id| !seen.contains(id))
+        .collect();
+    for id in &stale {
+        delete_event(c, account_id, id)?;
+    }
+    c.execute(
+        "DELETE FROM events WHERE account_id = ?1 AND event_type = 'seriesMaster'
+           AND remote_id NOT IN (SELECT series_master_id FROM events WHERE account_id = ?1 AND series_master_id IS NOT NULL)",
+        [account_id],
+    )?;
+    Ok(!stale.is_empty())
 }
 
 /// Fetches full details for series masters and bare events we only know the times of.
@@ -452,6 +457,9 @@ pub async fn invite_for_message(state: &AppState, message_id: i64) -> Result<Opt
         .db
         .with(|c| crate::db::message_remote(c, message_id))?
         .ok_or_else(|| AppError::Other("message not found".into()))?;
+    if state.db.with(|c| crate::db::account_provider(c, account_id))? == "google" {
+        return crate::gcal::invite_for_message(state, message_id, account_id, &remote_id).await;
+    }
     // No $select: an updated invite (eventMessageRequest) also carries meetingRequestType and
     // previousStart/End/Location, which a base-type select would drop.
     let url = format!("{}/me/messages/{remote_id}?$expand=microsoft.graph.eventMessage/event", graph::base());
@@ -515,7 +523,8 @@ pub fn create(conn: &mut Connection, account_id: i64, e: &crate::outbox::NewEven
 /// Swaps a placeholder for the event Graph created.
 pub fn finish_create(conn: &Connection, account_id: i64, local_id: &str, created: &Value) -> Result<()> {
     delete_event(conn, account_id, local_id)?;
-    if let Some(e) = parse_event(created) {
+    let parsed = if created["kind"] == "calendar#event" { crate::gcal::parse_event(created) } else { parse_event(created) };
+    if let Some(e) = parsed {
         upsert_event(conn, account_id, &e)?;
     }
     Ok(())

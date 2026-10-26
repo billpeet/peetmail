@@ -152,7 +152,12 @@ const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sen
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
     if account.provider == "google" {
-        return crate::gmail::background(crate::gmail::sync_account(app, state, account.id)).await;
+        crate::gmail::background(crate::gmail::sync_account(app, state, account.id)).await?;
+        // Calendar problems (e.g. no calendar permission yet) mustn't stop mail.
+        if let Err(e) = crate::gmail::background(crate::gcal::sync_account(app, state, account.id)).await {
+            log::warn!("google calendar sync failed for {}: {e}", account.email);
+        }
+        return Ok(());
     }
     for (role, name) in SYNCED_FOLDERS {
         let folder = ensure_folder(state, account.id, role, name).await?;
@@ -328,7 +333,9 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
         .with(|c| db::message_remote(c, message_id))?
         .ok_or_else(|| AppError::Other("message not found".into()))?;
     if is_google(state, account_id)? {
-        let html = crate::gmail::fetch_body(state, account_id, &remote_id).await?;
+        let (html, ics) = crate::gmail::fetch_body(state, account_id, &remote_id).await?;
+        let invite = ics.as_deref().and_then(crate::gcal::parse_ics);
+        state.db.with(|c| crate::gcal::record_invite(c, message_id, invite.as_ref()))?;
         return cache_body(state, message_id, html);
     }
     let v = graph_get(
