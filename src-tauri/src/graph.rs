@@ -23,6 +23,16 @@ pub fn base() -> &'static str {
 pub const PREFER_IMMUTABLE: &str = r#"IdType="ImmutableId""#;
 
 const MAX_RETRIES: u32 = 5;
+/// Quota errors wait 5, 10, 20, 40s (or the server's Retry-After) before giving up.
+const QUOTA_RETRIES: u32 = 4;
+
+/// A Google API quota / rate-limit error (as opposed to a real permission problem).
+pub fn is_quota_error(body: &Value) -> bool {
+    let reasons = body["error"]["errors"].as_array().into_iter().flatten().filter_map(|e| e["reason"].as_str());
+    let reason_hit = reasons.into_iter().any(|r| matches!(r, "rateLimitExceeded" | "userRateLimitExceeded" | "quotaExceeded"));
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    reason_hit || message.starts_with("Quota exceeded") || message.contains("Rate Limit Exceeded")
+}
 
 pub async fn get(http: &reqwest::Client, token: &str, url: &str, prefer: &[&str]) -> Result<Value> {
     request(http, token, Method::GET, url, None, prefer).await
@@ -79,15 +89,15 @@ async fn send(
             return Ok(res);
         }
 
+        let retry_after = res
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
         let throttled = status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE;
         if throttled && attempt < MAX_RETRIES {
-            let wait = res
-                .headers()
-                .get(header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(2u64.pow(attempt));
-            log::warn!("graph throttled ({status}), retrying in {wait}s");
+            let wait = retry_after.unwrap_or(2u64.pow(attempt));
+            log::warn!("throttled ({status}), retrying in {wait}s");
             tokio::time::sleep(Duration::from_secs(wait)).await;
             attempt += 1;
             continue;
@@ -95,6 +105,29 @@ async fn send(
 
         let body: Value = res.json().await.unwrap_or_default();
         let message = body["error"]["message"].as_str().unwrap_or("unknown error").to_string();
+        // Google reports quota as 403 (rateLimitExceeded / "Quota exceeded"): wait longer.
+        if status == StatusCode::FORBIDDEN && is_quota_error(&body) && attempt < QUOTA_RETRIES {
+            let wait = retry_after.unwrap_or(5 * 2u64.pow(attempt)).min(60);
+            log::warn!("quota exceeded, retrying in {wait}s: {message}");
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            attempt += 1;
+            continue;
+        }
         return Err(AppError::Graph { status: status.as_u16(), message });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognises_google_quota_errors_but_not_real_403s() {
+        let quota = serde_json::json!({ "error": { "code": 403, "message": "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'", "status": "PERMISSION_DENIED" } });
+        let rate = serde_json::json!({ "error": { "code": 403, "message": "User Rate Limit Exceeded", "errors": [{ "reason": "userRateLimitExceeded" }] } });
+        let denied = serde_json::json!({ "error": { "code": 403, "message": "Insufficient Permission", "errors": [{ "reason": "insufficientPermissions" }] } });
+        assert!(is_quota_error(&quota));
+        assert!(is_quota_error(&rate));
+        assert!(!is_quota_error(&denied));
     }
 }

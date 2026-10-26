@@ -38,11 +38,81 @@ pub fn base() -> &'static str {
 }
 
 pub const SNOOZE_LABEL: &str = "PeetMail/Snoozed";
-/// Parallel metadata fetches. Gmail allows ~50 messages.get per second per user.
+/// Parallel metadata fetches (the quota budget below sets the actual pace).
 const CONCURRENCY: usize = 8;
+
+// ---------- quota ----------
+//
+// Gmail allows 15,000 quota units per user per minute (about 250 a second) and every call
+// has a cost (messages.get is 5). Background work (sync, body prefetch) spends from a
+// per-account budget well under that, so what you open yourself always has headroom.
+// Quota errors that still happen are retried by graph::send.
+
+tokio::task_local! {
+    /// Set while syncing or prefetching: those calls wait for budget.
+    static BACKGROUND: bool;
+}
+
+/// Runs `f` as background work (budgeted).
+pub async fn background<F: std::future::Future>(f: F) -> F::Output {
+    BACKGROUND.scope(true, f).await
+}
+
+fn in_background() -> bool {
+    BACKGROUND.try_with(|b| *b).unwrap_or(false)
+}
+
+/// Background units per second, and how many can go at once. Burst + one second's refill
+/// must stay under Google's ~250 units/s short-term limit: at most 200 in any second.
+const BUDGET_PER_SEC: f64 = 100.0;
+const BUDGET_BURST: f64 = 100.0;
+
+struct Bucket {
+    units: f64,
+    at: std::time::Instant,
+}
+
+static BUCKETS: std::sync::LazyLock<std::sync::Mutex<HashMap<i64, Bucket>>> = std::sync::LazyLock::new(Default::default);
+
+/// Waits until `cost` units of the account's background budget are free, then spends them.
+async fn spend(account_id: i64, cost: f64) {
+    loop {
+        let wait = {
+            let mut buckets = BUCKETS.lock().expect("quota buckets");
+            let b = buckets.entry(account_id).or_insert(Bucket { units: BUDGET_BURST, at: std::time::Instant::now() });
+            let now = std::time::Instant::now();
+            b.units = (b.units + now.duration_since(b.at).as_secs_f64() * BUDGET_PER_SEC).min(BUDGET_BURST);
+            b.at = now;
+            if b.units >= cost {
+                b.units -= cost;
+                return;
+            }
+            (cost - b.units) / BUDGET_PER_SEC
+        };
+        tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
+    }
+}
+
+/// Gmail's quota cost of a call (developers.google.com/workspace/gmail/api/reference/quota).
+pub fn cost(method: &Method, url: &str) -> f64 {
+    let path = url.split('?').next().unwrap_or(url);
+    let tail = path.strip_prefix(base()).unwrap_or(path);
+    if tail.starts_with("/history") {
+        2.0
+    } else if tail == "/profile" || (tail == "/labels" && method == Method::GET) {
+        1.0
+    } else if tail.ends_with("/send") {
+        100.0
+    } else {
+        5.0
+    }
+}
 const METADATA: &str = "format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject";
 
 async fn call(state: &AppState, account_id: i64, method: Method, url: &str, body: Option<&Value>) -> Result<Value> {
+    if in_background() {
+        spend(account_id, cost(&method, url)).await;
+    }
     mail::graph_call(state, account_id, method, url, body, &[]).await
 }
 
@@ -467,13 +537,15 @@ pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) ->
 async fn fetch_many(app: &AppHandle, account_id: i64, ids: Vec<String>) -> Vec<(String, Result<Value>)> {
     let mut set = tokio::task::JoinSet::new();
     let mut queue = ids.into_iter();
+    let bg = in_background();
     let spawn = |set: &mut tokio::task::JoinSet<(String, Result<Value>)>, id: String| {
         let app = app.clone();
-        set.spawn(async move {
+        // Spawned tasks don't inherit task-locals: carry the background flag over.
+        set.spawn(BACKGROUND.scope(bg, async move {
             let state = app.state::<AppState>();
             let r = get(&state, account_id, &format!("{}/messages/{id}?{METADATA}", base())).await;
             (id, r)
-        });
+        }));
     };
     for id in queue.by_ref().take(CONCURRENCY) {
         spawn(&mut set, id);
@@ -492,12 +564,14 @@ async fn fetch_many(app: &AppHandle, account_id: i64, ids: Vec<String>) -> Vec<(
 
 /// Writes fetched messages into their folders. `only_known_archive`: an archived message
 /// is only stored if it's already local (history also reports label changes on old mail).
-fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)], only_known_archive: bool) -> Result<bool> {
+/// Returns (anything changed, how many fetches failed).
+fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)], only_known_archive: bool) -> Result<(bool, usize)> {
     let snooze = state.db.with(|c| db::get_setting(c, &snooze_label_key(account_id)))?;
     state.db.with(|c| {
         let busy = outbox::busy_remote_ids(c, account_id)?;
         let tx = c.transaction()?;
         let mut changed = false;
+        let mut failed = 0;
         for (id, r) in fetched {
             if busy.contains(id) {
                 continue;
@@ -527,12 +601,20 @@ fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)],
                     tx.execute("DELETE FROM messages WHERE account_id = ?1 AND remote_id = ?2", rusqlite::params![account_id, id])?;
                     changed = true;
                 }
-                Err(e) => log::warn!("gmail message {id}: {e}"),
+                Err(e) => {
+                    log::warn!("gmail message {id}: {e}");
+                    failed += 1;
+                }
             }
         }
         tx.commit()?;
-        Ok(changed)
+        Ok((changed, failed))
     })
+}
+
+/// A sync that couldn't fetch everything isn't recorded as done, so the next one retries.
+fn incomplete(failed: usize) -> AppError {
+    AppError::Other(format!("couldn't fetch {failed} Gmail message(s); will retry on the next sync"))
 }
 
 fn changed_event(app: &AppHandle, account_id: i64) {
@@ -570,11 +652,18 @@ async fn full(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> 
         }
     }
 
-    for chunk in seen.chunks(200) {
+    // Small chunks, newest first, so the inbox fills in as it goes.
+    let mut failed = 0;
+    for chunk in seen.chunks(50) {
         let fetched = fetch_many(app, account_id, chunk.to_vec()).await;
-        if store(state, account_id, &fetched, false)? {
+        let (changed, f) = store(state, account_id, &fetched, false)?;
+        failed += f;
+        if changed {
             changed_event(app, account_id);
         }
+    }
+    if failed > 0 {
+        return Err(incomplete(failed));
     }
 
     // A resync after expired history: drop local inbox/sent mail the server no longer has there.
@@ -643,14 +732,21 @@ async fn incremental(app: &AppHandle, state: &AppState, account_id: i64, start: 
         })?;
     }
     let to_fetch: Vec<String> = changed.into_iter().filter(|id| !deleted.contains(id)).collect();
-    for chunk in to_fetch.chunks(200) {
+    let mut failed = 0;
+    for chunk in to_fetch.chunks(50) {
         let fetched = fetch_many(app, account_id, chunk.to_vec()).await;
-        any |= store(state, account_id, &fetched, true)?;
+        let (changed, f) = store(state, account_id, &fetched, true)?;
+        any |= changed;
+        failed += f;
     }
-    state.db.with(|c| db::set_setting(c, &history_key(account_id), &newest))?;
     if any {
         changed_event(app, account_id);
     }
+    if failed > 0 {
+        // Keep the old historyId: the next sync replays these changes.
+        return Err(incomplete(failed));
+    }
+    state.db.with(|c| db::set_setting(c, &history_key(account_id), &newest))?;
     prune(app, state, account_id)?;
     Ok(())
 }
@@ -758,6 +854,27 @@ mod tests {
             vec![(Some("Nair, Priya".into()), "priya@x.io".into()), (None, "sam@y.com".into()), (Some("Jo Lee".into()), "jo@z.org".into())]
         );
         assert_eq!(unescape_snippet("Tom &amp; Jerry&#39;s &lt;3 &#x2014; ok"), "Tom & Jerry's <3 — ok");
+    }
+
+    #[test]
+    fn quota_costs_follow_gmail_s_table() {
+        let b = base();
+        assert_eq!(cost(&Method::GET, &format!("{b}/messages/m1?format=full")), 5.0);
+        assert_eq!(cost(&Method::GET, &format!("{b}/history?startHistoryId=1")), 2.0);
+        assert_eq!(cost(&Method::GET, &format!("{b}/profile")), 1.0);
+        assert_eq!(cost(&Method::POST, &format!("{b}/messages/send")), 100.0);
+    }
+
+    #[tokio::test]
+    async fn background_spending_is_paced() {
+        let t = std::time::Instant::now();
+        // The burst goes at once; the next 50 units take half a second at 100/s.
+        spend(-1, BUDGET_BURST).await;
+        assert!(t.elapsed().as_millis() < 100);
+        spend(-1, 50.0).await;
+        assert!(t.elapsed().as_millis() >= 450, "waited {:?}", t.elapsed());
+        assert!(!in_background());
+        assert!(background(async { in_background() }).await);
     }
 
     #[test]

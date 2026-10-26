@@ -98,7 +98,23 @@ function payloadOf(m: FakeGmailMessage, format: string): Json {
   return payload;
 }
 
-export async function startFakeGmail({ mailbox }: { mailbox?: FakeGmailMessage[] } = {}) {
+/** `n` filler inbox messages (one per thread), newest after the default mailbox. */
+export function fillerGmail(n: number, now = Date.now()): FakeGmailMessage[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `g-fill-${i}`, threadId: `g-thread-fill-${i}`, labelIds: ["INBOX", "CATEGORY_PERSONAL"], internalDate: now - (10 + i) * 60_000,
+    from: `Person ${i} <p${i}@example.com>`, to: GMAIL_ACCOUNT.email, subject: `Filler ${i}`, snippet: `Message ${i}`, text: `Message ${i}`,
+  }));
+}
+
+/** Gmail's quota cost per call (developers.google.com/workspace/gmail/api/reference/quota). */
+function quotaCost(method: string, rest: string) {
+  if (rest.startsWith("/history")) return 2;
+  if (rest === "/profile" || (rest === "/labels" && method === "GET")) return 1;
+  if (rest.endsWith("/send")) return 100;
+  return 5;
+}
+
+export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGmailMessage[]; extra?: number } = {}) {
   const state = {
     messages: new Map<string, FakeGmailMessage>(),
     labels: [] as { id: string; name: string; type: string }[],
@@ -109,12 +125,24 @@ export async function startFakeGmail({ mailbox }: { mailbox?: FakeGmailMessage[]
     codes: new Map<string, { challenge: string; redirectUri: string }>(),
     tokens: new Set<string>(),
     refresh: new Set<string>(),
-    config: { requireSecret: true, pageSize: 500 },
+    config: {
+      requireSecret: true,
+      pageSize: 500,
+      /** Google's per-user limits: 15,000 units a minute; and a short-term ceiling. */
+      quotaPerSecond: 250,
+      quotaPerMinute: 15_000,
+      /** The next N Gmail calls fail with a quota error regardless. */
+      failQuotaNext: 0,
+      /** message id -> how many more GETs of it fail with 500. */
+      failIds: {} as Record<string, number>,
+    },
+    usage: [] as { at: number; cost: number }[],
+    quotaErrors: 0,
     requests: [] as { method: string; path: string; status: number }[],
     /** Writes the app made (modify, trash, label creation). */
     sent: [] as Json[],
   };
-  for (const m of mailbox ?? defaultGmail()) state.messages.set(m.id, m);
+  for (const m of [...(mailbox ?? defaultGmail()), ...fillerGmail(extra)]) state.messages.set(m.id, m);
 
   function log(entry: Json) {
     state.historyId++;
@@ -208,6 +236,22 @@ export async function startFakeGmail({ mailbox }: { mailbox?: FakeGmailMessage[]
     if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
     const rest = p.slice(base.length);
 
+    // Quota, like Google: per-user units over a rolling second and minute.
+    const now = Date.now();
+    state.usage = state.usage.filter((u) => now - u.at < 60_000);
+    const used = (ms: number) => state.usage.filter((u) => now - u.at < ms).reduce((n, u) => n + u.cost, 0);
+    const c = quotaCost(method, rest);
+    if (state.config.failQuotaNext > 0 || used(1000) + c > state.config.quotaPerSecond || used(60_000) + c > state.config.quotaPerMinute) {
+      if (state.config.failQuotaNext > 0) state.config.failQuotaNext--;
+      state.quotaErrors++;
+      return reply(
+        403,
+        { error: { code: 403, message: "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com'", errors: [{ reason: "rateLimitExceeded" }], status: "PERMISSION_DENIED" } },
+        { "Retry-After": "1" },
+      );
+    }
+    state.usage.push({ at: now, cost: c });
+
     if (rest === "/profile") return reply(200, { emailAddress: GMAIL_ACCOUNT.email, messagesTotal: state.messages.size, historyId: String(state.historyId) });
 
     if (rest === "/messages" && method === "GET") {
@@ -228,6 +272,10 @@ export async function startFakeGmail({ mailbox }: { mailbox?: FakeGmailMessage[]
 
     let m: RegExpMatchArray | null;
     if ((m = rest.match(/^\/messages\/([^/]+)$/)) && method === "GET") {
+      if ((state.config.failIds[m[1]] ?? 0) > 0) {
+        state.config.failIds[m[1]]--;
+        return reply(500, err(500, "Backend Error"));
+      }
       const msg = state.messages.get(m[1]);
       if (!msg) return reply(404, err(404, "Requested entity was not found."));
       return reply(200, resource(msg, url.searchParams.get("format") ?? "full"));

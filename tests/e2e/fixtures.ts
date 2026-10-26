@@ -21,12 +21,14 @@ type Pair = Awaited<ReturnType<typeof startFakePair>>;
 type Gmail = Awaited<ReturnType<typeof startFakeGmail>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmail: Gmail }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail }>({
   /** Serve a fake Gmail too (`test.use({ withGmail: true })`), as `gmail`. */
   withGmail: [false, { option: true }],
-  gmail: async ({ withGmail }, use) => {
+  /** Extra filler messages in the fake Gmail inbox. */
+  gmailExtra: [0, { option: true }],
+  gmail: async ({ withGmail, gmailExtra }, use) => {
     if (!withGmail) return use(null as unknown as Gmail);
-    const gmail = await startFakeGmail();
+    const gmail = await startFakeGmail({ extra: gmailExtra });
     await use(gmail);
     await gmail.close();
   },

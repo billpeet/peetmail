@@ -135,12 +135,13 @@ pub async fn prefetch_bodies(app: AppHandle) {
             tasks.join_next().await;
         }
         let app = app.clone();
-        tasks.spawn(async move {
+        // Background: Gmail calls wait for quota budget, ahead of nothing you open yourself.
+        tasks.spawn(crate::gmail::background(async move {
             let state = app.state::<AppState>();
             if let Err(e) = message_body(&state, id).await {
                 log::info!("prefetch body {id}: {e}");
             }
-        });
+        }));
     }
     while tasks.join_next().await.is_some() {}
 }
@@ -151,7 +152,7 @@ const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sen
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
     if account.provider == "google" {
-        return crate::gmail::sync_account(app, state, account.id).await;
+        return crate::gmail::background(crate::gmail::sync_account(app, state, account.id)).await;
     }
     for (role, name) in SYNCED_FOLDERS {
         let folder = ensure_folder(state, account.id, role, name).await?;
