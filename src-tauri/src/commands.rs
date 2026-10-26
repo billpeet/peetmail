@@ -304,6 +304,20 @@ pub fn set_autostart(app: AppHandle, state: State<'_, AppState>, enabled: bool) 
     if enabled { l.enable() } else { l.disable() }.map_err(|e| AppError::Other(e.to_string()))
 }
 
+/// Test hook (debug builds only): panics on a background thread, so tests can check that
+/// panics reach the log file.
+#[tauri::command]
+pub fn debug_panic() -> Result<()> {
+    if !cfg!(debug_assertions) {
+        return Err(AppError::Other("not available".into()));
+    }
+    std::thread::Builder::new()
+        .name("debug-panic".into())
+        .spawn(|| panic!("debug_panic: deliberate test panic"))
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(())
+}
+
 /// Really quits (closing the window only hides it to the tray).
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
