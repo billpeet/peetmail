@@ -31,7 +31,9 @@ test("previewing marks read only after you stay on a conversation", async ({ inb
   await page.waitForTimeout(2200);
   await expect(row(page, "conv-invite")).toHaveAttribute("data-unread", "false");
   await expect(row(page, "conv-hostile")).toHaveAttribute("data-unread", "true");
-  // Dwelling also counts as opening it.
+  // Dwelling also counts as opening it. (While an invite is on screen the pane shows the
+  // calendar, so step back to a plain conversation to see Recent Opens.)
+  await page.keyboard.press("k");
   await expect(page.locator('[data-testid=recent-item][data-conversation-id="conv-invite"]')).toBeVisible();
   await expect(page.locator('[data-testid=recent-item][data-conversation-id="conv-hostile"]')).toHaveCount(0);
 });
