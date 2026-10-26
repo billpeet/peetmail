@@ -171,6 +171,18 @@ class MailStore {
     this.setPreference("showRightPane", !(this.boot?.preferences.showRightPane ?? true));
   }
 
+  /** `0`: show the calendar in the right pane, or go back to Recent Opens if it's showing. */
+  async toggleCalendarPane() {
+    const p = this.boot?.preferences;
+    if (!p) return;
+    if (!p.showRightPane || p.rightPaneTab !== "calendar") {
+      await this.setPreference("showRightPane", true);
+      await this.setPreference("rightPaneTab", "calendar");
+    } else {
+      await this.setPreference("rightPaneTab", "recent");
+    }
+  }
+
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
   async refresh() {
     if (!this.folder) return;

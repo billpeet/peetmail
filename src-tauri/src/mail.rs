@@ -150,6 +150,10 @@ async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> R
         let folder = ensure_folder(state, account.id, role, name).await?;
         sync_folder(app, state, account.id, &folder).await?;
     }
+    // Calendar problems (e.g. a tenant that blocks calendar access) mustn't stop mail.
+    if let Err(e) = crate::calendar::sync_account(app, state, account.id).await {
+        log::warn!("calendar sync failed for {}: {e}", account.email);
+    }
     Ok(())
 }
 

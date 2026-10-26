@@ -17,13 +17,14 @@ test("remote read-state changes and deletions sync through delta", async ({ inbo
   await expect(row(page, "conv-plain")).toHaveCount(0);
 });
 
-test("a sync with no changes costs one request per synced folder", async ({ inbox: page, fake }) => {
+test("a sync with no changes costs one request per synced folder plus the calendar", async ({ inbox: page, fake }) => {
   const before = fake.state.requests.length;
   await syncNow(page, fake);
   const reqs = fake.requestsSince(before);
   expect(reqs.map((r) => r.path)).toEqual([
     "/v1.0/me/mailFolders/AAMkAGI2-inbox/messages/delta",
     "/v1.0/me/mailFolders/AAMkAGI2-sent/messages/delta",
+    "/v1.0/me/calendarView/delta",
   ]);
   expect(reqs.every((r) => r.query.includes("deltatoken"))).toBe(true);
 });

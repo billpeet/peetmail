@@ -1,5 +1,6 @@
 mod actions;
 mod auth;
+mod calendar;
 mod commands;
 mod db;
 mod error;
@@ -106,6 +107,7 @@ pub fn run() {
             commands::set_preferences,
             commands::record_open,
             commands::recent_opens,
+            commands::list_events,
             commands::thread_action,
             commands::undo,
             commands::outbox_status,

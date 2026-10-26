@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, onMailChanged, onOutbox, onSyncStatus } from "$lib/api";
+  import { api, onCalendarChanged, onMailChanged, onOutbox, onSyncStatus } from "$lib/api";
+  import { calendar } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import Setup from "$lib/components/Setup.svelte";
@@ -56,6 +57,7 @@
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
+      onCalendarChanged(() => calendar.load()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
         mail.setOutbox(s);
@@ -89,6 +91,7 @@
       { id: "compose.forward", keys: "f", label: "Forward", group: "Write", when: hasThread, run: () => mail.respond("forward") },
 
       { id: "layout.toggle", keys: "v", label: "Toggle reading pane", group: "App", when: ready, run: () => mail.toggleLayout() },
+      { id: "calendar.pane", keys: "0", label: "Toggle calendar", group: "Calendar", when: ready, run: () => mail.toggleCalendarPane() },
       { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: ready, run: () => mail.toggleRightPane() },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 

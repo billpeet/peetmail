@@ -103,7 +103,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
 | `v` | Toggle the reading pane (list only, or list + preview) | ✓ |
 | `g c` | Calendar | 2 |
-| `0` | Toggle calendar side panel | 2 |
+| `0` | Toggle calendar side panel | ✓ |
 
 Every binding lives in one registry (`src/lib/keys.svelte.ts`) with an id, label, group and `when` condition. The shortcut overlay reads from it today, and the command palette will too.
 

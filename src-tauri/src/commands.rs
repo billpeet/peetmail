@@ -359,6 +359,21 @@ pub fn recent_opens(state: State<'_, AppState>, limit: Option<i64>) -> Result<Ve
     state.db.with(|c| db::recent_opens(c, limit.unwrap_or(50).clamp(1, 200)))
 }
 
+// ---------- calendar ----------
+
+/// Events overlapping a range: `from`/`to` are UTC instants for timed events, `from_date`/
+/// `to_date` local dates (YYYY-MM-DD, end exclusive) for all-day events.
+#[tauri::command]
+pub fn list_events(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+    from_date: String,
+    to_date: String,
+) -> Result<Vec<crate::calendar::Event>> {
+    state.db.with(|c| crate::calendar::list_events(c, &from, &to, &from_date, &to_date))
+}
+
 // ---------- images and attachments ----------
 
 #[tauri::command]
