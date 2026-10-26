@@ -1,5 +1,6 @@
 // Typed wrappers around the Rust commands in src-tauri/src/commands.rs.
 // Keep these in sync by hand for now (tauri-specta codegen is a candidate for later).
+import type { Recurrence } from "./recurrence";
 import type { Snippet } from "./snippets";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -147,6 +148,25 @@ export type CalendarEvent = {
   joinUrl: string | null;
   webLink: string | null;
   preview: string;
+  /** singleInstance | occurrence | exception */
+  eventType: string;
+  /** The series an occurrence belongs to. */
+  seriesMasterId: string | null;
+};
+
+/** What the event popup shows beyond the cached row; fetched when it opens. */
+export type EventDetail = {
+  bodyHtml: string;
+  recurrence: Recurrence | null;
+  seriesMasterId: string | null;
+  isOccurrence: boolean;
+  isException: boolean;
+  /** null: no reminder (unless reminderDefault). */
+  reminderMinutes: number | null;
+  reminderDefault: boolean;
+  sensitivity: string;
+  categories: string[];
+  importance: string;
 };
 
 export type Bootstrap = {
@@ -194,8 +214,9 @@ export const api = {
     invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
   inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
-  respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
-    invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
+  eventDetail: (accountId: number, remoteId: string) => invoke<EventDetail>("event_detail", { accountId, remoteId }),
+  respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp, series = false) =>
+    invoke<void>("respond_to_event", { accountId, eventRemoteId, response, series }),
   snoozeThread: (accountId: number, conversationId: string, until: string) =>
     invoke<ActionOutcome>("snooze_thread", { accountId, conversationId, until }),
   unsnoozeThread: (accountId: number, conversationId: string) => invoke<void>("unsnooze_thread", { accountId, conversationId }),

@@ -250,6 +250,62 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
     }
 }
 
+// ---------- full details ----------
+
+pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) -> Result<calendar::EventDetail> {
+    let url = |id: &str| format!("{}/{id}", events_url());
+    let v = call(state, account_id, Method::GET, &url(remote_id), None).await?;
+    let master_id = v["recurringEventId"].as_str().map(String::from);
+    let lines = |ev: &Value| ev["recurrence"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(String::from)).collect::<Vec<_>>());
+    let start_date = |ev: &Value| {
+        ev.pointer("/start/date")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| ev.pointer("/start/dateTime").and_then(Value::as_str).and_then(|d| d.get(..10)).map(String::from))
+            .unwrap_or_default()
+    };
+    let recurrence = match (&master_id, lines(&v)) {
+        (_, Some(l)) => crate::recurrence::from_rrule(&l, &start_date(&v)),
+        (Some(m), None) => match call(state, account_id, Method::GET, &url(m), None).await {
+            Ok(master) => lines(&master).and_then(|l| crate::recurrence::from_rrule(&l, &start_date(&master))),
+            Err(e) => {
+                log::info!("series master {m}: {e}");
+                None
+            }
+        },
+        _ => None,
+    };
+    // An instance that no longer sits where the series puts it has been changed on its own.
+    let moved = master_id.is_some()
+        && v.pointer("/originalStartTime/dateTime").and_then(Value::as_str).and_then(to_utc)
+            != v.pointer("/start/dateTime").and_then(Value::as_str).and_then(to_utc);
+    let reminders = &v["reminders"];
+    let use_default = reminders["useDefault"].as_bool().unwrap_or(true);
+    let description = v["description"].as_str().unwrap_or_default();
+    Ok(calendar::EventDetail {
+        // Google descriptions are HTML or plain text with newlines.
+        body_html: if description.contains('<') { crate::sanitize::clean_html(description) } else { crate::sanitize::text_to_html(description) },
+        recurrence,
+        series_master_id: master_id.clone(),
+        is_occurrence: master_id.is_some(),
+        is_exception: moved,
+        reminder_minutes: if use_default {
+            None
+        } else {
+            reminders["overrides"].as_array().into_iter().flatten().filter_map(|o| o["minutes"].as_i64()).min()
+        },
+        reminder_default: use_default,
+        sensitivity: match v["visibility"].as_str() {
+            Some("private") => "private",
+            Some("confidential") => "confidential",
+            _ => "normal",
+        }
+        .to_string(),
+        categories: vec![],
+        importance: "normal".into(),
+    })
+}
+
 // ---------- invites ----------
 
 /// What an invitation's text/calendar part says.

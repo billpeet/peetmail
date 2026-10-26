@@ -643,7 +643,14 @@ pub async fn invite_event(state: State<'_, AppState>, message_id: i64) -> Result
     crate::calendar::invite_for_message(&state, message_id).await
 }
 
+/// Everything the event popup shows beyond the cached row (description, repeat pattern...).
+#[tauri::command]
+pub async fn event_detail(state: State<'_, AppState>, account_id: i64, remote_id: String) -> Result<crate::calendar::EventDetail> {
+    crate::calendar::event_detail(&state, account_id, &remote_id).await
+}
+
 /// RSVP to an event: updates the calendar at once and sends the reply in the background.
+/// `series`: answer the whole series an occurrence belongs to.
 #[tauri::command]
 pub fn respond_to_event(
     app: AppHandle,
@@ -651,8 +658,18 @@ pub fn respond_to_event(
     account_id: i64,
     event_remote_id: String,
     response: crate::outbox::Rsvp,
+    series: Option<bool>,
 ) -> Result<()> {
-    state.db.with(|c| crate::calendar::respond(c, account_id, &event_remote_id, response))?;
+    let target = if series.unwrap_or(false) {
+        state
+            .db
+            .with(|c| crate::calendar::event_by_remote(c, account_id, &event_remote_id))?
+            .and_then(|e| e.series_master_id)
+            .unwrap_or(event_remote_id)
+    } else {
+        event_remote_id
+    };
+    state.db.with(|c| crate::calendar::respond(c, account_id, &target, response))?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
     let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));

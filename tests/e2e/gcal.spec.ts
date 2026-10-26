@@ -194,3 +194,25 @@ test("quick add asks which calendar when there are two, Tab switches, and it rem
   await page.keyboard.press("Shift+C");
   await expect(page.getByTestId("quick-add-account")).toContainText("Google Calendar"); // remembered
 });
+
+test("Google event details: the series pattern from its RRULE, description, reminder, privacy", async ({ inbox: page }, testInfo) => {
+  await addGmail(page);
+  await showCalendarPane(page);
+  await expect.poll(async () => (await gEvents(page)).length, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  await (await findInDayView(page, "gcal-yoga_1")).click();
+  await expect(page.getByTestId("event-series")).toContainText("One occurrence of a recurring series");
+  await expect(page.getByTestId("event-recurrence")).toHaveText(/^Every week on \w+day, 10 times$/);
+  await expect(page.getByTestId("event-exception")).toHaveCount(0);
+  await expect(page.getByTestId("event-reminder")).toHaveText("Default reminder");
+  await page.keyboard.press("Escape");
+
+  await (await findInDayView(page, "gcal-lunch")).click();
+  await expect(page.getByTestId("event-series")).toHaveCount(0);
+  await expect(page.frameLocator("[data-testid=event-description]").locator("b")).toHaveText("ideas");
+  await expect(page.getByTestId("event-reminder")).toHaveText("10 minutes before");
+  await expect(page.getByTestId("event-join-link")).toHaveText("Google Meet");
+  await expect(page.locator("[data-testid=event-attendee-group][data-group=tentative]")).toContainText("Lee Wong");
+  await expect(page.locator("[data-testid=event-attendee-group][data-group=tentative]")).toContainText("optional");
+  await snap(page, testInfo, "google-event-details");
+});

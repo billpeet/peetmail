@@ -109,7 +109,7 @@ test("clicking an event shows its details, from the week view and the day view",
   await expect(page.getByTestId("event-title")).toHaveText("Design review");
   await expect(page.getByTestId("event-location")).toHaveText("Room 4 / Teams");
   await expect(page.getByTestId("event-attendees")).toContainText("Sam Carter");
-  await expect(page.getByTestId("event-response")).toContainText("No response");
+  await expect(page.getByTestId("event-response")).toContainText("Not answered yet");
   await expect(page.getByTestId("event-join")).toBeVisible();
   await snap(page, testInfo, "event-details");
   await page.keyboard.press("Escape");
@@ -125,13 +125,16 @@ test("clicking an event shows its details, from the week view and the day view",
 
 test("recurring meetings and bare events show their details (subject, organiser, location)", async ({ inbox: page, fake }) => {
   await showCalendar(page);
+  // Sync fetched only the master delta doesn't list (opening a popup fetches more, on purpose).
+  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-sync-series")).toHaveLength(1);
+  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-standup-series")).toHaveLength(0);
   // Standup occurrences arrive bare; details come from the series master in the delta.
   const standup = page.locator("[data-testid=cal-event]", { hasText: "Standup" });
   await page.getByTestId("day-grid").evaluate((el) => (el.scrollTop = 8 * 44));
   await expect(standup).toHaveCount(1);
   await standup.click();
   await expect(page.getByTestId("event-title")).toHaveText("Standup");
-  await expect(page.getByTestId("event-attendees")).toContainText("Sam Carter");
+  await expect(page.getByTestId("event-organizer")).toContainText("Sam Carter");
   await page.keyboard.press("Escape");
 
   // Team sync's master isn't in the delta at all; the app fetched it by id.
@@ -144,9 +147,6 @@ test("recurring meetings and bare events show their details (subject, organiser,
   await expect(planning).toContainText("Quarterly planning");
   await planning.click();
   await expect(page.getByTestId("event-location")).toHaveText("Board room");
-
-  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-sync-series")).toHaveLength(1);
-  expect(fake.state.requests.filter((r) => r.path === "/v1.0/me/events/evt-standup-series")).toHaveLength(0);
 });
 
 test("the left sidebar switches between Mail and Calendar, and so do 1 and 2", async ({ inbox: page }, testInfo) => {

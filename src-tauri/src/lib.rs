@@ -12,6 +12,7 @@ mod mail;
 mod notify;
 mod outbox;
 mod query;
+mod recurrence;
 mod sanitize;
 mod secure;
 mod state;
@@ -229,6 +230,7 @@ pub fn run() {
             commands::list_events,
             commands::invite_event,
             commands::respond_to_event,
+            commands::event_detail,
             commands::create_event,
             commands::snooze_thread,
             commands::unsnooze_thread,

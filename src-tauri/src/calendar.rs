@@ -53,6 +53,10 @@ pub struct Event {
     pub join_url: Option<String>,
     pub web_link: Option<String>,
     pub preview: String,
+    /// singleInstance | occurrence | exception (series masters are never listed).
+    pub event_type: String,
+    /// The series this occurrence belongs to.
+    pub series_master_id: Option<String>,
 }
 
 /// An event as parsed from Graph (no local id yet).
@@ -203,7 +207,8 @@ pub fn delete_event(conn: &Connection, account_id: i64, remote_id: &str) -> Resu
 }
 
 const EVENT_COLS: &str = "id, account_id, remote_id, subject, start_at, end_at, is_all_day, location, organizer_name,
-    organizer_address, attendees_json, response, is_organizer, is_cancelled, show_as, join_url, web_link, preview";
+    organizer_address, attendees_json, response, is_organizer, is_cancelled, show_as, join_url, web_link, preview,
+    event_type, series_master_id";
 
 fn event_from_row(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     let attendees: String = r.get(10)?;
@@ -226,6 +231,8 @@ fn event_from_row(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         join_url: r.get(15)?,
         web_link: r.get(16)?,
         preview: r.get(17)?,
+        event_type: r.get(18)?,
+        series_master_id: r.get(19)?,
     })
 }
 
@@ -434,6 +441,68 @@ async fn hydrate(state: &AppState, account_id: i64) -> Result<bool> {
     Ok(changed)
 }
 
+// ---------- full details (the event popup) ----------
+
+/// What the popup shows beyond the cached row; fetched when it opens.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDetail {
+    /// Sanitized HTML.
+    pub body_html: String,
+    /// How the series repeats (this event's, or its series master's).
+    pub recurrence: Option<crate::recurrence::Recurrence>,
+    pub series_master_id: Option<String>,
+    /// One instance of a series.
+    pub is_occurrence: bool,
+    /// An instance changed from the series pattern (moved, retitled...).
+    pub is_exception: bool,
+    /// Minutes before the start; None: no reminder.
+    pub reminder_minutes: Option<i64>,
+    /// The calendar's default reminder applies (Google).
+    pub reminder_default: bool,
+    /// normal | personal | private | confidential
+    pub sensitivity: String,
+    pub categories: Vec<String>,
+    /// low | normal | high
+    pub importance: String,
+}
+
+pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) -> Result<EventDetail> {
+    if state.db.with(|c| crate::db::account_provider(c, account_id))? == "google" {
+        return crate::gcal::event_detail(state, account_id, remote_id).await;
+    }
+    let get = |id: &str, select: &str| {
+        let url = format!("{}/me/events/{id}?$select={select}", graph::base());
+        async move {
+            mail::graph_call(state, account_id, reqwest::Method::GET, &url, None, &[PREFER_IMMUTABLE, PREFER_UTC, r#"outlook.body-content-type="html""#]).await
+        }
+    };
+    let v = get(remote_id, "body,type,seriesMasterId,recurrence,isReminderOn,reminderMinutesBeforeStart,sensitivity,categories,importance").await?;
+    let kind = v["type"].as_str().unwrap_or("singleInstance");
+    let master_id = v["seriesMasterId"].as_str().map(String::from);
+    let recurrence = match (&master_id, v.get("recurrence").filter(|r| !r.is_null())) {
+        (_, Some(r)) => crate::recurrence::from_graph(r),
+        (Some(m), None) => get(m, "recurrence").await.ok().and_then(|mv| mv.get("recurrence").and_then(crate::recurrence::from_graph)),
+        _ => None,
+    };
+    let body = v.pointer("/body/content").and_then(Value::as_str).unwrap_or_default();
+    Ok(EventDetail {
+        body_html: match v.pointer("/body/contentType").and_then(Value::as_str) {
+            Some("text") => crate::sanitize::text_to_html(body),
+            _ => crate::sanitize::clean_html(body),
+        },
+        recurrence,
+        series_master_id: master_id,
+        is_occurrence: matches!(kind, "occurrence" | "exception"),
+        is_exception: kind == "exception",
+        reminder_minutes: v["isReminderOn"].as_bool().unwrap_or(false).then(|| v["reminderMinutesBeforeStart"].as_i64().unwrap_or(15)),
+        reminder_default: false,
+        sensitivity: v["sensitivity"].as_str().unwrap_or("normal").to_string(),
+        categories: v["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
+        importance: v["importance"].as_str().unwrap_or("normal").to_string(),
+    })
+}
+
 // ---------- invites ----------
 
 #[derive(Debug, Serialize)]
@@ -536,10 +605,11 @@ fn uuid_like() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Records an RSVP locally and queues it for Graph.
+/// Records an RSVP locally and queues it. Answering a series master answers every
+/// occurrence too (until the server says otherwise).
 pub fn respond(conn: &Connection, account_id: i64, event_remote_id: &str, response: crate::outbox::Rsvp) -> Result<()> {
     conn.execute(
-        "UPDATE events SET response = ?3 WHERE account_id = ?1 AND remote_id = ?2",
+        "UPDATE events SET response = ?3 WHERE account_id = ?1 AND (remote_id = ?2 OR series_master_id = ?2)",
         params![account_id, event_remote_id, response.status()],
     )?;
     crate::outbox::enqueue(

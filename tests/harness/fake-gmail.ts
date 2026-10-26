@@ -69,24 +69,26 @@ const me = { email: GMAIL_ACCOUNT.email, displayName: GMAIL_ACCOUNT.name, self: 
 export function defaultGcal(now = Date.now()): GEvent[] {
   const yoga = (i: number, days: number) => ({
     kind: "calendar#event", id: `gcal-yoga_${i}`, status: "confirmed", summary: "Yoga", recurringEventId: "gcal-yoga", iCalUID: "yoga@google.com",
-    start: { dateTime: at(now, days, 7) }, end: { dateTime: at(now, days, 8) }, organizer: me, transparency: "transparent", htmlLink: "https://calendar.google.com/yoga",
+    start: { dateTime: at(now, days, 7) }, end: { dateTime: at(now, days, 8) }, originalStartTime: { dateTime: at(now, days, 7) },
+    organizer: me, transparency: "transparent", htmlLink: "https://calendar.google.com/yoga",
   });
   return [
     { kind: "calendar#event", id: "gcal-dentist", status: "confirmed", summary: "Dentist", iCalUID: "dentist@google.com", location: "12 Main St",
       start: { dateTime: at(now, 1, 22) }, end: { dateTime: at(now, 1, 22, 30) }, organizer: me, htmlLink: "https://calendar.google.com/dentist" },
     { kind: "calendar#event", id: "gcal-lunch", status: "confirmed", summary: "Team lunch", iCalUID: "lunch-123@google.com", location: "Café Beetroot",
       start: { dateTime: at(now, 2, 1) }, end: { dateTime: at(now, 2, 2) }, hangoutLink: "https://meet.google.com/abc-defg-hij",
+      description: "Bring <b>ideas</b> for the offsite.", reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 10 }] },
       organizer: { email: "kim@friends.example", displayName: "Kim Park" },
       attendees: [
         { email: "kim@friends.example", displayName: "Kim Park", organizer: true, responseStatus: "accepted" },
         { ...me, responseStatus: "needsAction" },
         { email: "lee@friends.example", displayName: "Lee Wong", responseStatus: "tentative", optional: true },
       ] },
-    { kind: "calendar#event", id: "gcal-yoga", status: "confirmed", summary: "Yoga", iCalUID: "yoga@google.com", recurrence: ["RRULE:FREQ=WEEKLY"],
+    { kind: "calendar#event", id: "gcal-yoga", status: "confirmed", summary: "Yoga", iCalUID: "yoga@google.com", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=10"],
       start: { dateTime: at(now, 1, 7) }, end: { dateTime: at(now, 1, 8) }, organizer: me, transparency: "transparent" },
     yoga(1, 1), yoga(2, 8), yoga(3, 15),
     { kind: "calendar#event", id: "gcal-holiday", status: "confirmed", summary: "Public holiday", iCalUID: "holiday@google.com",
-      start: { date: date(now, 3) }, end: { date: date(now, 4) }, organizer: me, transparency: "transparent" },
+      start: { date: date(now, 3) }, end: { date: date(now, 4) }, organizer: me, transparency: "transparent", visibility: "private" },
     { kind: "calendar#event", id: "gcal-old", status: "confirmed", summary: "Long ago", iCalUID: "old@google.com",
       start: { dateTime: at(now, -60, 9) }, end: { dateTime: at(now, -60, 10) }, organizer: me },
   ];

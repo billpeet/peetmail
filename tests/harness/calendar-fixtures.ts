@@ -21,6 +21,13 @@ export type GraphEvent = {
   bodyPreview: string;
   type: "singleInstance" | "occurrence" | "exception" | "seriesMaster";
   seriesMasterId?: string;
+  body?: { contentType: "html" | "text"; content: string };
+  recurrence?: Record<string, any>;
+  isReminderOn?: boolean;
+  reminderMinutesBeforeStart?: number;
+  sensitivity?: string;
+  categories?: string[];
+  importance?: string;
   /** Fake-only: delta sends this event bare (id, type, seriesMasterId, start, end), like Graph does for occurrences. */
   bare?: boolean;
   /** Fake-only: a series master that delta doesn't list (the app must GET it by id). */
@@ -58,7 +65,19 @@ type Spec = {
   seriesMasterId?: string;
   bare?: boolean;
   hiddenFromDelta?: boolean;
+  /** HTML description. */
+  body?: string;
+  recurrence?: Record<string, any>;
+  /** Minutes before; null turns the reminder off. Default 15. */
+  reminder?: number | null;
+  sensitivity?: string;
+  categories?: string[];
 };
+
+/** Local YYYY-MM-DD (recurrence range dates are local to the series' zone). */
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 export function makeEvent(s: Spec): GraphEvent {
   const organizer = s.organizer ?? ME;
@@ -81,6 +100,13 @@ export function makeEvent(s: Spec): GraphEvent {
     bodyPreview: "",
     type: s.type ?? (s.seriesMasterId ? "occurrence" : "singleInstance"),
     ...(s.seriesMasterId ? { seriesMasterId: s.seriesMasterId } : {}),
+    ...(s.body !== undefined ? { body: { contentType: "html", content: s.body } } : {}),
+    ...(s.recurrence ? { recurrence: s.recurrence } : {}),
+    isReminderOn: s.reminder !== null,
+    reminderMinutesBeforeStart: s.reminder ?? 15,
+    sensitivity: s.sensitivity ?? "normal",
+    categories: s.categories ?? [],
+    importance: "normal",
     ...(s.bare ? { bare: true } : {}),
     ...(s.hiddenFromDelta ? { hiddenFromDelta: true } : {}),
   };
@@ -106,6 +132,7 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
   events.push(makeEvent({
     id: "evt-standup-series", type: "seriesMaster", subject: "Standup", start: localAt(-10, 9, 0, now), end: localAt(-10, 9, 15, now),
     organizer: SAM, attendees: [ME, PRIYA], join: true,
+    recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: ymd(localAt(-10, 9, 0, now)) } },
   }));
   for (let d = -10; d <= 10; d++) {
     events.push(makeEvent({
@@ -117,6 +144,10 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
   events.push(makeEvent({
     id: "evt-sync-series", type: "seriesMaster", subject: "Team sync", start: wed(-8), end: new Date(wed(-8).getTime() + 30 * 60_000),
     location: "Room 2", organizer: PRIYA, attendees: [ME, SAM], hiddenFromDelta: true,
+    recurrence: {
+      pattern: { type: "weekly", interval: 1, daysOfWeek: ["wednesday"], firstDayOfWeek: "monday" },
+      range: { type: "endDate", startDate: ymd(wed(-8)), endDate: ymd(wed(8)) },
+    },
   }));
   for (let w = -2; w <= 2; w++) {
     events.push(makeEvent({
@@ -136,8 +167,10 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
     id: "evt-invite", subject: "Design review", start: localAt(0, 11, 0, now), end: localAt(0, 12, 0, now),
     location: "Room 4 / Teams", organizer: { name: "Calendar", address: "calendar-noreply@contoso.com" },
     attendees: [ME, SAM, PRIYA], response: "notResponded", join: true, showAs: "tentative",
+    body: '<p>Agenda:</p><ul><li>New onboarding mockups</li><li>Open questions</li></ul><p><a href="https://teams.example/join/evt-invite">Join on Teams</a></p>',
+    reminder: 15, categories: ["Design"],
   }));
-  events.push(makeEvent({ id: "evt-lunch", subject: "Lunch with Sam", start: localAt(0, 13, 0, now), end: localAt(0, 14, 0, now), location: "Café Beetroot" }));
+  events.push(makeEvent({ id: "evt-lunch", subject: "Lunch with Sam", start: localAt(0, 13, 0, now), end: localAt(0, 14, 0, now), location: "Café Beetroot", reminder: null, sensitivity: "private" }));
   // One you created: Graph reports your response as "none" (reported: these showed as pending).
   events.push({ ...makeEvent({ id: "evt-own", subject: "Gym", start: localAt(0, 18, 0, now), end: localAt(0, 19, 0, now) }), responseStatus: { response: "none" } });
   events.push(makeEvent({ id: "evt-1on1", subject: "1:1 Priya", start: localAt(0, 15, 0, now), end: localAt(0, 15, 45, now), organizer: PRIYA, attendees: [ME] }));
