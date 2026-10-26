@@ -7,6 +7,9 @@
 //! | PEETMAIL_DATA_DIR             | SQLite + logs go here instead of %APPDATA%               |
 //! | PEETMAIL_GRAPH_URL            | Graph base URL, e.g. http://127.0.0.1:4010/v1.0          |
 //! | PEETMAIL_AUTHORITY_URL        | OAuth authority, e.g. http://127.0.0.1:4010/oauth        |
+//! | PEETMAIL_GMAIL_URL            | Gmail API base, e.g. http://127.0.0.1:4011/gmail/v1/users/me |
+//! | PEETMAIL_GCAL_URL             | Google Calendar API base (…/calendar/v3)                 |
+//! | PEETMAIL_GOOGLE_AUTH_URL      | Google OAuth base (serves /authorize and /token)         |
 //! | PEETMAIL_AUTH_AUTOFOLLOW=1    | Follow the authorize URL with reqwest, not a browser     |
 //! | PEETMAIL_SYNC_INTERVAL_SECS   | Background sync interval (default 60)                    |
 //! | PEETMAIL_HEADLESS=1           | Window hidden, no taskbar entry, never takes focus       |

@@ -8,6 +8,8 @@ use crate::error::{AppError, Result};
 use crate::secure;
 
 pub const KEY_CLIENT_ID: &str = "ms_client_id";
+pub const KEY_GOOGLE_CLIENT_ID: &str = "google_client_id";
+pub const KEY_GOOGLE_CLIENT_SECRET: &str = "google_client_secret";
 pub const KEY_CACHE_DAYS: &str = "cache_days";
 pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 
@@ -59,7 +61,7 @@ pub struct Preferences {
     pub layout: String,
     /// Width of the list in the preview layout, in CSS pixels.
     pub list_width: i64,
-    /// What the right pane shows: "recent" (Recent Opens) or "calendar" (day view).
+    /// What the right pane shows: "calendar" (day view, the default) or "recent" (Recent Opens).
     pub right_pane_tab: String,
     /// First day of the week in the calendar: 0 = Sunday, 1 = Monday ... 6 = Saturday.
     pub week_starts_on: i64,
@@ -105,6 +107,25 @@ impl AppState {
             .filter(|s| !s.trim().is_empty()))
     }
 
+    /// Google OAuth client (ID, secret). The secret of a Desktop-app client isn't
+    /// confidential (Google says so), but Google may still require it on token requests.
+    pub fn google_client(&self) -> Result<Option<(String, Option<String>)>> {
+        let (id, secret) = self.db.with(|c| Ok((db::get_setting(c, KEY_GOOGLE_CLIENT_ID)?, db::get_setting(c, KEY_GOOGLE_CLIENT_SECRET)?)))?;
+        let id = id.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_ID").map(String::from)).filter(|s| !s.trim().is_empty());
+        let secret = secret.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_SECRET").map(String::from)).filter(|s| !s.trim().is_empty());
+        Ok(id.map(|id| (id, secret)))
+    }
+
+    /// How an account's provider signs in and refreshes.
+    pub fn oauth_for(&self, provider: &str) -> Result<auth::OAuthConfig> {
+        if provider == "google" {
+            let (id, secret) = self.google_client()?.ok_or_else(|| AppError::Other("no Google client ID configured".into()))?;
+            Ok(auth::OAuthConfig::google(&id, secret.as_deref()))
+        } else {
+            Ok(auth::OAuthConfig::microsoft(&self.require_client_id()?))
+        }
+    }
+
     pub fn require_client_id(&self) -> Result<String> {
         self.client_id()?
             .ok_or_else(|| AppError::Other("no Microsoft client ID configured".into()))
@@ -136,8 +157,9 @@ impl AppState {
                 },
                 list_width: db::get_setting(c, KEY_LIST_WIDTH)?.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_LIST_WIDTH),
                 right_pane_tab: match db::get_setting(c, KEY_RIGHT_PANE_TAB)?.as_deref() {
-                    Some("calendar") => "calendar".into(),
-                    _ => "recent".into(),
+                    // Calendar unless Recent Opens was chosen.
+                    Some("recent") => "recent".into(),
+                    _ => "calendar".into(),
                 },
                 week_starts_on: db::get_setting(c, KEY_WEEK_STARTS_ON)?
                     .and_then(|v| v.parse::<i64>().ok())
@@ -166,7 +188,7 @@ impl AppState {
             db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())?;
             db::set_setting(c, KEY_LAYOUT, if p.layout == "preview" { "preview" } else { "list" })?;
             db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())?;
-            db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "calendar" { "calendar" } else { "recent" })?;
+            db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "recent" { "recent" } else { "calendar" })?;
             db::set_setting(c, KEY_WEEK_STARTS_ON, &p.week_starts_on.rem_euclid(7).to_string())?;
             db::set_setting(c, KEY_UNDO_SEND_SECS, &p.undo_send_secs.clamp(0, 60).to_string())?;
             db::set_setting(c, KEY_NOTIFY, match p.notify.as_str() { "off" => "off", "all" => "all", _ => "focused" })?;
@@ -221,8 +243,8 @@ impl AppState {
             cache.insert(account_id, current.clone());
             return Ok(current.access_token);
         }
-        let client_id = self.require_client_id()?;
-        let fresh = auth::refresh(&self.http, &client_id, &current.refresh_token).await?;
+        let provider = self.db.with(|c| db::account_provider(c, account_id))?;
+        let fresh = auth::refresh(&self.http, &self.oauth_for(&provider)?, &current.refresh_token).await?;
         let blob = Self::store_tokens_blob(&fresh)?;
         self.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
         let token = fresh.access_token.clone();

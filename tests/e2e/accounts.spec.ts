@@ -27,8 +27,37 @@ test("a second account joins the unified inbox, each row marked with its account
   const home = row(page, "conv-plain");
   expect(await work.getAttribute("data-account-id")).not.toBe(await home.getAttribute("data-account-id"));
   await expect(work.getByTestId("row-account")).toHaveAttribute("title", WORK_ACCOUNT.mail);
-  await expect(page.getByTestId("footer-accounts")).toHaveText("2 accounts");
+  // The footer is a legend for the dots: one entry per account, in the same colours.
+  const legend = page.getByTestId("footer-account");
+  await expect(legend).toHaveCount(2);
+  await expect(legend.nth(1)).toHaveAttribute("data-email", WORK_ACCOUNT.mail);
+  const colour = async (l: import("@playwright/test").Locator) => (await l.getAttribute("class"))?.match(/bg-[a-z]+-\d+/)?.[0];
+  expect(await colour(legend.nth(1).locator("span").first())).toBe(await colour(work.getByTestId("row-account")));
+  expect(await colour(legend.nth(0).locator("span").first())).not.toBe(await colour(work.getByTestId("row-account")));
   await snap(page, testInfo, "unified-inbox");
+
+  // Clicking an entry toggles that account's mail off and on (counts follow).
+  const inboxTab = page.getByTestId("split-tab").first();
+  const countBefore = await inboxTab.textContent();
+  await legend.nth(1).click();
+  await expect(legend.nth(1)).toHaveAttribute("data-hidden", "true");
+  await expect(row(page, "work-conv-contract")).toHaveCount(0);
+  await expect(row(page, "conv-plain")).toBeVisible();
+  await expect(inboxTab).not.toHaveText(countBefore!);
+  // Remembered across a reload.
+  await page.reload();
+  await expect(page.getByTestId("footer-account").nth(1)).toHaveAttribute("data-hidden", "true");
+  await expect(row(page, "conv-plain")).toBeVisible();
+  await expect(row(page, "work-conv-contract")).toHaveCount(0);
+  // The last visible account can't be hidden.
+  await page.getByTestId("footer-account").nth(0).click();
+  await expect(page.getByTestId("toast")).toContainText("At least one account stays visible");
+  await expect(row(page, "conv-plain")).toBeVisible();
+  // And back on.
+  await page.getByTestId("footer-account").nth(1).click();
+  await expect(page.getByTestId("footer-account").nth(1)).toHaveAttribute("data-hidden", "false");
+  await expect(row(page, "work-conv-contract")).toBeVisible();
+  await expect(inboxTab).toHaveText(countBefore!);
 
   // account: narrows to one mailbox.
   await page.keyboard.press("/");
@@ -88,6 +117,6 @@ test("signing one account out takes its mail out of the inbox and keeps the othe
   await page.keyboard.press("Escape");
   await expect(row(page, "work-conv-contract")).toHaveCount(0);
   await expect(row(page, "conv-plain")).toBeVisible();
-  await expect(page.getByTestId("footer-accounts")).not.toHaveText("2 accounts");
+  await expect(page.getByTestId("footer-account")).toHaveCount(0);
   await expect(page.getByTestId("row-account")).toHaveCount(0);
 });

@@ -291,8 +291,28 @@
       <span class="ml-auto flex items-center gap-3">
         <button data-testid="footer-palette" onclick={() => (mail.overlay = "palette")} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>K</kbd> commands</button>
         <button data-testid="footer-help" onclick={() => (mail.overlay = "help")} class="hover:text-ink-100"><kbd>?</kbd> shortcuts</button>
-        <span data-testid="footer-accounts" class="text-ink-500" title={mail.accounts.map((a) => a.email).join("\n")}>
-          {mail.accounts.length > 1 ? `${mail.accounts.length} accounts` : mail.account.email}
+        <!-- With several accounts, a legend for the coloured dots on mail and events; click
+             one to hide or show that account's mail and events. -->
+        <span data-testid="footer-accounts" class="flex items-center gap-3 text-ink-500">
+          {#if mail.accounts.length > 1}
+            {#each mail.accounts as a (a.id)}
+              {@const hidden = mail.hiddenIds.includes(a.id)}
+              <button
+                data-testid="footer-account"
+                data-email={a.email}
+                data-hidden={hidden}
+                aria-pressed={!hidden}
+                onclick={() => mail.toggleAccount(a.id)}
+                title="{a.provider === 'google' ? 'Gmail' : 'Microsoft'} · click to {hidden ? 'show' : 'hide'} this account's mail and events"
+                class={["flex max-w-56 items-center gap-1.5 hover:text-ink-100", hidden && "opacity-50"]}
+              >
+                <span class={["size-2 shrink-0 rounded-full", hidden ? "border border-ink-500 bg-transparent" : mail.accountColor(a.id)]}></span>
+                <span class={["truncate", hidden && "line-through"]}>{a.email}</span>
+              </button>
+            {/each}
+          {:else}
+            {mail.account.email}
+          {/if}
         </span>
         <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => (mail.overlay = "settings")} class="icon-btn size-6"><SettingsIcon size={14} /></button>
       </span>

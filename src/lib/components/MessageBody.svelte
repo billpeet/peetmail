@@ -1,6 +1,25 @@
 <script lang="ts" module>
+  import { api } from "$lib/api";
+
   /** Last measured content height per message, so reopening reserves the right space at once. */
   const measured = new Map<number, number>();
+
+  /**
+   * Bodies with remote images inlined, by message (in-flight requests included). A re-render
+   * (the thread refreshing after it's marked read, a sync) reuses them instead of fetching
+   * every image again. Small: these carry whole images.
+   */
+  const withImages = new Map<number, Promise<string>>();
+  function bodyWithImages(id: number): Promise<string> {
+    let p = withImages.get(id);
+    if (!p) {
+      p = api.getMessageBodyWithImages(id);
+      p.catch(() => withImages.delete(id));
+      withImages.set(id, p);
+      if (withImages.size > 10) withImages.delete(withImages.keys().next().value!);
+    }
+    return p;
+  }
 </script>
 
 <script lang="ts">
@@ -9,7 +28,6 @@
   // clicks and forwards keystrokes so shortcuts keep working after clicking into mail.
   import { untrack } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { api } from "$lib/api";
   import { getBody, peekBody } from "$lib/bodies";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
@@ -37,7 +55,7 @@
       height = measured.get(id) ?? 0;
       ready = false;
     }
-    (withImages ? api.getMessageBodyWithImages(id) : getBody(id)).then(
+    (withImages ? bodyWithImages(id) : getBody(id)).then(
       (h) => {
         if (id !== messageId || withImages !== images || h === html) return;
         html = h;

@@ -1,26 +1,29 @@
 import type { Page } from "@playwright/test";
 import { localAt } from "../harness/calendar-fixtures.ts";
-import { test, expect, snap, syncNow } from "./fixtures";
+import { test, expect, showCalendarPane, snap, syncNow } from "./fixtures";
 
 const event = (page: Page, remoteId: string) => page.locator(`[data-testid=cal-event][data-remote-id="${remoteId}"]`);
 
-async function showCalendar(page: Page) {
-  await page.keyboard.press("0");
-  await expect(page.getByTestId("day-view")).toBeVisible();
-}
+const showCalendar = showCalendarPane;
 
-test("0 shows today's calendar in the right pane, synced from Graph", async ({ inbox: page }, testInfo) => {
-  await showCalendar(page);
+test("the right pane shows today's calendar by default, synced from Graph; 0 toggles Recent Opens", async ({ inbox: page }, testInfo) => {
+  // Calendar is the first tab and the default.
+  await expect(page.getByTestId("day-view")).toBeVisible();
+  await expect(page.getByTestId("pane-tab-calendar")).toHaveAttribute("aria-selected", "true");
+  const tabs = await page.locator("[data-testid^=pane-tab-]").evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
+  expect(tabs).toEqual(["pane-tab-calendar", "pane-tab-recent"]);
   await expect(page.getByTestId("day-label")).toContainText("Today");
   await expect(event(page, "evt-invite")).toContainText("Design review");
   await expect(event(page, "evt-lunch")).toContainText("Lunch with Sam");
   await expect(page.getByTestId("now-line")).toBeVisible();
   await snap(page, testInfo, "day-view");
 
-  // 0 again goes back to Recent Opens.
+  // 0 switches to Recent Opens, and again back to the calendar.
   await page.keyboard.press("0");
   await expect(page.getByTestId("day-view")).toHaveCount(0);
   await expect(page.getByTestId("pane-tab-recent")).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("0");
+  await expect(page.getByTestId("day-view")).toBeVisible();
 });
 
 test("overlapping events sit side by side", async ({ inbox: page }) => {
@@ -113,7 +116,7 @@ test("clicking an event shows its details, from the week view and the day view",
   await expect(details).toHaveCount(0);
 
   await page.keyboard.press("Escape"); // back to the inbox
-  await page.keyboard.press("0");
+  await showCalendar(page);
   await event(page, "evt-lunch").click();
   await expect(page.getByTestId("event-title")).toHaveText("Lunch with Sam");
   await page.getByTestId("event-close").click();

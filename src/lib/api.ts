@@ -149,7 +149,15 @@ export type CalendarEvent = {
   preview: string;
 };
 
-export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
+export type Bootstrap = {
+  clientId: string | null;
+  /** Google OAuth client ID, if configured. */
+  googleClientId: string | null;
+  accounts: Account[];
+  cacheLimits: CacheLimits;
+  preferences: Preferences;
+};
+export type Provider = "microsoft" | "google";
 
 /** A conversation from the Recent Opens pane: its newest message, plus when it was opened. */
 export type RecentOpen = ThreadRow & { openedAt: string };
@@ -161,7 +169,8 @@ export type SyncStatus = { state: "syncing" | "idle" | "error"; message: string 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   setClientId: (clientId: string) => invoke<void>("set_client_id", { clientId }),
-  signIn: () => invoke<Account>("sign_in"),
+  signIn: (provider: Provider = "microsoft") => invoke<Account>("sign_in", { provider }),
+  setGoogleClient: (clientId: string, clientSecret: string | null) => invoke<void>("set_google_client", { clientId, clientSecret }),
   cancelSignIn: () => invoke<void>("cancel_sign_in"),
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),
   listFolders: (accountId: number) => invoke<Folder[]>("list_folders", { accountId }),
@@ -169,8 +178,9 @@ export const api = {
    * `folderId` null searches all mail. `split` picks a split-inbox tab (0 = Inbox) and wins over
    * `query`, which uses the query language (src-tauri/src/query.rs).
    */
-  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number) =>
-    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit }),
+  /** `hidden`: accounts toggled off in the footer legend. */
+  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number, hidden: number[] = []) =>
+    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit, hidden }),
   getThread: (accountId: number, conversationId: string) =>
     invoke<MessageRow[]>("get_thread", { accountId, conversationId }),
   getMessageBody: (messageId: number) => invoke<string>("get_message_body", { messageId }),
@@ -204,7 +214,7 @@ export const api = {
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
   /** `folderId` null: the unified inbox (every signed-in account). */
-  listSplits: (folderId: number | null) => invoke<SplitInfo[]>("list_splits", { folderId }),
+  listSplits: (folderId: number | null, hidden: number[] = []) => invoke<SplitInfo[]>("list_splits", { folderId, hidden }),
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
   getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
   listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),

@@ -76,7 +76,7 @@
   {#if allDay.length}
     <div class="space-y-1 border-b border-ink-800 px-4 pb-2">
       {#each allDay as e (e.id)}
-        <button data-testid="all-day-event" data-remote-id={e.remoteId} data-tone={eventTone(e)} onclick={() => onselect?.(e)} class="block w-full truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{e.subject}</button>
+        <button data-testid="all-day-event" data-remote-id={e.remoteId} data-tone={eventTone(e)} onclick={() => onselect?.(e)} class="block w-full truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject}</button>
       {/each}
     </div>
   {/if}
@@ -116,7 +116,7 @@
             style:left="calc({(p.col / p.cols) * 100}% + 1px)"
             style:width="calc({100 / p.cols}% - 2px)"
           >
-            <span class="block truncate font-semibold">{e.subject || "(no title)"}</span>
+            <span class="block truncate font-semibold">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject || "(no title)"}</span>
             <!-- Extra lines only when there's room for the whole line. -->
             {#if px >= 36}
               <span class="block truncate text-ink-300">{time(p.item.start)} – {time(p.item.end)}</span>

@@ -1,0 +1,584 @@
+// A fake Gmail API + Google OAuth, in-process, for tests. Covers what PeetMail uses:
+//
+//   /oauth/authorize, /oauth/token      Google-style OAuth (PKCE; secret checked if set)
+//   GET  /gmail/v1/users/me/profile
+//   GET  .../messages?labelIds=&q=after:N&maxResults=&pageToken=
+//   GET  .../messages/{id}?format=metadata|full
+//   GET  .../messages/{id}/attachments/{attachmentId}
+//   POST .../messages/{id}/modify | trash | untrash
+//   GET  .../history?startHistoryId=     (404 when older than the kept history)
+//   GET/POST .../labels
+//
+// Control API under /_test (deliver, label, delete, message?id=, state, config).
+
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { createHash, randomBytes } from "node:crypto";
+
+type Json = Record<string, any>;
+
+export const GOOGLE_CLIENT_ID = "1234567890-fake.apps.googleusercontent.com";
+export const GOOGLE_CLIENT_SECRET = "GOCSPX-fake-secret";
+export const GMAIL_ACCOUNT = { name: "Boris Dragon", email: "boris.dragon@gmail.com" };
+
+export type FakeGmailMessage = {
+  id: string;
+  threadId: string;
+  labelIds: string[];
+  internalDate: number; // ms
+  from: string;
+  to: string;
+  cc?: string;
+  subject: string;
+  snippet: string;
+  html?: string;
+  /** Raw bytes of the html part, for charset tests (overrides html). */
+  htmlBytes?: Buffer;
+  htmlCharset?: string;
+  text?: string;
+  attachments?: { filename: string; mimeType: string; data: Buffer; cid?: string }[];
+  references?: string;
+  /** For messages the app sent: the raw RFC 2822 text. */
+  raw?: string;
+  /** An invitation's iCalendar text (a text/calendar part). */
+  ics?: string;
+};
+
+export type GEvent = Json;
+
+/** iCalendar text of an invitation. */
+export function inviteIcs(uid: string, method = "REQUEST", partstat = "NEEDS-ACTION") {
+  return [
+    "BEGIN:VCALENDAR", "PRODID:-//Google Inc//Google Calendar 70.9054//EN", "VERSION:2.0", `METHOD:${method}`,
+    "BEGIN:VEVENT", "DTSTART:20261029T010000Z", "DTEND:20261029T020000Z", `UID:${uid}`,
+    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=${partstat};CN=${GMAIL_ACCOUNT.email}:mailto:${GMAIL_ACCOUNT.email}`,
+    "SUMMARY:Team lunch", "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n");
+}
+
+const day = 86_400_000;
+const at = (now: number, days: number, hour: number, min = 0) => {
+  const d = new Date(now + days * day);
+  d.setUTCHours(hour, min, 0, 0);
+  return d.toISOString().replace(".000Z", "Z");
+};
+const date = (now: number, days: number) => new Date(now + days * day).toISOString().slice(0, 10);
+const me = { email: GMAIL_ACCOUNT.email, displayName: GMAIL_ACCOUNT.name, self: true };
+
+/** A small Google calendar, relative to `now`. Series are given as master + instances. */
+export function defaultGcal(now = Date.now()): GEvent[] {
+  const yoga = (i: number, days: number) => ({
+    kind: "calendar#event", id: `gcal-yoga_${i}`, status: "confirmed", summary: "Yoga", recurringEventId: "gcal-yoga", iCalUID: "yoga@google.com",
+    start: { dateTime: at(now, days, 7) }, end: { dateTime: at(now, days, 8) }, organizer: me, transparency: "transparent", htmlLink: "https://calendar.google.com/yoga",
+  });
+  return [
+    { kind: "calendar#event", id: "gcal-dentist", status: "confirmed", summary: "Dentist", iCalUID: "dentist@google.com", location: "12 Main St",
+      start: { dateTime: at(now, 1, 22) }, end: { dateTime: at(now, 1, 22, 30) }, organizer: me, htmlLink: "https://calendar.google.com/dentist" },
+    { kind: "calendar#event", id: "gcal-lunch", status: "confirmed", summary: "Team lunch", iCalUID: "lunch-123@google.com", location: "Café Beetroot",
+      start: { dateTime: at(now, 2, 1) }, end: { dateTime: at(now, 2, 2) }, hangoutLink: "https://meet.google.com/abc-defg-hij",
+      organizer: { email: "kim@friends.example", displayName: "Kim Park" },
+      attendees: [
+        { email: "kim@friends.example", displayName: "Kim Park", organizer: true, responseStatus: "accepted" },
+        { ...me, responseStatus: "needsAction" },
+        { email: "lee@friends.example", displayName: "Lee Wong", responseStatus: "tentative", optional: true },
+      ] },
+    { kind: "calendar#event", id: "gcal-yoga", status: "confirmed", summary: "Yoga", iCalUID: "yoga@google.com", recurrence: ["RRULE:FREQ=WEEKLY"],
+      start: { dateTime: at(now, 1, 7) }, end: { dateTime: at(now, 1, 8) }, organizer: me, transparency: "transparent" },
+    yoga(1, 1), yoga(2, 8), yoga(3, 15),
+    { kind: "calendar#event", id: "gcal-holiday", status: "confirmed", summary: "Public holiday", iCalUID: "holiday@google.com",
+      start: { date: date(now, 3) }, end: { date: date(now, 4) }, organizer: me, transparency: "transparent" },
+    { kind: "calendar#event", id: "gcal-old", status: "confirmed", summary: "Long ago", iCalUID: "old@google.com",
+      start: { dateTime: at(now, -60, 9) }, end: { dateTime: at(now, -60, 10) }, organizer: me },
+  ];
+}
+
+const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+const PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+
+/** A small Gmail mailbox, relative to `now`. */
+export function defaultGmail(now = Date.now()): FakeGmailMessage[] {
+  const h = 3_600_000;
+  const me = `${GMAIL_ACCOUNT.name} <${GMAIL_ACCOUNT.email}>`;
+  return [
+    { id: "g-1", threadId: "g-thread-trip", labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: now - 1 * h, from: "Kim Park <kim@friends.example>", to: me, subject: "Ski trip in January", snippet: "Are you still keen? I found a lodge &amp; it&#39;s cheap.", html: "<p>Are you still keen? I found a lodge &amp; it's cheap.</p>" },
+    { id: "g-2", threadId: "g-thread-trip", labelIds: ["INBOX", "CATEGORY_PERSONAL"], internalDate: now - 30 * 60_000, from: "Lee Wong <lee@friends.example>", to: me, cc: "\"Park, Kim\" <kim@friends.example>", subject: "Re: Ski trip in January", snippet: "Count me in.", text: "Count me in.\n\nLee" },
+    { id: "g-3", threadId: "g-thread-sale", labelIds: ["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"], internalDate: now - 3 * h, from: "Gear Shop <deals@gear.example>", to: me, subject: "=?UTF-8?B?V2ludGVyIHNhbGUg4p2E?=", snippet: "Up to 40% off jackets", html: "<p>Up to 40% off jackets</p>" },
+    {
+      id: "g-4", threadId: "g-thread-photos", labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: now - 5 * h, from: "Mum <mum@family.example>", to: me, subject: "Photos from Sunday", snippet: "Here they are, and the plan.",
+      html: '<p>Here they are, and the plan.</p><img src="cid:pixel@mum" alt="pixel">',
+      attachments: [
+        { filename: "pixel.png", mimeType: "image/png", data: PIXEL_PNG, cid: "pixel@mum" },
+        { filename: "plan.pdf", mimeType: "application/pdf", data: Buffer.from("%PDF-1.4 fake plan") },
+      ],
+    },
+    { id: "g-5", threadId: "g-thread-latin", labelIds: ["INBOX", "CATEGORY_PERSONAL"], internalDate: now - 8 * h, from: "Café Lisboa <ola@cafe.example>", to: me, subject: "Reserva", snippet: "Obrigado pela reserva", htmlBytes: Buffer.from("<p>Caf\xe9 confirmado</p>", "latin1"), htmlCharset: "ISO-8859-1" },
+    { id: "g-6", threadId: "g-thread-trip", labelIds: ["SENT"], internalDate: now - 45 * 60_000, from: me, to: "Kim Park <kim@friends.example>", subject: "Re: Ski trip in January", snippet: "Yes! Send me the link.", text: "Yes! Send me the link." },
+    { id: "g-7", threadId: "g-thread-old-archived", labelIds: ["CATEGORY_PERSONAL"], internalDate: now - 20 * h, from: "Bank <no-reply@bank.example>", to: me, subject: "Statement ready", snippet: "Your statement is ready", text: "Your statement is ready" },
+    { id: "g-9", threadId: "g-thread-invite", labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: now - 2 * h, from: "Kim Park <kim@friends.example>", to: me, subject: "Invitation: Team lunch", snippet: "You have been invited to Team lunch", html: "<p>You have been invited to <b>Team lunch</b>.</p>", ics: inviteIcs("lunch-123@google.com") },
+    { id: "g-8", threadId: "g-thread-ancient", labelIds: ["INBOX"], internalDate: now - 400 * 24 * h, from: "Old Friend <old@friends.example>", to: me, subject: "Long ago", snippet: "Remember this?", text: "Remember this?" },
+  ];
+}
+
+/** A parsed MIME entity (what the app sent), for assertions. */
+export type MimeEntity = { headers: Record<string, string>; contentType: string; filename: string | null; body: Buffer; parts: MimeEntity[] };
+
+/** Parses a raw RFC 2822 message (CRLF), decoding base64 / quoted-printable bodies. */
+export function parseMime(raw: string | Buffer): MimeEntity {
+  const text = Buffer.isBuffer(raw) ? raw.toString("latin1") : raw;
+  const split = text.indexOf("\r\n\r\n");
+  const headText = split >= 0 ? text.slice(0, split) : text;
+  const bodyText = split >= 0 ? text.slice(split + 4) : "";
+  const headers: Record<string, string> = {};
+  for (const line of headText.replace(/\r\n[ \t]+/g, " ").split("\r\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) headers[line.slice(0, i).toLowerCase()] = line.slice(i + 1).trim();
+  }
+  const contentType = (headers["content-type"] ?? "text/plain").split(";")[0].trim().toLowerCase();
+  const filename = (headers["content-disposition"] ?? "").match(/filename="?([^";]+)"?/)?.[1] ?? null;
+  if (contentType.startsWith("multipart/")) {
+    const boundary = headers["content-type"].match(/boundary="?([^";]+)"?/)![1];
+    const chunks = bodyText.split(`--${boundary}`).slice(1);
+    const parts = chunks.filter((c) => !c.startsWith("--")).map((c) => parseMime(c.replace(/^\r\n/, "").replace(/\r\n$/, "")));
+    return { headers, contentType, filename, body: Buffer.alloc(0), parts };
+  }
+  const enc = (headers["content-transfer-encoding"] ?? "").toLowerCase();
+  const body = enc === "base64" ? Buffer.from(bodyText.replace(/\s+/g, ""), "base64") : Buffer.from(bodyText, "latin1");
+  return { headers, contentType, filename, body, parts: [] };
+}
+
+/** Every leaf part, depth first. */
+export function leaves(e: MimeEntity): MimeEntity[] {
+  return e.parts.length ? e.parts.flatMap(leaves) : [e];
+}
+
+function payloadOf(m: FakeGmailMessage, format: string): Json {
+  const headers = [
+    { name: "From", value: m.from },
+    { name: "To", value: m.to },
+    ...(m.cc ? [{ name: "Cc", value: m.cc }] : []),
+    { name: "Subject", value: m.subject },
+    { name: "Date", value: new Date(m.internalDate).toUTCString().replace("GMT", "+0000") },
+    { name: "Message-ID", value: `<${m.id}@mail.example>` },
+    ...(m.references ? [{ name: "References", value: m.references }] : []),
+  ];
+  const alt: Json[] = [];
+  if (m.ics) alt.push({ partId: "0.2", mimeType: "text/calendar", filename: "", headers: [{ name: "Content-Type", value: "text/calendar; charset=UTF-8; method=REQUEST" }], body: { size: m.ics.length, data: b64u(m.ics) } });
+  if (m.text) alt.push({ partId: "0.0", mimeType: "text/plain", filename: "", headers: [{ name: "Content-Type", value: "text/plain; charset=UTF-8" }], body: { size: m.text.length, data: b64u(m.text) } });
+  if (m.html || m.htmlBytes) {
+    const bytes = m.htmlBytes ?? Buffer.from(m.html!);
+    alt.push({ partId: "0.1", mimeType: "text/html", filename: "", headers: [{ name: "Content-Type", value: `text/html; charset=${m.htmlCharset ?? "UTF-8"}` }], body: { size: bytes.length, data: b64u(bytes) } });
+  }
+  const atts = (m.attachments ?? []).map((a, i) => ({
+    partId: String(i + 1),
+    mimeType: a.mimeType,
+    filename: a.filename,
+    headers: [
+      ...(a.cid ? [{ name: "Content-ID", value: `<${a.cid}>` }, { name: "Content-Disposition", value: `inline; filename=${a.filename}` }] : [{ name: "Content-Disposition", value: `attachment; filename=${a.filename}` }]),
+    ],
+    // Like Gmail: attachment ids change between fetches.
+    body: { size: a.data.length, attachmentId: `att-${m.id}-${i}-${randomBytes(3).toString("hex")}` },
+  }));
+  const payload: Json = atts.length
+    ? { mimeType: "multipart/mixed", headers, parts: [{ partId: "0", mimeType: "multipart/alternative", parts: alt }, ...atts] }
+    : { mimeType: "multipart/alternative", headers, parts: alt };
+  if (format === "metadata") {
+    // Metadata keeps the structure's top level but no bodies, and only the asked-for headers.
+    return { mimeType: payload.mimeType, headers: headers.filter((h) => ["From", "To", "Cc", "Subject"].includes(h.name)) };
+  }
+  return payload;
+}
+
+/** `n` filler inbox messages (one per thread), newest after the default mailbox. */
+export function fillerGmail(n: number, now = Date.now()): FakeGmailMessage[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `g-fill-${i}`, threadId: `g-thread-fill-${i}`, labelIds: ["INBOX", "CATEGORY_PERSONAL"], internalDate: now - (10 + i) * 60_000,
+    from: `Person ${i} <p${i}@example.com>`, to: GMAIL_ACCOUNT.email, subject: `Filler ${i}`, snippet: `Message ${i}`, text: `Message ${i}`,
+  }));
+}
+
+/** Gmail's quota cost per call (developers.google.com/workspace/gmail/api/reference/quota). */
+function quotaCost(method: string, rest: string) {
+  if (rest.startsWith("/history")) return 2;
+  if (rest === "/profile" || (rest === "/labels" && method === "GET")) return 1;
+  if (rest.endsWith("/send")) return 100;
+  return 5;
+}
+
+export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGmailMessage[]; extra?: number } = {}) {
+  const state = {
+    messages: new Map<string, FakeGmailMessage>(),
+    labels: [] as { id: string; name: string; type: string }[],
+    historyId: 1000,
+    /** Oldest startHistoryId still answered (older ones get 404, like expired history). */
+    minHistory: 0,
+    history: [] as Json[],
+    codes: new Map<string, { challenge: string; redirectUri: string }>(),
+    tokens: new Set<string>(),
+    refresh: new Set<string>(),
+    config: {
+      requireSecret: true,
+      pageSize: 500,
+      /** Google's per-user limits: 15,000 units a minute; and a short-term ceiling. */
+      quotaPerSecond: 250,
+      quotaPerMinute: 15_000,
+      /** The next N Gmail calls fail with a quota error regardless. */
+      failQuotaNext: 0,
+      /** message id -> how many more GETs of it fail with 500. */
+      failIds: {} as Record<string, number>,
+    },
+    usage: [] as { at: number; cost: number }[],
+    quotaErrors: 0,
+    events: new Map<string, GEvent>(),
+    eventSeq: 1,
+    /** event id -> the seq of its last change (for sync tokens). */
+    eventChanged: new Map<string, number>(),
+    minSyncToken: 0,
+    /** false: the token lacks calendar access (an account that signed in before the scope). */
+    grantCalendar: true,
+    requests: [] as { method: string; path: string; status: number }[],
+    /** Writes the app made (modify, trash, label creation). */
+    sent: [] as Json[],
+  };
+  for (const m of [...(mailbox ?? defaultGmail()), ...fillerGmail(extra)]) state.messages.set(m.id, m);
+  for (const e of defaultGcal()) state.events.set(e.id, e);
+  function touchEvent(id: string) {
+    state.eventChanged.set(id, ++state.eventSeq);
+  }
+
+  function log(entry: Json) {
+    state.historyId++;
+    state.history.push({ id: String(state.historyId), ...entry });
+  }
+  function changeLabels(m: FakeGmailMessage, add: string[], remove: string[]) {
+    const added = add.filter((l) => !m.labelIds.includes(l));
+    const removed = remove.filter((l) => m.labelIds.includes(l));
+    m.labelIds = [...m.labelIds.filter((l) => !removed.includes(l)), ...added];
+    if (added.length) log({ labelsAdded: [{ message: { id: m.id, threadId: m.threadId }, labelIds: added }] });
+    if (removed.length) log({ labelsRemoved: [{ message: { id: m.id, threadId: m.threadId }, labelIds: removed }] });
+  }
+  const resource = (m: FakeGmailMessage, format: string) => ({
+    id: m.id, threadId: m.threadId, labelIds: m.labelIds, snippet: m.snippet, internalDate: String(m.internalDate), historyId: String(state.historyId), payload: payloadOf(m, format),
+  });
+
+  const server = createServer((req, res) => handle(req, res).catch((e) => send(res, 500, { error: { message: String(e) } })));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
+    const isHtml = typeof body === "string";
+    res.writeHead(status, { "Content-Type": isHtml ? "text/html" : "application/json", ...headers });
+    res.end(isHtml ? body : JSON.stringify(body));
+  }
+  async function readBody(req: IncomingMessage): Promise<Json> {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const raw = Buffer.concat(chunks).toString();
+    if (!raw) return {};
+    if ((req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) return Object.fromEntries(new URLSearchParams(raw));
+    return JSON.parse(raw);
+  }
+  const err = (status: number, message: string) => ({ error: { code: status, message, status: "ERROR" } });
+
+  async function handle(req: IncomingMessage, res: ServerResponse) {
+    const url = new URL(req.url ?? "/", origin);
+    const p = url.pathname;
+    const method = req.method ?? "GET";
+    const reply = (status: number, body: unknown, headers?: Record<string, string>) => {
+      if (!p.startsWith("/_test")) state.requests.push({ method, path: p, status });
+      send(res, status, body, headers);
+    };
+
+    if (p.startsWith("/_test/")) return control(req, url, reply);
+
+    if (p === "/oauth/authorize") {
+      const q = url.searchParams;
+      if (q.get("client_id") !== GOOGLE_CLIENT_ID) return reply(400, "<h1>Error 401: invalid_client</h1>");
+      if (q.get("code_challenge_method") !== "S256") return reply(400, "<h1>PKCE required</h1>");
+      if (q.get("access_type") !== "offline") return reply(400, "<h1>expected access_type=offline</h1>");
+      const code = randomBytes(12).toString("base64url");
+      state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri: q.get("redirect_uri") ?? "" });
+      const back = new URL(q.get("redirect_uri") ?? "");
+      back.searchParams.set("code", code);
+      back.searchParams.set("state", q.get("state") ?? "");
+      return reply(302, "", { Location: back.toString() });
+    }
+    if (p === "/oauth/token" && method === "POST") {
+      const f = await readBody(req);
+      if (f.client_id !== GOOGLE_CLIENT_ID) return reply(401, { error: "invalid_client", error_description: "The OAuth client was not found." });
+      if (state.config.requireSecret && f.client_secret !== GOOGLE_CLIENT_SECRET) return reply(400, { error: "invalid_request", error_description: "client_secret is missing." });
+      const issue = () => {
+        const access = `g-at-${randomBytes(9).toString("hex")}`;
+        const refresh = `g-rt-${randomBytes(9).toString("hex")}`;
+        state.tokens.add(access);
+        state.refresh.add(refresh);
+        const idToken = `${b64u('{"alg":"none"}')}.${b64u(JSON.stringify({ email: GMAIL_ACCOUNT.email, name: GMAIL_ACCOUNT.name }))}.`;
+        return { access, refresh, idToken };
+      };
+      if (f.grant_type === "authorization_code") {
+        const entry = state.codes.get(f.code);
+        state.codes.delete(f.code);
+        if (!entry || entry.redirectUri !== f.redirect_uri) return reply(400, { error: "invalid_grant", error_description: "Bad code" });
+        if (createHash("sha256").update(f.code_verifier ?? "").digest("base64url") !== entry.challenge) return reply(400, { error: "invalid_grant", error_description: "PKCE failed" });
+        const t = issue();
+        return reply(200, { access_token: t.access, refresh_token: t.refresh, expires_in: 3599, id_token: t.idToken, token_type: "Bearer" });
+      }
+      if (f.grant_type === "refresh_token") {
+        if (!state.refresh.has(f.refresh_token)) return reply(400, { error: "invalid_grant", error_description: "Token has been expired or revoked." });
+        const t = issue();
+        // Google keeps the refresh token on refresh.
+        return reply(200, { access_token: t.access, expires_in: 3599, token_type: "Bearer" });
+      }
+      return reply(400, { error: "unsupported_grant_type" });
+    }
+
+    if (p.startsWith("/calendar/v3/")) return calendar(req, url, reply);
+    const uploadSend = p === "/upload/gmail/v1/users/me/messages/send";
+    const base = "/gmail/v1/users/me";
+    if (!p.startsWith(base) && !uploadSend) return reply(404, err(404, "Not found"));
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
+    const rest = uploadSend ? "/messages/send" : p.slice(base.length);
+
+    // Quota, like Google: per-user units over a rolling second and minute.
+    const now = Date.now();
+    state.usage = state.usage.filter((u) => now - u.at < 60_000);
+    const used = (ms: number) => state.usage.filter((u) => now - u.at < ms).reduce((n, u) => n + u.cost, 0);
+    const c = quotaCost(method, rest);
+    if (state.config.failQuotaNext > 0 || used(1000) + c > state.config.quotaPerSecond || used(60_000) + c > state.config.quotaPerMinute) {
+      if (state.config.failQuotaNext > 0) state.config.failQuotaNext--;
+      state.quotaErrors++;
+      return reply(
+        403,
+        { error: { code: 403, message: "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com'", errors: [{ reason: "rateLimitExceeded" }], status: "PERMISSION_DENIED" } },
+        { "Retry-After": "1" },
+      );
+    }
+    state.usage.push({ at: now, cost: c });
+
+    if (rest === "/profile") return reply(200, { emailAddress: GMAIL_ACCOUNT.email, messagesTotal: state.messages.size, historyId: String(state.historyId) });
+
+    if (rest === "/messages" && method === "GET") {
+      const label = url.searchParams.get("labelIds");
+      const after = Number((url.searchParams.get("q") ?? "").match(/after:(\d+)/)?.[1] ?? 0) * 1000;
+      const size = Math.min(Number(url.searchParams.get("maxResults") ?? 100), state.config.pageSize);
+      const all = [...state.messages.values()]
+        .filter((m) => (!label || m.labelIds.includes(label)) && m.internalDate > after)
+        .sort((a, b) => b.internalDate - a.internalDate);
+      const start = Number(url.searchParams.get("pageToken") ?? 0);
+      const page = all.slice(start, start + size);
+      return reply(200, {
+        ...(page.length ? { messages: page.map((m) => ({ id: m.id, threadId: m.threadId })) } : {}),
+        ...(start + size < all.length ? { nextPageToken: String(start + size) } : {}),
+        resultSizeEstimate: all.length,
+      });
+    }
+
+    let m: RegExpMatchArray | null;
+    if ((m = rest.match(/^\/messages\/([^/]+)$/)) && method === "GET") {
+      if ((state.config.failIds[m[1]] ?? 0) > 0) {
+        state.config.failIds[m[1]]--;
+        return reply(500, err(500, "Backend Error"));
+      }
+      const msg = state.messages.get(m[1]);
+      if (!msg) return reply(404, err(404, "Requested entity was not found."));
+      return reply(200, resource(msg, url.searchParams.get("format") ?? "full"));
+    }
+    if ((m = rest.match(/^\/messages\/([^/]+)\/attachments\/([^/]+)$/))) {
+      const msg = state.messages.get(m[1]);
+      const idx = Number(m[2].split("-").at(-2));
+      const a = msg?.attachments?.[idx];
+      if (!a) return reply(404, err(404, "Requested entity was not found."));
+      return reply(200, { size: a.data.length, data: b64u(a.data) });
+    }
+    if ((m = rest.match(/^\/messages\/([^/]+)\/(modify|trash|untrash)$/)) && method === "POST") {
+      const msg = state.messages.get(m[1]);
+      if (!msg) return reply(404, err(404, "Requested entity was not found."));
+      const b = await readBody(req);
+      if (m[2] === "modify") changeLabels(msg, b.addLabelIds ?? [], b.removeLabelIds ?? []);
+      if (m[2] === "trash") changeLabels(msg, ["TRASH"], ["INBOX"]);
+      if (m[2] === "untrash") changeLabels(msg, ["INBOX"], ["TRASH"]);
+      state.sent.push({ kind: m[2], id: msg.id, add: b.addLabelIds ?? [], remove: b.removeLabelIds ?? [] });
+      return reply(200, resource(msg, "minimal"));
+    }
+    if (rest === "/messages/send" && method === "POST") {
+      let raw: string;
+      let threadId: string | undefined;
+      if (uploadSend) {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const body = Buffer.concat(chunks).toString("latin1");
+        const boundary = (req.headers["content-type"] ?? "").match(/boundary=([^;]+)/)?.[1];
+        if (!boundary) return reply(400, err(400, "expected multipart/related"));
+        const parts = body.split(`--${boundary}`).slice(1, -1).map((s) => s.replace(/^\r\n/, ""));
+        const meta = JSON.parse(parts[0].slice(parts[0].indexOf("\r\n\r\n") + 4).trim() || "{}");
+        threadId = meta.threadId;
+        raw = parts[1].slice(parts[1].indexOf("\r\n\r\n") + 4).replace(/\r\n$/, "");
+      } else {
+        const b = await readBody(req);
+        raw = Buffer.from(b.raw ?? "", "base64url").toString("latin1");
+        threadId = b.threadId;
+        if (raw.length > 5 * 1024 * 1024) return reply(413, err(413, "Request payload size exceeds the limit"));
+      }
+      const mime = parseMime(raw);
+      const id = `g-sent-${state.messages.size + 1}`;
+      const msg: FakeGmailMessage = {
+        id, threadId: threadId ?? `g-thread-sent-${id}`, labelIds: ["SENT"], internalDate: Date.now(),
+        from: mime.headers["from"] ?? GMAIL_ACCOUNT.email, to: mime.headers["to"] ?? "", cc: mime.headers["cc"], subject: mime.headers["subject"] ?? "",
+        snippet: "", text: leaves(mime).find((l) => l.contentType === "text/plain")?.body.toString("utf8") ?? "", raw,
+      };
+      state.messages.set(id, msg);
+      log({ messagesAdded: [{ message: { id, threadId: msg.threadId, labelIds: msg.labelIds } }] });
+      state.sent.push({ kind: "send", id, threadId, upload: uploadSend, raw });
+      return reply(200, { id, threadId: msg.threadId, labelIds: msg.labelIds });
+    }
+    if (rest === "/history") {
+      const start = Number(url.searchParams.get("startHistoryId"));
+      if (start < state.minHistory) return reply(404, err(404, "Requested entity was not found."));
+      return reply(200, { history: state.history.filter((h) => Number(h.id) > start), historyId: String(state.historyId) });
+    }
+    if (rest === "/labels" && method === "GET") return reply(200, { labels: [{ id: "INBOX", name: "INBOX", type: "system" }, ...state.labels] });
+    if (rest === "/labels" && method === "POST") {
+      const b = await readBody(req);
+      const label = { id: `Label_${state.labels.length + 1}`, name: b.name, type: "user" };
+      state.labels.push(label);
+      state.sent.push({ kind: "create-label", ...b });
+      return reply(200, label);
+    }
+    reply(404, err(404, `No fake route for ${method} ${rest}`));
+  }
+
+  async function calendar(req: IncomingMessage, url: URL, reply: (s: number, b: unknown) => void) {
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
+    if (!state.grantCalendar) return reply(403, { error: { code: 403, message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }], status: "PERMISSION_DENIED" } });
+    const method = req.method ?? "GET";
+    const rest = url.pathname.slice("/calendar/v3/calendars/primary/events".length);
+    const q = url.searchParams;
+    if (rest === "" && method === "GET") {
+      if (q.get("iCalUID")) {
+        // Like Google: the event itself (the series master for recurring ones).
+        const items = [...state.events.values()].filter((e) => e.iCalUID === q.get("iCalUID") && !e.recurringEventId);
+        return reply(200, { kind: "calendar#events", items });
+      }
+      const sync = q.get("syncToken");
+      if (sync !== null) {
+        if (q.get("timeMin") || q.get("timeMax")) return reply(400, err(400, "syncToken can't be combined with timeMin/timeMax"));
+        if (Number(sync) < state.minSyncToken) return reply(410, { error: { code: 410, message: "Sync token is no longer valid, a full sync is required.", errors: [{ reason: "fullSyncRequired" }] } });
+        const items = [...state.eventChanged.entries()]
+          .filter(([, seq]) => seq > Number(sync))
+          .map(([id]) => state.events.get(id) ?? { kind: "calendar#event", id, status: "cancelled" })
+          .filter((e) => !e.recurrence);
+        return reply(200, { kind: "calendar#events", items, nextSyncToken: String(state.eventSeq) });
+      }
+      const min = q.get("timeMin") ?? "0000", max = q.get("timeMax") ?? "9999";
+      const startOf = (e: GEvent) => e.start.dateTime ?? `${e.start.date}T00:00:00Z`;
+      const endOf = (e: GEvent) => e.end.dateTime ?? `${e.end.date}T00:00:00Z`;
+      const items = [...state.events.values()].filter((e) => !e.recurrence && e.status !== "cancelled" && startOf(e) < max && endOf(e) > min);
+      return reply(200, { kind: "calendar#events", items, nextSyncToken: String(state.eventSeq) });
+    }
+    if (rest === "" && method === "POST") {
+      const b = await readBody(req);
+      const id = `gcal-created-${state.events.size + 1}`;
+      const ev = { kind: "calendar#event", id, status: "confirmed", iCalUID: `${id}@google.com`, organizer: me, htmlLink: `https://calendar.google.com/${id}`, ...b };
+      state.events.set(id, ev);
+      touchEvent(id);
+      state.sent.push({ kind: "create-event", id, body: b });
+      return reply(200, ev);
+    }
+    const one = rest.match(/^\/([^/]+)$/);
+    const ev = one ? state.events.get(decodeURIComponent(one[1])) : undefined;
+    if (one && !ev) return reply(404, err(404, "Not Found"));
+    if (one && method === "GET") return reply(200, ev);
+    if (one && method === "PATCH") {
+      const b = await readBody(req);
+      Object.assign(ev!, b);
+      touchEvent(ev!.id);
+      state.sent.push({ kind: "rsvp", id: ev!.id, sendUpdates: q.get("sendUpdates"), attendees: b.attendees });
+      return reply(200, ev);
+    }
+    reply(404, err(404, `No fake calendar route for ${method} ${rest}`));
+  }
+
+  let delivered = 0;
+  async function control(req: IncomingMessage, url: URL, reply: (s: number, b: unknown) => void) {
+    const route = url.pathname.slice("/_test/".length);
+    const b = req.method === "POST" ? await readBody(req) : {};
+    switch (route) {
+      case "deliver": {
+        const id = b.id ?? `g-new-${++delivered}`;
+        const msg: FakeGmailMessage = {
+          id, threadId: b.threadId ?? `g-thread-new-${delivered}`, labelIds: b.labelIds ?? ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: Date.now(),
+          from: b.from ?? "Kim Park <kim@friends.example>", to: GMAIL_ACCOUNT.email, subject: b.subject ?? `New ${delivered}`, snippet: b.snippet ?? "Just arrived", text: b.text ?? "Just arrived",
+          ...(b.attachmentBytes ? { attachments: [{ filename: "big.bin", mimeType: "application/octet-stream", data: Buffer.alloc(b.attachmentBytes, 7) }] } : {}),
+        };
+        state.messages.set(id, msg);
+        log({ messagesAdded: [{ message: { id, threadId: msg.threadId, labelIds: msg.labelIds } }] });
+        return reply(200, { id });
+      }
+      case "label": {
+        const msg = state.messages.get(b.id);
+        if (!msg) return reply(404, { error: "no such message" });
+        changeLabels(msg, b.add ?? [], b.remove ?? []);
+        return reply(200, { labelIds: msg.labelIds });
+      }
+      case "delete": {
+        const msg = state.messages.get(b.id);
+        state.messages.delete(b.id);
+        if (msg) log({ messagesDeleted: [{ message: { id: msg.id, threadId: msg.threadId } }] });
+        return reply(200, {});
+      }
+      case "gcal-add": {
+        const e: GEvent = { kind: "calendar#event", status: "confirmed", organizer: me, ...b };
+        state.events.set(e.id, e);
+        touchEvent(e.id);
+        return reply(200, e);
+      }
+      case "gcal-cancel": {
+        state.events.delete(b.id);
+        touchEvent(b.id);
+        return reply(200, {});
+      }
+      case "gcal-expire-sync":
+        state.minSyncToken = state.eventSeq + 1;
+        return reply(200, {});
+      case "gcal-access":
+        state.grantCalendar = !!b.granted;
+        return reply(200, {});
+      case "event": {
+        const e = state.events.get(url.searchParams.get("id") ?? "");
+        return e ? reply(200, e) : reply(404, { error: "no such event" });
+      }
+      case "expire-history":
+        state.minHistory = state.historyId + 1;
+        return reply(200, {});
+      case "config":
+        Object.assign(state.config, b);
+        return reply(200, state.config);
+      default: {
+        const id = url.searchParams.get("id");
+        if (route.startsWith("message") && id) {
+          const msg = state.messages.get(id);
+          return msg ? reply(200, msg) : reply(404, { error: "no such message" });
+        }
+        reply(404, { error: `unknown control route ${route}` });
+      }
+    }
+  }
+
+  return {
+    origin,
+    gmailUrl: `${origin}/gmail/v1/users/me`,
+    authUrl: `${origin}/oauth`,
+    state,
+    async control(route: string, body?: Json): Promise<any> {
+      const res = await fetch(`${origin}/_test/${route}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`gmail control ${route}: ${res.status} ${await res.text()}`);
+      return res.json();
+    },
+    close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }),
+  };
+}

@@ -19,6 +19,7 @@ import {
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
 import { calendar } from "./calendar.svelte";
+import { visibility } from "./accounts.svelte";
 
 const PAGE = 200;
 /** Load the next page when the selection gets this close to the end. */
@@ -61,6 +62,21 @@ class MailStore {
   isMe(address: string | null | undefined): boolean {
     const a = address?.toLowerCase();
     return !!a && (this.boot?.accounts.some((x) => x.email.toLowerCase() === a) ?? false);
+  }
+
+  /** Accounts toggled off in the footer legend (still signed in). */
+  get hiddenIds(): number[] {
+    return visibility.among(this.accounts.map((a) => a.id));
+  }
+
+  /** Footer legend click: hide or show an account's mail and events. */
+  async toggleAccount(id: number) {
+    if (!visibility.toggle(id, this.accounts.map((a) => a.id))) {
+      this.showToast({ text: "At least one account stays visible" });
+      return;
+    }
+    this.selected = 0;
+    await Promise.all([this.refresh(), calendar.refresh()]);
   }
 
   /** Dot colour that tells accounts apart (by sign-in order). */
@@ -240,8 +256,8 @@ class MailStore {
     const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
     const [splits, rows, recent] = await Promise.all([
-      api.listSplits(folderForSplits),
-      api.listThreads(folderId, query, split, null, count),
+      api.listSplits(folderForSplits, this.hiddenIds),
+      api.listThreads(folderId, query, split, null, count, this.hiddenIds),
       api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
@@ -278,7 +294,7 @@ class MailStore {
     const seq = this.#listSeq;
     try {
       const { folderId, query, split } = this.listQuery;
-      const rows = await api.listThreads(folderId, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE);
+      const rows = await api.listThreads(folderId, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
       if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
@@ -522,9 +538,13 @@ class MailStore {
     // The newest actual request (invite or update); responses and cancellations don't get
     // RSVP buttons. Fall back to any meeting message if its kind isn't known yet.
     const newestFirst = [...this.thread].reverse();
+    // Gmail doesn't mark invitations; the backend checks the newest received message's
+    // text/calendar part (cached after the first look) and answers null for ordinary mail.
+    const google = this.accountOf(this.current?.accountId ?? -1)?.provider === "google";
     const msg =
       newestFirst.find((m) => m.meetingMessageType === "meetingRequest") ??
-      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType);
+      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType) ??
+      (google ? newestFirst.find((m) => m.folderRole !== "sentitems") : undefined);
     if (!msg) {
       this.invite = null;
       calendar.clearContext();

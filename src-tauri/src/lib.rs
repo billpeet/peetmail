@@ -4,6 +4,9 @@ mod calendar;
 mod commands;
 mod db;
 mod error;
+mod gcal;
+mod gmail;
+mod gmail_send;
 mod graph;
 mod mail;
 mod notify;
@@ -24,6 +27,20 @@ const DEFAULT_SYNC_INTERVAL_SECS: u64 = 60;
 
 /// The main window is built in code (not tauri.conf.json) so the test harness can
 /// run it headless: off-screen, out of the taskbar, and never stealing focus.
+/// Panics normally go only to stderr, which is gone once the terminal (or the window, for
+/// an installed app) closes. Put them in the log file too, with where and a backtrace, so
+/// a crash leaves evidence. The default hook still runs (stderr output unchanged).
+fn install_panic_logging() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!("PANIC in thread '{}': {info}\n{backtrace}", thread.name().unwrap_or("unnamed"));
+        log::logger().flush();
+        default_hook(info);
+    }));
+}
+
 /// Brings the main window back (tray click, second launch, tray menu).
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -138,6 +155,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(log.build())
         .setup(move |app| {
+            install_panic_logging();
             let dir = match data_dir_override {
                 Some(dir) => dir,
                 None => app.path().app_data_dir()?,
@@ -216,9 +234,11 @@ pub fn run() {
             commands::unsnooze_thread,
             commands::list_snoozed,
             commands::list_snippets,
+            commands::set_google_client,
             commands::get_autostart,
             commands::set_autostart,
             commands::quit_app,
+            commands::debug_panic,
             commands::set_snippets,
             commands::cancel_send,
             commands::scheduled_sends,

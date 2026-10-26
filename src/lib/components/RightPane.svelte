@@ -10,7 +10,7 @@
 
   // An open invite shows the calendar (its day, event highlighted) without changing the
   // saved tab; closing the invite returns to it.
-  const tab = $derived(calendar.focus ? "calendar" : (mail.boot?.preferences.rightPaneTab ?? "recent"));
+  const tab = $derived(calendar.focus ? "calendar" : (mail.boot?.preferences.rightPaneTab ?? "calendar"));
 
   // ----- resizing (see ResizeHandle) -----
   const DEFAULT_WIDTH = 320;
@@ -55,7 +55,7 @@
     onchange={(w) => mail.setPreference("rightPaneWidth", w)}
   />
   <div class="flex gap-1 px-4 pt-4 pb-3" role="tablist">
-    {#each [["recent", "Recent Opens"], ["calendar", "Calendar"]] as [id, name] (id)}
+    {#each [["calendar", "Calendar"], ["recent", "Recent Opens"]] as [id, name] (id)}
       <button
         role="tab"
         data-testid="pane-tab-{id}"

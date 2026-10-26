@@ -360,6 +360,9 @@ pub fn emit_status(app: &AppHandle, state: &AppState) {
 
 /// Sends one op. Returns Graph's response body (the created event for CreateEvent).
 async fn execute(state: &AppState, row: &Row) -> Result<Value> {
+    if state.db.with(|c| crate::db::account_provider(c, row.account_id))? == "google" {
+        return crate::gmail::execute(state, row.account_id, row.remote_id.as_deref(), &row.op).await;
+    }
     let base = graph::base();
     let msg_url = |rid: &str| format!("{base}/me/messages/{rid}");
     let rid = || row.remote_id.as_deref().ok_or_else(|| AppError::Other("op has no target message".into()));

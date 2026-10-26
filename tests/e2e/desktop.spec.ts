@@ -84,3 +84,18 @@ test("start with Windows is a setting (kept out of the real registry in tests)",
   await page.keyboard.press("Control+,");
   await expect(page.getByTestId("autostart")).toBeChecked();
 });
+
+test("a panic is written to the log file, with where it happened", async ({ inbox: page, app }) => {
+  await page.evaluate(() => (window as any).__TAURI_INTERNALS__.invoke("debug_panic"));
+  const logFile = async () => {
+    const { readdir } = await import("node:fs/promises");
+    const files = await readdir(join(app.dataDir, "logs")).catch(() => [] as string[]);
+    const texts = await Promise.all(files.map((f) => readFile(join(app.dataDir, "logs", f), "utf8")));
+    return texts.join("\n");
+  };
+  await expect.poll(logFile, { timeout: 10_000 }).toContain("PANIC in thread 'debug-panic': ");
+  expect(await logFile()).toContain("deliberate test panic");
+  expect(await logFile()).toMatch(/commands\.rs:\d+/);
+  // A panicking background thread doesn't take the app down.
+  await expect(page.getByTestId("sync-status")).toBeAttached();
+});

@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_event_series.sql"),
     include_str!("../migrations/0006_meeting_messages.sql"),
     include_str!("../migrations/0007_snooze.sql"),
+    include_str!("../migrations/0008_message_invites.sql"),
 ];
 
 pub struct Db {
@@ -45,7 +46,18 @@ impl Db {
     }
 
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| {
+            // A bug panicked while holding the connection. Its transaction rolled back as the
+            // panic unwound, so the connection itself is fine: keep going rather than panicking
+            // on every later call (which, inside a WebView2 callback, aborts the whole app).
+            log::error!("database lock was poisoned by a panic; recovering");
+            self.conn.clear_poison();
+            let conn = poisoned.into_inner();
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            conn
+        });
         f(&mut conn)
     }
 }
@@ -221,11 +233,20 @@ pub fn set_token_blob(conn: &Connection, account_id: i64, blob: &[u8]) -> Result
     Ok(())
 }
 
-/// Tokens are bound to the client ID that issued them, so changing the ID invalidates all of them.
-/// Cached mail is kept and reattached when the same mailbox signs in again.
-pub fn clear_all_tokens(conn: &Connection) -> Result<()> {
-    conn.execute("UPDATE accounts SET token_blob = NULL", [])?;
+/// Tokens are bound to the client ID that issued them, so changing a provider's ID
+/// invalidates its accounts' tokens. Cached mail is kept and reattached when the same
+/// mailbox signs in again.
+pub fn clear_provider_tokens(conn: &Connection, provider: &str) -> Result<()> {
+    conn.execute("UPDATE accounts SET token_blob = NULL WHERE provider = ?1", [provider])?;
     Ok(())
+}
+
+/// "microsoft" or "google".
+pub fn account_provider(conn: &Connection, account_id: i64) -> Result<String> {
+    Ok(conn
+        .query_row("SELECT provider FROM accounts WHERE id = ?1", [account_id], |r| r.get(0))
+        .optional()?
+        .unwrap_or_else(|| "microsoft".into()))
 }
 
 pub fn delete_account(conn: &Connection, account_id: i64) -> Result<()> {
@@ -800,6 +821,25 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_while_holding_the_connection_doesnt_break_every_later_call() {
+        let db = Db::open_in_memory().unwrap();
+        let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = db.with(|c| {
+                let tx = c.transaction()?;
+                tx.execute("INSERT INTO settings (key, value) VALUES ('half', 'done')", [])?;
+                panic!("bug inside a transaction");
+                #[allow(unreachable_code)]
+                Ok(())
+            });
+        }));
+        assert!(hit.is_err());
+        // The lock is usable again, and the half-done transaction was rolled back.
+        assert_eq!(db.with(|c| get_setting(c, "half")).unwrap(), None);
+        db.with(|c| set_setting(c, "after", "ok")).unwrap();
+        assert_eq!(db.with(|c| get_setting(c, "after")).unwrap().as_deref(), Some("ok"));
+    }
+
+    #[test]
     fn unified_inbox_spans_signed_in_accounts() {
         let (db, a, f) = seed();
         db.with(|c| {
@@ -850,7 +890,7 @@ mod tests {
         let (db, a, f) = seed();
         db.with(|c| {
             upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
-            clear_all_tokens(c)?;
+            clear_provider_tokens(c, "microsoft")?;
             let accounts = list_accounts(c)?;
             assert!(!accounts[0].signed_in);
             assert!(get_token_blob(c, a)?.is_none());

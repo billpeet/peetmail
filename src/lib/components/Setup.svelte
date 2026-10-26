@@ -4,8 +4,12 @@
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import ClientIdForm from "./ClientIdForm.svelte";
+  import GoogleClientForm from "./GoogleClientForm.svelte";
+  import type { Provider } from "$lib/api";
 
   let editing = $state(false);
+  /** Showing the Google client form (Gmail without a configured client yet). */
+  let googleForm = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
 
@@ -14,11 +18,11 @@
   /** Mailbox whose cache is waiting for a fresh sign-in (e.g. after a client ID change). */
   const returning = $derived(mail.boot?.accounts.find((a) => !a.signedIn) ?? null);
 
-  async function signIn() {
+  async function signIn(provider: Provider = "microsoft") {
     busy = true;
     error = null;
     try {
-      await api.signIn();
+      await api.signIn(provider);
       await mail.init();
     } catch (err) {
       const msg = String(err);
@@ -36,7 +40,7 @@
 
   onMount(() =>
     keymap.register([
-      { id: "setup.signin", keys: "Enter", label: "Sign in", group: "Setup", when: () => !showForm && !busy, run: signIn },
+      { id: "setup.signin", keys: "Enter", label: "Sign in", group: "Setup", when: () => !showForm && !busy && !googleForm, run: () => signIn() },
       { id: "setup.cancel", keys: "Escape", label: "Cancel sign-in", group: "Setup", when: () => !showForm && busy, run: () => api.cancelSignIn() },
       { id: "setup.clientid", keys: "c", label: "Change client ID", group: "Setup", when: () => !showForm, run: edit },
     ]),
@@ -47,7 +51,7 @@
   <div class="w-[460px] space-y-6">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight text-ink-100">PeetMail</h1>
-      <p class="mt-1 text-sm text-ink-500">Fast, keyboard-first mail for Microsoft 365 and Outlook.com.</p>
+      <p class="mt-1 text-sm text-ink-500">Fast, keyboard-first mail for Microsoft 365, Outlook.com and Gmail.</p>
     </div>
 
     {#if showForm}
@@ -71,7 +75,7 @@
         {:else}
           <button
             data-testid="sign-in"
-            onclick={signIn}
+            onclick={() => signIn()}
             class="flex w-full items-center justify-between rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-ink-950"
           >
             <span>{returning ? `Sign in again as ${returning.email}` : "Sign in with Microsoft"}</span>
@@ -83,6 +87,26 @@
           <span class="truncate">Client ID <span class="font-mono text-ink-300 select-text">{clientId}</span></span>
           <button data-testid="change-client-id" onclick={edit} class="flex shrink-0 items-center gap-1.5 hover:text-ink-100">Change <kbd>c</kbd></button>
         </div>
+      </div>
+    {/if}
+
+    {#if !busy}
+      <div class="space-y-2 border-t border-ink-800 pt-4">
+        {#if mail.boot?.googleClientId && !googleForm}
+          <button
+            data-testid="sign-in-google"
+            onclick={() => signIn("google")}
+            class="flex w-full items-center justify-between rounded-md border border-ink-700 px-4 py-2.5 text-sm text-ink-100 hover:border-accent"
+          >
+            <span>Sign in with Google (Gmail)</span>
+          </button>
+          <button onclick={() => (googleForm = true)} class="text-xs text-ink-500 hover:text-ink-100">Change Google client</button>
+        {:else if googleForm || !clientId}
+          <p class="text-sm text-ink-300">Gmail: your Google OAuth client</p>
+          <GoogleClientForm onsaved={() => (googleForm = false)} />
+        {:else}
+          <button data-testid="setup-gmail" onclick={() => (googleForm = true)} class="text-xs text-ink-500 hover:text-ink-100">Use Gmail instead…</button>
+        {/if}
       </div>
     {/if}
 

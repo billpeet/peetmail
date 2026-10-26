@@ -35,6 +35,17 @@ pub struct Filter {
     pub params: Vec<SqlValue>,
 }
 
+/// Adds "not these accounts" to a filter (accounts hidden in the UI).
+pub fn exclude_accounts(f: Filter, ids: &[i64]) -> Filter {
+    if ids.is_empty() {
+        return f;
+    }
+    let marks = vec!["?"; ids.len()].join(", ");
+    let mut params = f.params;
+    params.extend(ids.iter().map(|&i| SqlValue::Integer(i)));
+    Filter { sql: format!("({}) AND m.account_id NOT IN ({marks})", f.sql), params }
+}
+
 fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
@@ -205,6 +216,14 @@ mod tests {
     fn unknown_keys_are_text() {
         assert_eq!(parse("http://x.com")[0].term, Term::Text("http://x.com".into()));
         assert_eq!(parse("re:")[0].term, Term::Text("re:".into()));
+    }
+
+    #[test]
+    fn excluding_accounts_appends_a_parameterised_clause() {
+        let f = exclude_accounts(compile("from:sam"), &[2, 5]);
+        assert!(f.sql.ends_with("AND m.account_id NOT IN (?, ?)"), "{}", f.sql);
+        assert_eq!(f.params[f.params.len() - 2..], [SqlValue::Integer(2), SqlValue::Integer(5)]);
+        assert_eq!(exclude_accounts(compile(""), &[]).sql, compile("").sql);
     }
 
     #[test]

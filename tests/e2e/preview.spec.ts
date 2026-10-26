@@ -1,4 +1,4 @@
-import { test, expect, row, selectedRow, snap } from "./fixtures";
+import { test, expect, row, selectedRow, snap, showRecentPane } from "./fixtures";
 
 const previewTitle = (page: import("@playwright/test").Page) => page.getByTestId("preview-pane").locator("h1");
 
@@ -34,6 +34,7 @@ test("previewing marks read only after you stay on a conversation", async ({ inb
   // Dwelling also counts as opening it. (While an invite is on screen the pane shows the
   // calendar, so step back to a plain conversation to see Recent Opens.)
   await page.keyboard.press("k");
+  await showRecentPane(page);
   await expect(page.locator('[data-testid=recent-item][data-conversation-id="conv-invite"]')).toBeVisible();
   await expect(page.locator('[data-testid=recent-item][data-conversation-id="conv-hostile"]')).toHaveCount(0);
 });

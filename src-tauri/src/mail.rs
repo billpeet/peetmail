@@ -135,12 +135,13 @@ pub async fn prefetch_bodies(app: AppHandle) {
             tasks.join_next().await;
         }
         let app = app.clone();
-        tasks.spawn(async move {
+        // Background: Gmail calls wait for quota budget, ahead of nothing you open yourself.
+        tasks.spawn(crate::gmail::background(async move {
             let state = app.state::<AppState>();
             if let Err(e) = message_body(&state, id).await {
                 log::info!("prefetch body {id}: {e}");
             }
-        });
+        }));
     }
     while tasks.join_next().await.is_some() {}
 }
@@ -150,6 +151,14 @@ pub async fn prefetch_bodies(app: AppHandle) {
 const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sent Items")];
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
+    if account.provider == "google" {
+        crate::gmail::background(crate::gmail::sync_account(app, state, account.id)).await?;
+        // Calendar problems (e.g. no calendar permission yet) mustn't stop mail.
+        if let Err(e) = crate::gmail::background(crate::gcal::sync_account(app, state, account.id)).await {
+            log::warn!("google calendar sync failed for {}: {e}", account.email);
+        }
+        return Ok(());
+    }
     for (role, name) in SYNCED_FOLDERS {
         let folder = ensure_folder(state, account.id, role, name).await?;
         sync_folder(app, state, account.id, &folder).await?;
@@ -323,6 +332,12 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
         .db
         .with(|c| db::message_remote(c, message_id))?
         .ok_or_else(|| AppError::Other("message not found".into()))?;
+    if is_google(state, account_id)? {
+        let (html, ics) = crate::gmail::fetch_body(state, account_id, &remote_id).await?;
+        let invite = ics.as_deref().and_then(crate::gcal::parse_ics);
+        state.db.with(|c| crate::gcal::record_invite(c, message_id, invite.as_ref()))?;
+        return cache_body(state, message_id, html);
+    }
     let v = graph_get(
         state,
         account_id,
@@ -341,6 +356,15 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
             Err(e) => log::warn!("inline images for message {message_id}: {e}"),
         }
     }
+    cache_body(state, message_id, html)
+}
+
+fn is_google(state: &AppState, account_id: i64) -> Result<bool> {
+    Ok(state.db.with(|c| db::account_provider(c, account_id))? == "google")
+}
+
+/// Stores a fetched body (and its text, for search) within the cache budget.
+fn cache_body(state: &AppState, message_id: i64, html: String) -> Result<String> {
     let text = sanitize::html_to_text(&html);
     let max_bytes = state.cache_limits()?.body_cache_mb * 1024 * 1024;
     state.db.with(|c| {
@@ -435,6 +459,9 @@ fn remote_of(state: &AppState, message_id: i64) -> Result<(i64, String)> {
 /// Non-inline attachments of a message.
 pub async fn list_attachments(state: &AppState, message_id: i64) -> Result<Vec<Attachment>> {
     let (account_id, remote_id) = remote_of(state, message_id)?;
+    if is_google(state, account_id)? {
+        return crate::gmail::list_attachments(state, account_id, &remote_id).await;
+    }
     let v = graph_get(
         state,
         account_id,
@@ -465,12 +492,11 @@ pub async fn download_attachment(
     dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
     let (account_id, remote_id) = remote_of(state, message_id)?;
-    let bytes = graph_bytes(
-        state,
-        account_id,
-        &format!("{}/me/messages/{remote_id}/attachments/{attachment_id}/$value", graph::base()),
-    )
-    .await?;
+    let bytes = if is_google(state, account_id)? {
+        crate::gmail::attachment(state, account_id, &remote_id, attachment_id).await?
+    } else {
+        graph_bytes(state, account_id, &format!("{}/me/messages/{remote_id}/attachments/{attachment_id}/$value", graph::base())).await?
+    };
     std::fs::create_dir_all(dir)?;
     let path = unique_path(dir, &safe_file_name(name));
     std::fs::write(&path, bytes)?;
