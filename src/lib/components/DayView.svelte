@@ -42,14 +42,23 @@
   async function scrollToWorkday() {
     await tick();
     if (!scroller) return;
-    const hour = calendar.isToday ? Math.max(0, Math.min(now.getHours() - 1, 16)) : 8;
+    // An invite in context: bring its event into view, an hour of lead-in above it.
+    const focus = calendar.focus && !calendar.focus.isAllDay ? eventTimes(calendar.focus).start : null;
+    const hour = focus
+      ? Math.max(0, (focus.getTime() - calendar.day.getTime()) / 3_600_000 - 1)
+      : calendar.isToday
+        ? Math.max(0, Math.min(now.getHours() - 1, 16))
+        : 8;
     scroller.scrollTop = hour * HOUR;
   }
 
   $effect(() => {
     calendar.day; // re-scroll when the day changes
+    calendar.focus;
     scrollToWorkday();
   });
+
+  const focused = (e: CalendarEvent) => calendar.focus?.remoteId === e.remoteId;
 
   onMount(() => {
     calendar.load();
@@ -93,12 +102,15 @@
             data-col={p.col}
             data-cols={p.cols}
             data-response={e.response ?? "none"}
+            data-focused={focused(e)}
             onclick={() => onselect?.(e)}
             title="{e.subject}{e.location ? ` · ${e.location}` : ''}"
             class={[
               "absolute overflow-hidden rounded-md px-2 text-left leading-tight",
               px < 22 ? "flex items-center text-[10px]" : "py-1 text-xs",
               tone(e),
+              // The invite you're reading, in context with the rest of the day.
+              focused(e) && "z-20 ring-2 ring-amber-300 shadow-lg",
             ]}
             style:top="{(p.top / 60) * HOUR + 1}px"
             style:height="{px}px"

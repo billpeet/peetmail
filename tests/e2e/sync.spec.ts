@@ -63,7 +63,9 @@ test("if Graph rejects the delta date filter, sync falls back to local filtering
   await signIn(page, fake.clientId);
   await waitForSyncIdle(page);
   await expect(page.getByTestId("thread-count")).toHaveText(`${DEFAULT_CONVERSATIONS} conversations`);
-  const deltas = fake.state.requests.filter((r) => r.path.endsWith("/delta"));
-  expect(deltas[0].status).toBe(400);
-  expect(deltas[1].query).not.toContain("filter");
+  const inboxDeltas = fake.state.requests.filter((r) => r.path.endsWith("/AAMkAGI2-inbox/messages/delta"));
+  expect(inboxDeltas[0].status).toBe(400);
+  // The fallbacks drop the meeting-type field first, then the date filter.
+  const firstOk = inboxDeltas.find((r) => r.status === 200)!;
+  expect(firstOk.query).not.toContain("filter");
 });

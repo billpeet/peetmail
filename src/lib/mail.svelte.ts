@@ -15,6 +15,7 @@ import {
   type ThreadRow,
 } from "./api";
 import { prefetchBody } from "./bodies";
+import { calendar } from "./calendar.svelte";
 
 const PAGE = 200;
 /** Load the next page when the selection gets this close to the end. */
@@ -327,6 +328,11 @@ class MailStore {
   back() {
     this.view = "list";
     this.pinned = null;
+    // In the list layout the invite is no longer on screen.
+    if (!this.previewing) {
+      this.invite = null;
+      calendar.clearContext();
+    }
   }
 
   // ---------- splits and search ----------
@@ -403,16 +409,29 @@ class MailStore {
   /** Finds the newest invite in the loaded thread and fetches its event. */
   async #loadInvite() {
     const seq = ++this.#inviteSeq;
-    const msg = [...this.thread].reverse().find((m) => m.messageType === "eventMessage");
+    // The newest actual request (invite or update); responses and cancellations don't get
+    // RSVP buttons. Fall back to any meeting message if its kind isn't known yet.
+    const newestFirst = [...this.thread].reverse();
+    const msg =
+      newestFirst.find((m) => m.meetingMessageType === "meetingRequest") ??
+      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType);
     if (!msg) {
       this.invite = null;
+      calendar.clearContext();
       return;
     }
     try {
       const invite = await api.inviteEvent(msg.id);
-      if (seq === this.#inviteSeq) this.invite = invite;
+      if (seq !== this.#inviteSeq) return;
+      this.invite = invite;
+      // Show the meeting in the calendar sidebar, among everything else that day.
+      if (invite) calendar.showInContext(invite.event);
+      else calendar.clearContext();
     } catch {
-      if (seq === this.#inviteSeq) this.invite = null;
+      if (seq === this.#inviteSeq) {
+        this.invite = null;
+        calendar.clearContext();
+      }
     }
   }
 
@@ -426,6 +445,7 @@ class MailStore {
     try {
       await api.respondToEvent(inv.event.accountId, inv.event.remoteId, response);
       this.invite = { ...inv, event: { ...inv.event, response: status } };
+      calendar.focus = this.invite.event;
       this.showToast({ text: { accept: "Accepted", tentative: "Tentatively accepted", decline: "Declined" }[response] });
     } catch (e) {
       this.showToast({ text: String(e), error: true });

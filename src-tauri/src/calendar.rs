@@ -433,6 +433,12 @@ async fn hydrate(state: &AppState, account_id: i64) -> Result<bool> {
 pub struct Invite {
     /// meetingRequest, meetingCancelled, meetingAccepted, ... (only requests get RSVP buttons).
     pub meeting_message_type: Option<String>,
+    /// newMeetingRequest | fullUpdate | informationalUpdate | silentUpdate | outdated | ...
+    pub meeting_request_type: Option<String>,
+    /// For updates that moved the meeting: where it used to be (UTC instants / text).
+    pub previous_start: Option<String>,
+    pub previous_end: Option<String>,
+    pub previous_location: Option<String>,
     pub event: Event,
 }
 
@@ -443,10 +449,9 @@ pub async fn invite_for_message(state: &AppState, message_id: i64) -> Result<Opt
         .db
         .with(|c| crate::db::message_remote(c, message_id))?
         .ok_or_else(|| AppError::Other("message not found".into()))?;
-    let url = format!(
-        "{}/me/messages/{remote_id}?$select=id,meetingMessageType&$expand=microsoft.graph.eventMessage/event",
-        graph::base()
-    );
+    // No $select: an updated invite (eventMessageRequest) also carries meetingRequestType and
+    // previousStart/End/Location, which a base-type select would drop.
+    let url = format!("{}/me/messages/{remote_id}?$expand=microsoft.graph.eventMessage/event", graph::base());
     let v = mail::graph_call(state, account_id, reqwest::Method::GET, &url, None, &[PREFER_IMMUTABLE, PREFER_UTC]).await?;
     let Some(parsed) = v.get("event").and_then(parse_event) else { return Ok(None) };
     let event = state.db.with(|c| {
@@ -457,7 +462,15 @@ pub async fn invite_for_message(state: &AppState, message_id: i64) -> Result<Opt
         }
         event_by_remote(c, account_id, &parsed.remote_id)?.ok_or_else(|| AppError::Other("event vanished".into()))
     })?;
-    Ok(Some(Invite { meeting_message_type: v["meetingMessageType"].as_str().map(String::from), event }))
+    let previous = |k: &str| v.get(k).filter(|p| !p.is_null()).and_then(utc_instant);
+    Ok(Some(Invite {
+        meeting_message_type: v["meetingMessageType"].as_str().map(String::from),
+        meeting_request_type: v["meetingRequestType"].as_str().map(String::from),
+        previous_start: previous("previousStartDateTime"),
+        previous_end: previous("previousEndDateTime"),
+        previous_location: v.pointer("/previousLocation/displayName").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
+        event,
+    }))
 }
 
 /// Records an RSVP locally and queues it for Graph.

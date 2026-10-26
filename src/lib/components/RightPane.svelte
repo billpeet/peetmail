@@ -8,7 +8,9 @@
   import DayView from "./DayView.svelte";
   import { calendar } from "$lib/calendar.svelte";
 
-  const tab = $derived(mail.boot?.preferences.rightPaneTab ?? "recent");
+  // An open invite shows the calendar (its day, event highlighted) without changing the
+  // saved tab; closing the invite returns to it.
+  const tab = $derived(calendar.focus ? "calendar" : (mail.boot?.preferences.rightPaneTab ?? "recent"));
 
   // ----- resizing (see ResizeHandle) -----
   const DEFAULT_WIDTH = 320;

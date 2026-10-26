@@ -124,6 +124,13 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
       seriesMasterId: "evt-sync-series", bare: true,
     }));
   }
+  // Moved after you accepted (see msg-update-*): new time, and Graph resets your response.
+  events.push(makeEvent({
+    id: "evt-update", subject: "Team health: conflict & commitment", start: localAt(3, 10, 0, now), end: localAt(3, 10, 45, now),
+    location: "Room 3", organizer: SAM, attendees: [ME, PRIYA], response: "notResponded",
+  }));
+  // Clashes with the moved meeting's new time, so the invite shows in context.
+  events.push(makeEvent({ id: "evt-clash", subject: "Client call", start: localAt(3, 10, 30, now), end: localAt(3, 11, 15, now), organizer: PRIYA, attendees: [ME] }));
   events.push(makeEvent({ id: "evt-bare", subject: "Quarterly planning", start: localAt(1, 16, 0, now), end: localAt(1, 17, 0, now), location: "Board room", bare: true }));
   events.push(makeEvent({
     id: "evt-invite", subject: "Design review", start: localAt(0, 11, 0, now), end: localAt(0, 12, 0, now),

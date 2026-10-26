@@ -56,6 +56,8 @@ export type MessageRow = {
   folderRole: string;
   /** "message", or "eventMessage" for meeting invites and responses. */
   messageType: string;
+  /** meetingRequest | meetingCancelled | meetingAccepted | meetingTenativelyAccepted (Graph's spelling) | meetingDeclined */
+  meetingMessageType: string | null;
 };
 
 export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
@@ -175,7 +177,16 @@ export const onOutbox = (cb: (s: OutboxStatus) => void): Promise<UnlistenFn> =>
 
 export type Rsvp = "accept" | "tentative" | "decline";
 /** The calendar event behind a meeting-invite message. */
-export type Invite = { meetingMessageType: string | null; event: CalendarEvent };
+export type Invite = {
+  meetingMessageType: string | null;
+  /** newMeetingRequest | fullUpdate | informationalUpdate | silentUpdate | outdated | ... */
+  meetingRequestType: string | null;
+  /** Where an updated meeting used to be (UTC instants / text). */
+  previousStart: string | null;
+  previousEnd: string | null;
+  previousLocation: string | null;
+  event: CalendarEvent;
+};
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 

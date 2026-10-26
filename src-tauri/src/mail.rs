@@ -16,6 +16,9 @@ use crate::state::AppState;
 
 const MESSAGE_FIELDS: &str = "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,\
 bodyPreview,isRead,flag,hasAttachments,importance,inferenceClassification";
+/// Derived-type property: present only on meeting messages, so it identifies invites and
+/// responses even when the response omits `@odata.type`.
+const MEETING_FIELD: &str = "microsoft.graph.eventMessage/meetingMessageType";
 const PAGE_SIZE: &str = "odata.maxpagesize=100";
 
 pub const EVENT_MAIL_CHANGED: &str = "mail-changed";
@@ -174,9 +177,10 @@ async fn ensure_folder(state: &AppState, account_id: i64, role: &str, default_na
     state.db.with(|c| db::insert_folder(c, account_id, remote_id, role, name))
 }
 
-fn initial_delta_url(folder: &Folder, since: Option<&str>) -> String {
+fn initial_delta_url(folder: &Folder, since: Option<&str>, meeting_field: bool) -> String {
     let base = format!("{}/me/mailFolders/{}/messages/delta", graph::base(), folder.remote_id);
-    let mut params = vec![("$select", MESSAGE_FIELDS.to_string())];
+    let select = if meeting_field { format!("{MESSAGE_FIELDS},{MEETING_FIELD}") } else { MESSAGE_FIELDS.to_string() };
+    let mut params = vec![("$select", select)];
     if let Some(since) = since {
         params.push(("$filter", format!("receivedDateTime ge {since}")));
     }
@@ -188,7 +192,9 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
     let cutoff = (Utc::now() - Duration::days(limits.cache_days)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let full_sync = folder.delta_link.is_none();
-    let mut url = folder.delta_link.clone().unwrap_or_else(|| initial_delta_url(folder, Some(&cutoff)));
+    // Ask for the meeting type too; if Graph rejects that (400), drop it, then the date filter.
+    let mut meeting_field = true;
+    let mut url = folder.delta_link.clone().unwrap_or_else(|| initial_delta_url(folder, Some(&cutoff), meeting_field));
     // Set if Graph rejects the server-side date filter, so we filter locally instead.
     let mut filter_locally = false;
     let mut restarted = false;
@@ -197,17 +203,23 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
     loop {
         let page = match graph_get(state, account_id, &url, &[PREFER_IMMUTABLE, PAGE_SIZE]).await {
             Ok(p) => p,
+            Err(AppError::Graph { status: 400, message }) if first_page && full_sync && meeting_field => {
+                log::warn!("delta rejected the meeting-type field ({message}), retrying without it");
+                meeting_field = false;
+                url = initial_delta_url(folder, (!filter_locally).then_some(cutoff.as_str()), false);
+                continue;
+            }
             Err(AppError::Graph { status: 400, message }) if first_page && full_sync && !filter_locally => {
                 log::warn!("delta $filter rejected ({message}), filtering locally");
                 filter_locally = true;
-                url = initial_delta_url(folder, None);
+                url = initial_delta_url(folder, None, meeting_field);
                 continue;
             }
             Err(AppError::Graph { status: 410, .. }) if !restarted => {
                 log::warn!("delta link expired for folder {}, resyncing", folder.id);
                 restarted = true;
                 state.db.with(|c| db::set_delta_link(c, folder.id, None))?;
-                url = initial_delta_url(folder, Some(&cutoff));
+                url = initial_delta_url(folder, Some(&cutoff), meeting_field);
                 continue;
             }
             Err(e) => return Err(e),
@@ -289,11 +301,15 @@ pub fn parse_message(v: &Value) -> MessageUpsert {
         has_attachments: v.get("hasAttachments").and_then(Value::as_bool),
         importance: str_field(v, "importance"),
         inference: str_field(v, "inferenceClassification"),
-        // Meeting invites and responses arrive as #microsoft.graph.eventMessage.
-        message_type: v
-            .get("@odata.type")
-            .and_then(Value::as_str)
-            .map(|t| if t.contains("eventMessage") { "eventMessage" } else { "message" }.to_string()),
+        // Meeting invites and responses arrive as #microsoft.graph.eventMessage, and carry
+        // meetingMessageType (when selected). Either marks a meeting message.
+        message_type: match (v.get("@odata.type").and_then(Value::as_str), v.get("meetingMessageType")) {
+            (Some(t), _) if t.contains("eventMessage") => Some("eventMessage".into()),
+            (_, Some(Value::String(_))) => Some("eventMessage".into()),
+            (Some(_), _) => Some("message".into()),
+            _ => None,
+        },
+        meeting_message_type: str_field(v, "meetingMessageType"),
     }
 }
 
@@ -506,10 +522,17 @@ mod tests {
         assert!(m.to_json.unwrap().contains("boris@example.com"));
         assert_eq!(m.cc_json, None);
 
+        let invite = parse_message(&json!({ "id": "I", "meetingMessageType": "meetingRequest" }));
+        assert_eq!(invite.message_type.as_deref(), Some("eventMessage"));
+        assert_eq!(invite.meeting_message_type.as_deref(), Some("meetingRequest"));
+        let typed = parse_message(&json!({ "id": "T", "@odata.type": "#microsoft.graph.eventMessageResponse" }));
+        assert_eq!(typed.message_type.as_deref(), Some("eventMessage"));
+
         let partial = parse_message(&json!({ "id": "AAA", "isRead": true }));
         assert_eq!(partial.is_read, Some(true));
         assert_eq!(partial.subject, None);
         assert_eq!(partial.received_at, None);
+        assert_eq!(partial.message_type, None, "unknown type leaves the stored one alone");
     }
 
     #[test]
@@ -518,7 +541,7 @@ mod tests {
             id: 1, account_id: 1, remote_id: "INBOX=".into(), role: Some("inbox".into()),
             name: "Inbox".into(), delta_link: None, last_synced_at: None,
         };
-        let u = initial_delta_url(&f, Some("2026-01-01T00:00:00Z"));
+        let u = initial_delta_url(&f, Some("2026-01-01T00:00:00Z"), false);
         assert!(u.starts_with("https://graph.microsoft.com/v1.0/me/mailFolders/INBOX=/messages/delta?"));
         assert!(u.contains("%24filter=receivedDateTime+ge+2026-01-01T00%3A00%3A00Z"));
     }

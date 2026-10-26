@@ -52,6 +52,12 @@ class CalendarStore {
   weekEvents = $state.raw<CalendarEvent[]>([]);
   /** Event whose details are open. */
   selected = $state.raw<CalendarEvent | null>(null);
+  /**
+   * While an invite is open: the event to show in context. The day view jumps to its day
+   * and highlights it; the right pane shows the calendar. Cleared when the invite closes.
+   */
+  focus = $state.raw<CalendarEvent | null>(null);
+  #dayBeforeFocus: Date | null = null;
   #seq = 0;
   #weekSeq = 0;
 
@@ -83,6 +89,23 @@ class CalendarStore {
       const fresh = [...this.dayEvents, ...this.weekEvents].find((e) => e.id === id);
       if (fresh) this.selected = fresh;
     }
+  }
+
+  /** Shows an invite's event in the day view (its day, highlighted). */
+  async showInContext(e: CalendarEvent) {
+    if (this.focus?.remoteId === e.remoteId && this.focus.response === e.response) return;
+    if (!this.focus) this.#dayBeforeFocus = this.day;
+    this.focus = e;
+    await this.goToDay(eventTimes(e).start);
+  }
+
+  /** Back to where the day view was before the invite opened. */
+  async clearContext() {
+    if (!this.focus) return;
+    this.focus = null;
+    const back = this.#dayBeforeFocus ?? new Date();
+    this.#dayBeforeFocus = null;
+    await this.goToDay(back);
   }
 
   get isToday(): boolean {
