@@ -367,10 +367,6 @@ pub struct SendOutcome {
 /// or until `send_at` when scheduled.
 #[tauri::command]
 pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput) -> Result<SendOutcome> {
-    // Until Gmail sending lands, refuse here so the composer keeps the text.
-    if state.db.with(|c| db::account_provider(c, input.account_id))? == "google" {
-        return Err(AppError::Other("Sending from Gmail isn't supported yet; nothing was sent".into()));
-    }
     let reference = match input.reference_message_id {
         Some(id) => Some(state.db.with(|c| db::message_remote(c, id))?.ok_or_else(|| AppError::Other("original message not found".into()))?.1),
         None => None,

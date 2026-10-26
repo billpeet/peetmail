@@ -37,6 +37,9 @@ export type FakeGmailMessage = {
   htmlCharset?: string;
   text?: string;
   attachments?: { filename: string; mimeType: string; data: Buffer; cid?: string }[];
+  references?: string;
+  /** For messages the app sent: the raw RFC 2822 text. */
+  raw?: string;
 };
 
 const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
@@ -65,12 +68,47 @@ export function defaultGmail(now = Date.now()): FakeGmailMessage[] {
   ];
 }
 
+/** A parsed MIME entity (what the app sent), for assertions. */
+export type MimeEntity = { headers: Record<string, string>; contentType: string; filename: string | null; body: Buffer; parts: MimeEntity[] };
+
+/** Parses a raw RFC 2822 message (CRLF), decoding base64 / quoted-printable bodies. */
+export function parseMime(raw: string | Buffer): MimeEntity {
+  const text = Buffer.isBuffer(raw) ? raw.toString("latin1") : raw;
+  const split = text.indexOf("\r\n\r\n");
+  const headText = split >= 0 ? text.slice(0, split) : text;
+  const bodyText = split >= 0 ? text.slice(split + 4) : "";
+  const headers: Record<string, string> = {};
+  for (const line of headText.replace(/\r\n[ \t]+/g, " ").split("\r\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) headers[line.slice(0, i).toLowerCase()] = line.slice(i + 1).trim();
+  }
+  const contentType = (headers["content-type"] ?? "text/plain").split(";")[0].trim().toLowerCase();
+  const filename = (headers["content-disposition"] ?? "").match(/filename="?([^";]+)"?/)?.[1] ?? null;
+  if (contentType.startsWith("multipart/")) {
+    const boundary = headers["content-type"].match(/boundary="?([^";]+)"?/)![1];
+    const chunks = bodyText.split(`--${boundary}`).slice(1);
+    const parts = chunks.filter((c) => !c.startsWith("--")).map((c) => parseMime(c.replace(/^\r\n/, "").replace(/\r\n$/, "")));
+    return { headers, contentType, filename, body: Buffer.alloc(0), parts };
+  }
+  const enc = (headers["content-transfer-encoding"] ?? "").toLowerCase();
+  const body = enc === "base64" ? Buffer.from(bodyText.replace(/\s+/g, ""), "base64") : Buffer.from(bodyText, "latin1");
+  return { headers, contentType, filename, body, parts: [] };
+}
+
+/** Every leaf part, depth first. */
+export function leaves(e: MimeEntity): MimeEntity[] {
+  return e.parts.length ? e.parts.flatMap(leaves) : [e];
+}
+
 function payloadOf(m: FakeGmailMessage, format: string): Json {
   const headers = [
     { name: "From", value: m.from },
     { name: "To", value: m.to },
     ...(m.cc ? [{ name: "Cc", value: m.cc }] : []),
     { name: "Subject", value: m.subject },
+    { name: "Date", value: new Date(m.internalDate).toUTCString().replace("GMT", "+0000") },
+    { name: "Message-ID", value: `<${m.id}@mail.example>` },
+    ...(m.references ? [{ name: "References", value: m.references }] : []),
   ];
   const alt: Json[] = [];
   if (m.text) alt.push({ partId: "0.0", mimeType: "text/plain", filename: "", headers: [{ name: "Content-Type", value: "text/plain; charset=UTF-8" }], body: { size: m.text.length, data: b64u(m.text) } });
@@ -92,8 +130,8 @@ function payloadOf(m: FakeGmailMessage, format: string): Json {
     ? { mimeType: "multipart/mixed", headers, parts: [{ partId: "0", mimeType: "multipart/alternative", parts: alt }, ...atts] }
     : { mimeType: "multipart/alternative", headers, parts: alt };
   if (format === "metadata") {
-    // Metadata keeps the structure's top level but no bodies.
-    return { mimeType: payload.mimeType, headers };
+    // Metadata keeps the structure's top level but no bodies, and only the asked-for headers.
+    return { mimeType: payload.mimeType, headers: headers.filter((h) => ["From", "To", "Cc", "Subject"].includes(h.name)) };
   }
   return payload;
 }
@@ -230,11 +268,12 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
       return reply(400, { error: "unsupported_grant_type" });
     }
 
+    const uploadSend = p === "/upload/gmail/v1/users/me/messages/send";
     const base = "/gmail/v1/users/me";
-    if (!p.startsWith(base)) return reply(404, err(404, "Not found"));
+    if (!p.startsWith(base) && !uploadSend) return reply(404, err(404, "Not found"));
     const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
-    const rest = p.slice(base.length);
+    const rest = uploadSend ? "/messages/send" : p.slice(base.length);
 
     // Quota, like Google: per-user units over a rolling second and minute.
     const now = Date.now();
@@ -297,6 +336,37 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
       state.sent.push({ kind: m[2], id: msg.id, add: b.addLabelIds ?? [], remove: b.removeLabelIds ?? [] });
       return reply(200, resource(msg, "minimal"));
     }
+    if (rest === "/messages/send" && method === "POST") {
+      let raw: string;
+      let threadId: string | undefined;
+      if (uploadSend) {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const body = Buffer.concat(chunks).toString("latin1");
+        const boundary = (req.headers["content-type"] ?? "").match(/boundary=([^;]+)/)?.[1];
+        if (!boundary) return reply(400, err(400, "expected multipart/related"));
+        const parts = body.split(`--${boundary}`).slice(1, -1).map((s) => s.replace(/^\r\n/, ""));
+        const meta = JSON.parse(parts[0].slice(parts[0].indexOf("\r\n\r\n") + 4).trim() || "{}");
+        threadId = meta.threadId;
+        raw = parts[1].slice(parts[1].indexOf("\r\n\r\n") + 4).replace(/\r\n$/, "");
+      } else {
+        const b = await readBody(req);
+        raw = Buffer.from(b.raw ?? "", "base64url").toString("latin1");
+        threadId = b.threadId;
+        if (raw.length > 5 * 1024 * 1024) return reply(413, err(413, "Request payload size exceeds the limit"));
+      }
+      const mime = parseMime(raw);
+      const id = `g-sent-${state.messages.size + 1}`;
+      const msg: FakeGmailMessage = {
+        id, threadId: threadId ?? `g-thread-sent-${id}`, labelIds: ["SENT"], internalDate: Date.now(),
+        from: mime.headers["from"] ?? GMAIL_ACCOUNT.email, to: mime.headers["to"] ?? "", cc: mime.headers["cc"], subject: mime.headers["subject"] ?? "",
+        snippet: "", text: leaves(mime).find((l) => l.contentType === "text/plain")?.body.toString("utf8") ?? "", raw,
+      };
+      state.messages.set(id, msg);
+      log({ messagesAdded: [{ message: { id, threadId: msg.threadId, labelIds: msg.labelIds } }] });
+      state.sent.push({ kind: "send", id, threadId, upload: uploadSend, raw });
+      return reply(200, { id, threadId: msg.threadId, labelIds: msg.labelIds });
+    }
     if (rest === "/history") {
       const start = Number(url.searchParams.get("startHistoryId"));
       if (start < state.minHistory) return reply(404, err(404, "Requested entity was not found."));
@@ -323,6 +393,7 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
         const msg: FakeGmailMessage = {
           id, threadId: b.threadId ?? `g-thread-new-${delivered}`, labelIds: b.labelIds ?? ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: Date.now(),
           from: b.from ?? "Kim Park <kim@friends.example>", to: GMAIL_ACCOUNT.email, subject: b.subject ?? `New ${delivered}`, snippet: b.snippet ?? "Just arrived", text: b.text ?? "Just arrived",
+          ...(b.attachmentBytes ? { attachments: [{ filename: "big.bin", mimeType: "application/octet-stream", data: Buffer.alloc(b.attachmentBytes, 7) }] } : {}),
         };
         state.messages.set(id, msg);
         log({ messagesAdded: [{ message: { id, threadId: msg.threadId, labelIds: msg.labelIds } }] });

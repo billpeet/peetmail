@@ -151,14 +151,3 @@ test("a missing client secret is reported when Google insists on one", async ({ 
   await page.getByTestId("account-add-google").click();
   await expect(page.getByTestId("account-error")).toContainText("client_secret is missing", { timeout: 15_000 });
 });
-
-test("replying from Gmail isn't possible yet, and the draft stays put", async ({ inbox: page }) => {
-  await addGmail(page);
-  await selectWithKeys(page, "g-thread-latin");
-  await page.keyboard.press("r");
-  await expect(page.getByTestId("compose-body")).toBeFocused();
-  await page.keyboard.type("Obrigado!");
-  await page.keyboard.press("Control+Enter");
-  await expect(page.getByTestId("toast")).toContainText("Sending from Gmail isn't supported yet");
-  await expect(page.getByTestId("compose-body")).toHaveValue("Obrigado!");
-});

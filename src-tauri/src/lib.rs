@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod error;
 mod gmail;
+mod gmail_send;
 mod graph;
 mod mail;
 mod notify;

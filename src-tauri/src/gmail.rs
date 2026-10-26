@@ -109,7 +109,7 @@ pub fn cost(method: &Method, url: &str) -> f64 {
 }
 const METADATA: &str = "format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject";
 
-async fn call(state: &AppState, account_id: i64, method: Method, url: &str, body: Option<&Value>) -> Result<Value> {
+pub(crate) async fn call(state: &AppState, account_id: i64, method: Method, url: &str, body: Option<&Value>) -> Result<Value> {
     if in_background() {
         spend(account_id, cost(&method, url)).await;
     }
@@ -445,7 +445,7 @@ async fn attachment_bytes(state: &AppState, account_id: i64, remote_id: &str, at
     b64url(v["data"].as_str().unwrap_or_default())
 }
 
-async fn content_bytes(state: &AppState, account_id: i64, remote_id: &str, content: &str, is_id: bool) -> Result<Vec<u8>> {
+pub(crate) async fn content_bytes(state: &AppState, account_id: i64, remote_id: &str, content: &str, is_id: bool) -> Result<Vec<u8>> {
     if is_id {
         attachment_bytes(state, account_id, remote_id, content).await
     } else {
@@ -483,6 +483,11 @@ pub async fn fetch_body(state: &AppState, account_id: i64, remote_id: &str) -> R
         html = sanitize::rewrite_img_src(&html, |src| src.strip_prefix("cid:").and_then(|cid| by_cid.get(cid).cloned()));
     }
     Ok(html)
+}
+
+/// A message resource ("full", "metadata", ...).
+pub(crate) async fn get_message(state: &AppState, account_id: i64, remote_id: &str, format: &str) -> Result<Value> {
+    get(state, account_id, &format!("{}/messages/{remote_id}?format={format}", base())).await
 }
 
 pub async fn list_attachments(state: &AppState, account_id: i64, remote_id: &str) -> Result<Vec<mail::Attachment>> {
@@ -833,8 +838,7 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
                 other => Err(AppError::Graph { status: 400, message: format!("can't move Gmail mail to {other}") }),
             }
         }
-        // A 400 fails the op for good, with this message in the toast.
-        Op::Send(_) => Err(AppError::Graph { status: 400, message: "sending from Gmail isn't supported yet".into() }),
+        Op::Send(d) => crate::gmail_send::send(state, account_id, remote_id, d).await,
         Op::Respond { .. } | Op::CreateEvent(_) => Err(AppError::Graph { status: 400, message: "Google Calendar isn't supported yet".into() }),
     }
 }
