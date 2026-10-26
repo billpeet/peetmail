@@ -14,6 +14,7 @@ import {
   type SyncStatus,
   type ThreadRow,
   type QueuedSend,
+  type SnoozedThread,
 } from "./api";
 import { prefetchBody } from "./bodies";
 import { calendar } from "./calendar.svelte";
@@ -28,7 +29,7 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed";
 
 export type ComposerState = {
   kind: DraftKind;
@@ -86,6 +87,10 @@ class MailStore {
   imagesFor = $state<string | null>(null);
 
   composer = $state<ComposerState | null>(null);
+  /** Snoozed conversations, soonest back first. */
+  snoozed = $state.raw<SnoozedThread[]>([]);
+  /** The conversation the snooze picker acts on. */
+  snoozeTarget = $state.raw<ThreadRow | null>(null);
   /** Messages scheduled to send later, soonest first. */
   scheduled = $state.raw<QueuedSend[]>([]);
   /** The send that `z` takes back while its toast is up. */
@@ -166,6 +171,7 @@ class MailStore {
     this.#refreshTimer = setTimeout(() => {
       if (this.folder) this.refresh();
       else this.loadFolder();
+      this.refreshSnoozed();
     }, REFRESH_DEBOUNCE_MS);
   }
 
@@ -244,7 +250,7 @@ class MailStore {
     const seq = this.#listSeq;
     try {
       const { folderId, query, split } = this.listQuery;
-      const rows = await api.listThreads(folderId, query, split, { receivedAt: last.receivedAt, messageId: last.messageId }, PAGE);
+      const rows = await api.listThreads(folderId, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE);
       if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
@@ -400,17 +406,76 @@ class MailStore {
       if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
       // mail-changed triggers the refresh; do it now too so the list never lags a keypress.
       await this.refresh();
-      // In the reader, archive/delete moves straight on to the next conversation; a pinned
-      // conversation (opened from Recent Opens) returns to the list instead.
-      if ((action === "archive" || action === "trash") && this.view === "reader") {
-        if (this.pinned) this.back();
-        else if (this.current) await this.open();
-      } else if ((action === "archive" || action === "trash") && this.previewing) {
-        await this.preview(); // the next conversation slid into place; restart its dwell timer
-      }
+      if (action === "archive" || action === "trash") await this.#afterRemoval();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
+  }
+
+  /**
+   * The current conversation just left the list (archived, deleted, snoozed). In the
+   * reader, move straight on to the next one; a pinned conversation (opened from Recent
+   * Opens or Snoozed) returns to the list instead.
+   */
+  async #afterRemoval() {
+    if (this.view === "reader") {
+      if (this.pinned) this.back();
+      else if (this.current) await this.open();
+    } else if (this.previewing) {
+      await this.preview(); // the next conversation slid into place; restart its dwell timer
+    }
+  }
+
+  // ---------- snooze ----------
+
+  /** Opens the snooze picker for `t` (default: the current conversation). */
+  startSnooze(t: ThreadRow | null = this.current) {
+    if (!t) return;
+    this.snoozeTarget = t;
+    this.overlay = "snooze";
+  }
+
+  async snooze(until: Date) {
+    const t = this.snoozeTarget;
+    if (!t) return;
+    const wasCurrent = this.current?.conversationId === t.conversationId && this.current?.accountId === t.accountId;
+    // Close at once, so keys typed straight after (g h, j) aren't swallowed by the dialog.
+    if (this.overlay === "snooze") this.overlay = null;
+    this.snoozeTarget = null;
+    try {
+      const out = await api.snoozeThread(t.accountId, t.conversationId, until.toISOString());
+      if (out.label) this.showToast({ text: `Snoozed until ${formatSendAt(until.toISOString())}`, undo: true });
+      await this.refresh();
+      this.refreshSnoozed();
+      if (wasCurrent) await this.#afterRemoval();
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
+  async unsnooze(s: SnoozedThread) {
+    try {
+      await api.unsnoozeThread(s.accountId, s.conversationId);
+      this.showToast({ text: "Back in your inbox" });
+      await this.refresh();
+      this.refreshSnoozed();
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
+  /** Opens a snoozed conversation without waking it. */
+  async openSnoozed(s: SnoozedThread) {
+    this.overlay = null;
+    this.search = null;
+    this.pinned = s;
+    await this.open();
+  }
+
+  async refreshSnoozed() {
+    try {
+      this.snoozed = await api.listSnoozed();
+    } catch {}
   }
 
   /** Mouse: run an action on a row without opening it (hover buttons). */
@@ -487,6 +552,7 @@ class MailStore {
       const label = await api.undo();
       this.showToast({ text: label ? `Undid: ${label.toLowerCase()}` : "Nothing to undo" });
       await this.refresh();
+      this.refreshSnoozed();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }

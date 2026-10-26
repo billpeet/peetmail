@@ -15,7 +15,7 @@ mod testenv;
 
 use std::time::Duration;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Delta polls are cheap; Graph change notifications need a public webhook,
 /// which a desktop app doesn't have.
@@ -79,6 +79,26 @@ pub fn run() {
             app.manage(state::AppState::new(db));
             create_main_window(app)?;
 
+            // Snoozes wake on time: a cheap indexed check each second.
+            let snoozer = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let state = snoozer.state::<state::AppState>();
+                    match state.db.with(|c| actions::wake(c, None)) {
+                        Ok(accounts) if !accounts.is_empty() => {
+                            outbox::emit_status(&snoozer, &state);
+                            outbox::kick(&snoozer);
+                            for a in accounts {
+                                let _ = snoozer.emit(mail::EVENT_MAIL_CHANGED, serde_json::json!({ "accountId": a, "folderId": null }));
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => log::error!("waking snoozes: {e}"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -111,6 +131,9 @@ pub fn run() {
             commands::invite_event,
             commands::respond_to_event,
             commands::create_event,
+            commands::snooze_thread,
+            commands::unsnooze_thread,
+            commands::list_snoozed,
             commands::cancel_send,
             commands::scheduled_sends,
             commands::thread_action,

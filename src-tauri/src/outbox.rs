@@ -370,7 +370,14 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
             msg_url(rid()?),
             json!({ "flag": { "flagStatus": if *value { "flagged" } else { "notFlagged" } } }),
         ),
-        Op::Move { destination } => (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination })),
+        Op::Move { destination } => {
+            let destination = if destination == crate::actions::SNOOZE_DEST {
+                snooze_folder(state, row.account_id).await?
+            } else {
+                destination.clone()
+            };
+            (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination }))
+        }
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
         Op::Respond { response } => (
             Method::POST,
@@ -385,6 +392,42 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
         &[PREFER_IMMUTABLE]
     };
     mail::graph_call(state, row.account_id, method, &url, Some(&body), prefer).await
+}
+
+const SNOOZE_FOLDER_NAME: &str = "PeetMail Snoozed";
+
+/// The server folder snoozed mail waits in: found by name, or created hidden (so other
+/// mail apps don't list it). Its id is cached in settings.
+async fn snooze_folder(state: &AppState, account_id: i64) -> Result<String> {
+    let key = format!("snooze_folder:{account_id}");
+    if let Some(id) = state.db.with(|c| crate::db::get_setting(c, &key))? {
+        return Ok(id);
+    }
+    let base = graph::base();
+    let list = mail::graph_call(state, account_id, Method::GET, &format!("{base}/me/mailFolders?includeHiddenFolders=true&$top=250"), None, &[PREFER_IMMUTABLE]).await?;
+    let found = list["value"]
+        .as_array()
+        .and_then(|v| v.iter().find(|f| f["displayName"] == SNOOZE_FOLDER_NAME))
+        .and_then(|f| f["id"].as_str())
+        .map(String::from);
+    let id = match found {
+        Some(id) => id,
+        None => {
+            let url = format!("{base}/me/mailFolders");
+            let hidden = json!({ "displayName": SNOOZE_FOLDER_NAME, "isHidden": true });
+            let created = match mail::graph_call(state, account_id, Method::POST, &url, Some(&hidden), &[PREFER_IMMUTABLE]).await {
+                Ok(v) => v,
+                // Not every mailbox accepts hidden folders; a visible one still works.
+                Err(AppError::Graph { status: 400, .. }) => {
+                    mail::graph_call(state, account_id, Method::POST, &url, Some(&json!({ "displayName": SNOOZE_FOLDER_NAME })), &[PREFER_IMMUTABLE]).await?
+                }
+                Err(e) => return Err(e),
+            };
+            created["id"].as_str().map(String::from).ok_or_else(|| AppError::Other("created folder has no id".into()))?
+        }
+    };
+    state.db.with(|c| crate::db::set_setting(c, &key, &id))?;
+    Ok(id)
 }
 
 /// POST /me/events body. Timed events go in UTC; all-day events are midnights in the

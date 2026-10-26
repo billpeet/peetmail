@@ -36,7 +36,14 @@ export type ThreadRow = {
   unreadCount: number;
   isFlagged: boolean;
   hasAttachments: boolean;
+  /** What the list sorts by: receivedAt, or when a snooze brought it back. */
+  sortAt: string;
+  /** Back from a snooze. */
+  reminder: boolean;
 };
+
+/** A snoozed conversation and when it comes back (UTC). */
+export type SnoozedThread = ThreadRow & { until: string };
 
 export type Recipient = { name: string | null; address: string | null };
 
@@ -142,7 +149,7 @@ export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLim
 /** A conversation from the Recent Opens pane: its newest message, plus when it was opened. */
 export type RecentOpen = ThreadRow & { openedAt: string };
 
-export type Cursor = { receivedAt: string; messageId: number };
+export type Cursor = { sortAt: string; messageId: number };
 
 export type SyncStatus = { state: "syncing" | "idle" | "error"; message: string | null };
 
@@ -174,6 +181,10 @@ export const api = {
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
     invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
+  snoozeThread: (accountId: number, conversationId: string, until: string) =>
+    invoke<ActionOutcome>("snooze_thread", { accountId, conversationId, until }),
+  unsnoozeThread: (accountId: number, conversationId: string) => invoke<void>("unsnooze_thread", { accountId, conversationId }),
+  listSnoozed: () => invoke<SnoozedThread[]>("list_snoozed"),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),

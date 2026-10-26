@@ -93,7 +93,8 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `#` | Delete | ✓ |
 | `u` | Toggle read | ✓ |
 | `s` | Flag | ✓ |
-| `h` | Snooze / remind | 3 |
+| `h` | Snooze: presets (later today, this evening, tomorrow, weekend, next week) or a typed time | ✓ |
+| `g h` | Snoozed conversations (`Enter` read, `h` change time, `u` back now) | ✓ |
 | `r` / `a` / `f` | Reply / reply all / forward | ✓ |
 | `c` | Compose | ✓ |
 | `/` | Search | ✓ |
@@ -155,7 +156,7 @@ Deferred from Phase 1:
 
 ### Phase 3: polish
 
-- Snooze and reminders (local scheduler; on the server, move to a hidden folder)
+- [x] Snooze (`h`). The conversation moves to a hidden "PeetMail Snoozed" server folder (visible if the mailbox refuses hidden folders), so other clients stop showing it too. PeetMail wakes it on time (a 1s local check; on next start if it was closed): back to the inbox, newest message unread, sorted on top by its wake time (`messages.sort_at`) with a Reminder badge. Undoable. Not done: "remind me if nobody replies".
 - [x] Undo send (delay window, 10s by default, set in Settings), scheduled send. Both wait in the local outbox, so a scheduled message only goes out while PeetMail is running (or as soon as it next starts). Server-side deferred delivery (`PR_DEFERRED_SEND_TIME`) would send with the PC off, but needs the draft-then-send flow; revisit if that matters.
 - Snippets
 - Multiple accounts in one unified view

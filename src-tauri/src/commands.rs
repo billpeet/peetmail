@@ -201,6 +201,49 @@ pub fn thread_action(
     Ok(ActionOutcome { label, changed })
 }
 
+/// Snoozes a conversation until `until` (RFC 3339). Undoable like any triage action.
+#[tauri::command]
+pub fn snooze_thread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    conversation_id: String,
+    until: String,
+) -> Result<ActionOutcome> {
+    let until = chrono::DateTime::parse_from_rfc3339(&until).map_err(|_| AppError::Other(format!("\"{until}\" isn't a time")))?.with_timezone(&chrono::Utc);
+    if until <= chrono::Utc::now() {
+        return Err(AppError::Other("that time has already passed".into()));
+    }
+    let entry = state.db.with(|c| actions::snooze(c, account_id, &conversation_id, until))?;
+    let changed = entry.snooze.is_some() as usize;
+    if changed > 0 {
+        let mut undo = state.undo.lock().expect("undo mutex");
+        undo.push(entry);
+        let excess = undo.len().saturating_sub(50);
+        undo.drain(..excess);
+    }
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    mail_changed(&app, account_id);
+    Ok(ActionOutcome { label: (changed > 0).then(|| "Snoozed".into()), changed })
+}
+
+/// Brings a snoozed conversation back to the inbox now.
+#[tauri::command]
+pub fn unsnooze_thread(app: AppHandle, state: State<'_, AppState>, account_id: i64, conversation_id: String) -> Result<()> {
+    state.db.with(|c| actions::wake(c, Some((account_id, &conversation_id))))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    mail_changed(&app, account_id);
+    Ok(())
+}
+
+/// Snoozed conversations, soonest back first.
+#[tauri::command]
+pub fn list_snoozed(state: State<'_, AppState>) -> Result<Vec<actions::SnoozedThread>> {
+    state.db.with(|c| actions::list_snoozed(c))
+}
+
 /// Undoes the most recent action. Returns its label ("Archived") or None if nothing to undo.
 #[tauri::command]
 pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>> {

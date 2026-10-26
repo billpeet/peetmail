@@ -91,7 +91,7 @@
     {@render action("reader-next", "Next conversation (J)", () => mail.move(1), ChevronDown)}
   </div>
 
-<div data-testid="reader" class="min-h-0 flex-1 overflow-y-auto">
+<div data-testid="reader" data-conversation-id={mail.threadFor} class="min-h-0 flex-1 overflow-y-auto">
   <div class="mx-auto max-w-4xl px-8 py-6">
     <h1 class="mb-5 text-xl font-semibold text-ink-100 select-text">{mail.current?.subject || "(no subject)"}</h1>
     {#if mail.invite}<InviteCard invite={mail.invite} />{/if}

@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_calendar.sql"),
     include_str!("../migrations/0005_event_series.sql"),
     include_str!("../migrations/0006_meeting_messages.sql"),
+    include_str!("../migrations/0007_snooze.sql"),
 ];
 
 pub struct Db {
@@ -117,6 +118,10 @@ pub struct ThreadRow {
     pub unread_count: i64,
     pub is_flagged: bool,
     pub has_attachments: bool,
+    /// What the list sorts by: received_at, or the wake time of a snooze.
+    pub sort_at: String,
+    /// Back from a snooze (sorted by its wake time, not its date).
+    pub reminder: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -289,10 +294,10 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
     conn.execute(
         "INSERT INTO messages (account_id, folder_id, remote_id, conversation_id, subject, from_name, from_address,
                                to_json, cc_json, received_at, preview, is_read, is_flagged, has_attachments,
-                               importance, inference, message_type, meeting_message_type)
+                               importance, inference, message_type, meeting_message_type, sort_at)
          SELECT ?1, ?2, ?3, COALESCE(?4, ?3), COALESCE(?5, ''), ?6, ?7, COALESCE(?8, '[]'), COALESCE(?9, '[]'),
                 ?10, COALESCE(?11, ''), COALESCE(?12, 0), COALESCE(?13, 0), COALESCE(?14, 0), ?15, ?16,
-                COALESCE(?17, 'message'), ?18
+                COALESCE(?17, 'message'), ?18, ?10
          WHERE ?10 IS NOT NULL
          ON CONFLICT (account_id, remote_id) DO UPDATE SET
            folder_id       = excluded.folder_id,
@@ -303,6 +308,8 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
            to_json         = COALESCE(?8,  to_json),
            cc_json         = COALESCE(?9,  cc_json),
            received_at     = COALESCE(?10, received_at),
+           -- A wake time (later than the date) survives resyncs.
+           sort_at         = MAX(sort_at, COALESCE(?10, sort_at)),
            preview         = COALESCE(?11, preview),
            is_read         = COALESCE(?12, is_read),
            is_flagged      = COALESCE(?13, is_flagged),
@@ -361,7 +368,8 @@ pub fn prune_older_than(conn: &Connection, folder_id: i64, cutoff_iso: &str) -> 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cursor {
-    pub received_at: String,
+    /// The last row's `sort_at`.
+    pub sort_at: String,
     pub message_id: i64,
 }
 
@@ -394,9 +402,9 @@ pub fn list_threads(
     params.extend(filter.params.iter().cloned());
     let cursor_sql = match cursor {
         Some(c) => {
-            params.push(V::Text(c.received_at.clone()));
+            params.push(V::Text(c.sort_at.clone()));
             params.push(V::Integer(c.message_id));
-            "AND (received_at, id) < (?, ?)"
+            "AND (sort_at, id) < (?, ?)"
         }
         None => "",
     };
@@ -412,10 +420,10 @@ pub fn list_threads(
            WINDOW w AS (PARTITION BY conversation_id ORDER BY received_at DESC, id DESC)
          )
          SELECT id, account_id, conversation_id, subject, from_name, from_address, received_at, preview,
-                cnt, unread, is_flagged, has_attachments
+                cnt, unread, is_flagged, has_attachments, sort_at
          FROM ranked
          WHERE rn = 1 {cursor_sql}
-         ORDER BY received_at DESC, id DESC
+         ORDER BY sort_at DESC, id DESC
          LIMIT ?",
         filter = filter.sql
     );
@@ -434,6 +442,8 @@ pub fn list_threads(
             unread_count: r.get(9)?,
             is_flagged: r.get(10)?,
             has_attachments: r.get(11)?,
+            reminder: r.get::<_, String>(12)? > r.get::<_, String>(6)?,
+            sort_at: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -513,6 +523,12 @@ pub fn conversation_states(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Puts a message at the top of its list (a snooze waking up).
+pub fn surface(conn: &Connection, message_id: i64, at: &str) -> Result<()> {
+    conn.execute("UPDATE messages SET sort_at = ?2 WHERE id = ?1", params![message_id, at])?;
+    Ok(())
+}
+
 pub fn restore_state(conn: &Connection, s: &MessageState) -> Result<()> {
     conn.execute(
         "UPDATE messages SET folder_id = ?2, is_read = ?3, is_flagged = ?4 WHERE id = ?1",
@@ -588,7 +604,7 @@ pub fn recent_opens(conn: &Connection, limit: i64) -> Result<Vec<RecentOpen>> {
                   w AS (PARTITION BY m.account_id, m.conversation_id ORDER BY m.received_at DESC, m.id DESC)
          )
          SELECT l.id, l.account_id, l.conversation_id, l.subject, l.from_name, l.from_address, l.received_at,
-                l.preview, l.cnt, l.unread, l.is_flagged, l.has_attachments, r.opened_at
+                l.preview, l.cnt, l.unread, l.is_flagged, l.has_attachments, r.opened_at, l.sort_at
          FROM recent_opens r
          JOIN latest l ON l.account_id = r.account_id AND l.conversation_id = r.conversation_id AND l.rn = 1
          ORDER BY r.opened_at DESC
@@ -609,6 +625,8 @@ pub fn recent_opens(conn: &Connection, limit: i64) -> Result<Vec<RecentOpen>> {
                 unread_count: r.get(9)?,
                 is_flagged: r.get(10)?,
                 has_attachments: r.get(11)?,
+                reminder: r.get::<_, String>(13)? > r.get::<_, String>(6)?,
+                sort_at: r.get(13)?,
             },
             opened_at: r.get(12)?,
         })
@@ -758,7 +776,7 @@ mod tests {
             assert_eq!(t[0].unread_count, 1);
             assert_eq!(t[1].conversation_id, "c2");
 
-            let cur = Cursor { received_at: t[0].received_at.clone(), message_id: t[0].message_id };
+            let cur = Cursor { sort_at: t[0].sort_at.clone(), message_id: t[0].message_id };
             let page2 = list_threads(c, Scope::Folder(f), &crate::query::compile(""), Some(&cur), 10)?;
             assert_eq!(page2.len(), 1);
             assert_eq!(page2[0].conversation_id, "c2");

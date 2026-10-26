@@ -84,6 +84,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     eventChanges: [] as { seq: number; id: string; removed: boolean }[],
     /** Writes the app made: sends, replies, moves, patches. */
     sent: [] as Json[],
+    /** Folders the app created (POST /me/mailFolders), by id. */
+    extraFolders: new Map<string, { id: string; displayName: string; isHidden: boolean }>(),
   };
 
   const defaults = { count, seed };
@@ -95,6 +97,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.eventSeq = 0;
     for (const e of defaultCalendar()) state.events.set(e.id, e);
     state.sent = [];
+    state.extraFolders.clear();
     state.sessions.clear();
     state.seq = 0;
     for (const m of messages ?? mailbox ?? defaultMailbox({ count, seed })) state.messages.set(m.id, m);
@@ -232,10 +235,24 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (p === "/me") return reply(200, { ...ACCOUNT, userPrincipalName: ACCOUNT.mail });
     if (p === "/me/calendarView/delta") return calendarDelta(req, url, reply);
 
+    if (p === "/me/mailFolders" && method === "GET") {
+      // Hidden folders only show with includeHiddenFolders=true, like Graph.
+      const hidden = url.searchParams.get("includeHiddenFolders") === "true";
+      const builtIn = Object.entries(FOLDER_IDS).map(([name, id]) => ({ id, displayName: FOLDER_NAMES[name as FolderName], isHidden: false }));
+      return reply(200, { value: [...builtIn, ...state.extraFolders.values()].filter((f) => hidden || !f.isHidden) });
+    }
+    if (p === "/me/mailFolders" && method === "POST") {
+      const b = await readBody(req);
+      const f = { id: `folder-${state.extraFolders.size + 1}`, displayName: String(b.displayName ?? ""), isHidden: !!b.isHidden };
+      state.extraFolders.set(f.id, f);
+      state.sent.push({ kind: "create-folder", ...f });
+      return reply(201, f);
+    }
     const folder = p.match(/^\/me\/mailFolders\/([^/]+)$/);
     if (folder) {
       const id = folderId(decodeURIComponent(folder[1]));
       if (!id) return graphError(reply, 404, "ErrorFolderNotFound", "Folder not found");
+      if (state.extraFolders.has(id)) return reply(200, state.extraFolders.get(id)!);
       const name = Object.entries(FOLDER_IDS).find(([, v]) => v === id)![0];
       return reply(200, { id, displayName: FOLDER_NAMES[name as FolderName] });
     }
@@ -380,6 +397,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   /** Accepts a well-known name or a folder id. */
   function folderId(nameOrId: string): string | undefined {
     if (nameOrId in FOLDER_IDS) return FOLDER_IDS[nameOrId as FolderName];
+    if (state.extraFolders.has(nameOrId)) return nameOrId;
     return Object.values(FOLDER_IDS).find((v) => v === nameOrId);
   }
 

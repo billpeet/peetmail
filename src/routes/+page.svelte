@@ -20,6 +20,8 @@
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
   import ScheduledList from "$lib/components/ScheduledList.svelte";
+  import SnoozePicker from "$lib/components/SnoozePicker.svelte";
+  import SnoozedList from "$lib/components/SnoozedList.svelte";
 
   // `base`: signed in, nothing modal open (global keys). `ready`: base, in the mail views
   // (every mail binding hangs off it, so mail keys don't act on a hidden conversation
@@ -72,6 +74,7 @@
     mail.init();
     api.outboxStatus().then((s) => mail.setOutbox(s));
     mail.refreshScheduled();
+    mail.refreshSnoozed();
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
@@ -98,6 +101,7 @@
       { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
       { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
+      { id: "go.snoozed", keys: "g h", label: "Snoozed conversations", group: "Go to", when: base, run: () => (mail.overlay = "snoozed") },
       { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => (mail.overlay = "scheduled") },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
@@ -113,6 +117,7 @@
       { id: "triage.trash", keys: "#", label: "Delete", group: "Triage", when: hasThread, run: () => mail.act("trash") },
       { id: "triage.read", keys: "u", label: "Toggle read", group: "Triage", when: hasThread, run: () => mail.toggleRead() },
       { id: "triage.flag", keys: "s", label: "Toggle flag", group: "Triage", when: hasThread, run: () => mail.toggleFlag() },
+      { id: "triage.snooze", keys: "h", label: "Snooze", group: "Triage", when: hasThread, run: () => mail.startSnooze() },
       { id: "triage.undo", keys: "z", label: "Undo", group: "Triage", when: ready, run: () => mail.undo() },
 
       { id: "compose.new", keys: "c", label: "Compose", group: "Write", when: base, run: () => mail.compose() },
@@ -318,3 +323,5 @@
 {#if mail.overlay === "event"}<EventDetails />{/if}
 {#if mail.overlay === "quickadd"}<QuickAdd />{/if}
 {#if mail.overlay === "scheduled"}<ScheduledList />{/if}
+{#if mail.overlay === "snooze"}<SnoozePicker />{/if}
+{#if mail.overlay === "snoozed"}<SnoozedList />{/if}
