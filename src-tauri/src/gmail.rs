@@ -266,7 +266,9 @@ pub fn unescape_snippet(s: &str) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         let tail = &rest[amp..];
-        let Some(semi) = tail[..tail.len().min(10)].find(';') else {
+        // Entities are short: look a few characters ahead (by char: snippets carry
+        // multi-byte characters such as zero-width joiners right after '&').
+        let Some(semi) = tail.char_indices().take(10).find(|&(_, c)| c == ';').map(|(i, _)| i) else {
             out.push('&');
             rest = &tail[1..];
             continue;
@@ -572,18 +574,20 @@ async fn fetch_many(app: &AppHandle, account_id: i64, ids: Vec<String>) -> Vec<(
 /// Returns (anything changed, how many fetches failed).
 fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)], only_known_archive: bool) -> Result<(bool, usize)> {
     let snooze = state.db.with(|c| db::get_setting(c, &snooze_label_key(account_id)))?;
+    // Parse before taking the database lock: no parsing bug can hold (or poison) it.
+    let parsed: Vec<(&String, std::result::Result<(Option<&'static str>, MessageUpsert), &AppError>)> =
+        fetched.iter().map(|(id, r)| (id, r.as_ref().map(|v| parse_message(v, snooze.as_deref())))).collect();
     state.db.with(|c| {
         let busy = outbox::busy_remote_ids(c, account_id)?;
         let tx = c.transaction()?;
         let mut changed = false;
         let mut failed = 0;
-        for (id, r) in fetched {
+        for (id, r) in parsed {
             if busy.contains(id) {
                 continue;
             }
             match r {
-                Ok(v) => {
-                    let (role, m) = parse_message(v, snooze.as_deref());
+                Ok((role, m)) => {
                     let known: bool = tx
                         .query_row("SELECT 1 FROM messages WHERE account_id = ?1 AND remote_id = ?2", rusqlite::params![account_id, id], |_| Ok(()))
                         .is_ok();
@@ -846,6 +850,15 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snippets_with_multibyte_characters_near_an_ampersand_dont_panic() {
+        // From a real inbox: a zero-width non-joiner (3 bytes) straddling byte 10 after '&'.
+        assert_eq!(unescape_snippet("&abcdefgh\u{200c}x"), "&abcdefgh\u{200c}x");
+        assert_eq!(unescape_snippet("Sale &\u{200c}\u{200c}\u{200c}\u{200c} now"), "Sale &\u{200c}\u{200c}\u{200c}\u{200c} now");
+        assert_eq!(unescape_snippet("Tom &amp;\u{200c} Jerry"), "Tom &\u{200c} Jerry");
+        assert_eq!(unescape_snippet("é&é"), "é&é");
+    }
 
     #[test]
     fn decodes_encoded_words_and_addresses() {

@@ -45,7 +45,18 @@ impl Db {
     }
 
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| {
+            // A bug panicked while holding the connection. Its transaction rolled back as the
+            // panic unwound, so the connection itself is fine: keep going rather than panicking
+            // on every later call (which, inside a WebView2 callback, aborts the whole app).
+            log::error!("database lock was poisoned by a panic; recovering");
+            self.conn.clear_poison();
+            let conn = poisoned.into_inner();
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            conn
+        });
         f(&mut conn)
     }
 }
@@ -806,6 +817,25 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_panic_while_holding_the_connection_doesnt_break_every_later_call() {
+        let db = Db::open_in_memory().unwrap();
+        let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = db.with(|c| {
+                let tx = c.transaction()?;
+                tx.execute("INSERT INTO settings (key, value) VALUES ('half', 'done')", [])?;
+                panic!("bug inside a transaction");
+                #[allow(unreachable_code)]
+                Ok(())
+            });
+        }));
+        assert!(hit.is_err());
+        // The lock is usable again, and the half-done transaction was rolled back.
+        assert_eq!(db.with(|c| get_setting(c, "half")).unwrap(), None);
+        db.with(|c| set_setting(c, "after", "ok")).unwrap();
+        assert_eq!(db.with(|c| get_setting(c, "after")).unwrap().as_deref(), Some("ok"));
     }
 
     #[test]

@@ -151,3 +151,14 @@ test("a missing client secret is reported when Google insists on one", async ({ 
   await page.getByTestId("account-add-google").click();
   await expect(page.getByTestId("account-error")).toContainText("client_secret is missing", { timeout: 15_000 });
 });
+
+test("snippets with zero-width characters after '&' don't take the app down", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  // Marketing mail pads previews with zero-width non-joiners. Here byte 10 after '&' falls
+  // inside one, which is what crashed sync (the old code sliced 10 bytes ahead).
+  await gmail.control("deliver", { subject: "Padded preview", snippet: "Sale &a\u200c\u200c\u200c now on" });
+  await syncGmail(page, gmail);
+  await expect(page.locator("[data-testid=thread-row]", { hasText: "Padded preview" })).toContainText("Sale &");
+  await page.keyboard.press("Control+r"); // still alive and syncing
+  await waitForSyncIdle(page);
+});
