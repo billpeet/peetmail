@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { count, listDate, senderName } from "./format";
+import { count, listDate, recentGroup, recentTime, senderName } from "./format";
 
 describe("listDate", () => {
   const now = new Date("2026-10-23T15:00:00");
@@ -28,5 +28,19 @@ describe("count", () => {
     expect(count(0, "conversation")).toBe("0 conversations");
     expect(count(3, "change")).toBe("3 changes");
     expect(count(2, "reply", "replies")).toBe("2 replies");
+  });
+});
+
+describe("recent opens labels", () => {
+  const now = new Date("2026-10-26T12:00:00");
+  it("groups by last 7 days, rest of this month, then month (with year if older)", () => {
+    expect(recentGroup(new Date("2026-10-25T09:00:00").toISOString(), now)).toBe("Last 7 days");
+    expect(recentGroup(new Date("2026-10-15T09:00:00").toISOString(), now)).toBe("Earlier this month");
+    expect(recentGroup(new Date("2026-09-30T09:00:00").toISOString(), now)).toMatch(/September/);
+    expect(recentGroup(new Date("2025-09-30T09:00:00").toISOString(), now)).toMatch(/September.*2025|2025.*September/);
+  });
+  it("shows weekday and time within a week, weekday and date before that", () => {
+    expect(recentTime(new Date("2026-10-23T19:45:00").toISOString(), now)).toMatch(/Fri.*7:45/);
+    expect(recentTime(new Date("2026-10-15T19:45:00").toISOString(), now)).toMatch(/Thu.*15.*Oct|Thu.*Oct.*15/);
   });
 });

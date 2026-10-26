@@ -100,6 +100,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Tab` / `Shift+Tab` | Next / previous split | ✓ |
 | `z` | Undo last action | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
+| `\` | Show / hide the right pane (Recent Opens) | ✓ |
 | `g c` | Calendar | 2 |
 | `0` | Toggle calendar side panel | 2 |
 

@@ -6,7 +6,7 @@ use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::actions::{self, Action, ActionOutcome};
-use crate::db::{self, Account, Contact, Cursor, Folder, MessageRow, Scope, ThreadRow};
+use crate::db::{self, Account, Contact, Cursor, Folder, MessageRow, RecentOpen, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
 use crate::state::{AppState, CacheLimits, Preferences, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID, KEY_SPLITS};
@@ -345,6 +345,18 @@ pub fn set_splits(state: State<'_, AppState>, splits: Vec<Split>) -> Result<()> 
         .filter(|s| !s.name.is_empty() && !s.query.is_empty())
         .collect();
     state.db.with(|c| db::set_setting(c, KEY_SPLITS, &serde_json::to_string(&splits)?))
+}
+
+// ---------- recent opens ----------
+
+#[tauri::command]
+pub fn record_open(state: State<'_, AppState>, account_id: i64, conversation_id: String) -> Result<()> {
+    state.db.with(|c| db::record_open(c, account_id, &conversation_id))
+}
+
+#[tauri::command]
+pub fn recent_opens(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<RecentOpen>> {
+    state.db.with(|c| db::recent_opens(c, limit.unwrap_or(50).clamp(1, 200)))
 }
 
 // ---------- images and attachments ----------

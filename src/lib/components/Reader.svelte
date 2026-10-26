@@ -56,7 +56,7 @@
     {@render action("reader-reply", "Reply (R)", () => mail.respond("reply"), Reply)}
     {@render action("reader-reply-all", "Reply all (A)", () => mail.respond("replyAll"), ReplyAll)}
     {@render action("reader-forward", "Forward (F)", () => mail.respond("forward"), Forward)}
-    <span class="ml-auto text-xs text-ink-500 tabular-nums">{mail.selected + 1} of {mail.threads.length}</span>
+    <span class="ml-auto text-xs text-ink-500 tabular-nums">{mail.pinned ? "From Recent Opens" : `${mail.selected + 1} of ${mail.threads.length}`}</span>
     {@render action("reader-prev", "Previous conversation (K)", () => mail.move(-1), ChevronUp)}
     {@render action("reader-next", "Next conversation (J)", () => mail.move(1), ChevronDown)}
   </div>

@@ -13,6 +13,7 @@ pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 
 pub const KEY_SPLITS: &str = "splits";
 pub const KEY_HIDE_EMPTY_SPLITS: &str = "hide_empty_splits";
+pub const KEY_SHOW_RIGHT_PANE: &str = "show_right_pane";
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
@@ -39,6 +40,8 @@ pub struct AppState {
 pub struct Preferences {
     /// Hide split tabs with no conversations (the Inbox tab always shows).
     pub hide_empty_splits: bool,
+    /// Show the right-hand pane (Recent Opens). On by default.
+    pub show_right_pane: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,12 +97,19 @@ impl AppState {
 
     pub fn preferences(&self) -> Result<Preferences> {
         self.db.with(|c| {
-            Ok(Preferences { hide_empty_splits: db::get_setting(c, KEY_HIDE_EMPTY_SPLITS)?.as_deref() == Some("1") })
+            Ok(Preferences {
+                hide_empty_splits: db::get_setting(c, KEY_HIDE_EMPTY_SPLITS)?.as_deref() == Some("1"),
+                show_right_pane: db::get_setting(c, KEY_SHOW_RIGHT_PANE)?.as_deref() != Some("0"),
+            })
         })
     }
 
     pub fn set_preferences(&self, p: &Preferences) -> Result<()> {
-        self.db.with(|c| db::set_setting(c, KEY_HIDE_EMPTY_SPLITS, if p.hide_empty_splits { "1" } else { "0" }))
+        let flag = |b: bool| if b { "1" } else { "0" };
+        self.db.with(|c| {
+            db::set_setting(c, KEY_HIDE_EMPTY_SPLITS, flag(p.hide_empty_splits))?;
+            db::set_setting(c, KEY_SHOW_RIGHT_PANE, flag(p.show_right_pane))
+        })
     }
 
     pub fn store_tokens_blob(tokens: &TokenSet) -> Result<Vec<u8>> {

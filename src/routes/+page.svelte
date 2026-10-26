@@ -11,7 +11,8 @@
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
-  import { Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import { PanelRight, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import RightPane from "$lib/components/RightPane.svelte";
 
   // `ready`: signed in, nothing modal open. Every mail binding hangs off it.
   const ready = () => !!mail.account && mail.overlay === null && !mail.composer;
@@ -86,6 +87,7 @@
       { id: "compose.replyAll", keys: "a", label: "Reply all", group: "Write", when: hasThread, run: () => mail.respond("replyAll") },
       { id: "compose.forward", keys: "f", label: "Forward", group: "Write", when: hasThread, run: () => mail.respond("forward") },
 
+      { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: ready, run: () => mail.toggleRightPane() },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
@@ -101,6 +103,8 @@
     };
   });
 
+  const showPane = $derived(mail.boot?.preferences.showRightPane ?? true);
+
   const syncLabel = $derived(
     mail.sync.state === "syncing" ? "Syncing…" : mail.sync.state === "error" ? "Sync error" : "Up to date",
   );
@@ -114,6 +118,8 @@
   {:else if !mail.account}
     <Setup />
   {:else}
+    <div class="flex min-h-0 flex-1">
+    <div class="flex min-w-0 flex-1 flex-col">
     <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
       {#if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
@@ -159,6 +165,13 @@
         {#if mail.search === null}
           <button data-testid="header-search" title="Search (/)" aria-label="Search" onclick={focusSearch} class="icon-btn"><Search size={17} /></button>
         {/if}
+        <button
+          data-testid="toggle-pane"
+          title={`${showPane ? "Hide" : "Show"} right pane (\\)`}
+          aria-label="Toggle right pane"
+          onclick={() => mail.toggleRightPane()}
+          class={["icon-btn hidden xl:inline-flex", showPane && "text-ink-100"]}
+        ><PanelRight size={17} /></button>
       </span>
     </header>
 
@@ -169,6 +182,10 @@
         <Reader />
       {/if}
     </main>
+    </div>
+    <!-- Hidden on narrow windows (< 1280px) so the list keeps its room. -->
+    {#if showPane}<div class="hidden xl:flex"><RightPane /></div>{/if}
+    </div>
 
     <footer class="flex h-8 shrink-0 items-center gap-4 border-t border-ink-800 bg-chrome px-4 text-xs text-ink-500">
       <span data-testid="sync-status" data-state={mail.sync.state} class={mail.sync.state === "error" ? "text-red-300" : ""} title={mail.sync.message ?? ""}>{syncLabel}</span>

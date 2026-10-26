@@ -104,6 +104,8 @@ pub fn run() {
             commands::sync_now,
             commands::set_cache_limits,
             commands::set_preferences,
+            commands::record_open,
+            commands::recent_opens,
             commands::thread_action,
             commands::undo,
             commands::outbox_status,

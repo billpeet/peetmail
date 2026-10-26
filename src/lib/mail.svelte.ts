@@ -6,6 +6,8 @@ import {
   type Folder,
   type MessageRow,
   type OutboxStatus,
+  type Preferences,
+  type RecentOpen,
   type SplitInfo,
   type SyncStatus,
   type ThreadRow,
@@ -58,7 +60,13 @@ class MailStore {
 
   threads = $state.raw<ThreadRow[]>([]);
   selected = $state(0);
-  current = $derived(this.threads[this.selected] ?? null);
+  /**
+   * A conversation opened from outside the list (Recent Opens: archived, another split,
+   * older than the cache window). While set, it's what the reader shows and acts on.
+   */
+  pinned = $state.raw<ThreadRow | null>(null);
+  current = $derived(this.pinned ?? this.threads[this.selected] ?? null);
+  recent = $state.raw<RecentOpen[]>([]);
 
   view = $state<View>("list");
   overlay = $state<Overlay>(null);
@@ -140,11 +148,19 @@ class MailStore {
     }, REFRESH_DEBOUNCE_MS);
   }
 
-  async setHideEmptySplits(hide: boolean) {
+  async setPreference<K extends keyof Preferences>(key: K, value: Preferences[K]) {
     if (!this.boot) return;
-    const preferences = { ...this.boot.preferences, hideEmptySplits: hide };
-    await api.setPreferences(preferences);
+    const preferences = { ...this.boot.preferences, [key]: value };
     this.boot = { ...this.boot, preferences };
+    await api.setPreferences(preferences);
+  }
+
+  async setHideEmptySplits(hide: boolean) {
+    await this.setPreference("hideEmptySplits", hide);
+  }
+
+  toggleRightPane() {
+    this.setPreference("showRightPane", !(this.boot?.preferences.showRightPane ?? true));
   }
 
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
@@ -155,11 +171,13 @@ class MailStore {
     const { folderId, query, split } = this.listQuery;
     const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
-    const [splits, rows] = await Promise.all([
+    const [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits),
       api.listThreads(folderId, query, split, null, count),
+      api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
+    this.recent = recent;
     this.splits = splits;
     if (this.splitIndex >= splits.length) this.splitIndex = 0;
     this.threads = rows;
@@ -198,6 +216,7 @@ class MailStore {
   }
 
   select(index: number) {
+    this.pinned = null;
     if (!this.threads.length) return;
     this.selected = Math.max(0, Math.min(index, this.threads.length - 1));
     if (this.selected >= this.threads.length - LOAD_AHEAD) this.loadMore();
@@ -218,18 +237,30 @@ class MailStore {
     this.thread = rows;
     this.threadFor = t.conversationId;
     this.view = "reader";
+    api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
     // Opening a conversation reads it, like every mail client; not worth an undo entry.
     if (t.unreadCount > 0) this.act("markRead", { undoable: false, quiet: true });
   }
 
   /** Mouse: click a row to open it. */
   async openAt(index: number) {
+    this.pinned = null;
     this.selected = Math.max(0, Math.min(index, this.threads.length - 1));
+    await this.open();
+  }
+
+  /** Opens a Recent Opens entry: selects it in the list if it's there, else pins it. */
+  async openRecent(r: RecentOpen) {
+    this.search = null;
+    const index = this.threads.findIndex((t) => t.conversationId === r.conversationId && t.accountId === r.accountId);
+    if (index >= 0) return this.openAt(index);
+    this.pinned = r;
     await this.open();
   }
 
   back() {
     this.view = "list";
+    this.pinned = null;
   }
 
   // ---------- splits and search ----------
@@ -284,8 +315,12 @@ class MailStore {
       if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
       // mail-changed triggers the refresh; do it now too so the list never lags a keypress.
       await this.refresh();
-      // In the reader, archive/delete moves straight on to the next conversation.
-      if ((action === "archive" || action === "trash") && this.view === "reader" && this.current) await this.open();
+      // In the reader, archive/delete moves straight on to the next conversation; a pinned
+      // conversation (opened from Recent Opens) returns to the list instead.
+      if ((action === "archive" || action === "trash") && this.view === "reader") {
+        if (this.pinned) this.back();
+        else if (this.current) await this.open();
+      }
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }

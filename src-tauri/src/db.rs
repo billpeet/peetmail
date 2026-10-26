@@ -12,6 +12,7 @@ use crate::error::Result;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_outbox_search.sql"),
+    include_str!("../migrations/0003_recent_opens.sql"),
 ];
 
 pub struct Db {
@@ -533,6 +534,77 @@ pub fn ensure_local_folder(conn: &Connection, account_id: i64, role: &str, name:
     insert_folder(conn, account_id, &format!("wk:{role}"), role, name)
 }
 
+// ---------- recent opens ----------
+
+const RECENT_KEEP: i64 = 200;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentOpen {
+    #[serde(flatten)]
+    pub thread: ThreadRow,
+    pub opened_at: String,
+}
+
+/// Records that a conversation was opened (moves it to the top) and prunes old entries.
+pub fn record_open(conn: &Connection, account_id: i64, conversation_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO recent_opens (account_id, conversation_id, opened_at)
+         VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         ON CONFLICT (account_id, conversation_id) DO UPDATE SET opened_at = excluded.opened_at",
+        params![account_id, conversation_id],
+    )?;
+    conn.execute(
+        "DELETE FROM recent_opens WHERE rowid NOT IN (SELECT rowid FROM recent_opens ORDER BY opened_at DESC LIMIT ?1)",
+        [RECENT_KEEP],
+    )?;
+    Ok(())
+}
+
+/// Recently opened conversations, newest open first, each with its newest message
+/// (any folder except Deleted Items, so archived ones still show).
+pub fn recent_opens(conn: &Connection, limit: i64) -> Result<Vec<RecentOpen>> {
+    let mut stmt = conn.prepare_cached(
+        "WITH latest AS (
+           SELECT m.*,
+                  ROW_NUMBER()     OVER w AS rn,
+                  COUNT(*)         OVER c AS cnt,
+                  SUM(1 - is_read) OVER c AS unread
+           FROM messages m JOIN folders f ON f.id = m.folder_id
+           WHERE COALESCE(f.role, '') <> 'deleteditems'
+             AND (m.account_id, m.conversation_id) IN (SELECT account_id, conversation_id FROM recent_opens)
+           WINDOW c AS (PARTITION BY m.account_id, m.conversation_id),
+                  w AS (PARTITION BY m.account_id, m.conversation_id ORDER BY m.received_at DESC, m.id DESC)
+         )
+         SELECT l.id, l.account_id, l.conversation_id, l.subject, l.from_name, l.from_address, l.received_at,
+                l.preview, l.cnt, l.unread, l.is_flagged, l.has_attachments, r.opened_at
+         FROM recent_opens r
+         JOIN latest l ON l.account_id = r.account_id AND l.conversation_id = r.conversation_id AND l.rn = 1
+         ORDER BY r.opened_at DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |r| {
+        Ok(RecentOpen {
+            thread: ThreadRow {
+                message_id: r.get(0)?,
+                account_id: r.get(1)?,
+                conversation_id: r.get(2)?,
+                subject: r.get(3)?,
+                from_name: r.get(4)?,
+                from_address: r.get(5)?,
+                received_at: r.get(6)?,
+                preview: r.get(7)?,
+                message_count: r.get(8)?,
+                unread_count: r.get(9)?,
+                is_flagged: r.get(10)?,
+                has_attachments: r.get(11)?,
+            },
+            opened_at: r.get(12)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 // ---------- contacts ----------
 
 #[derive(Debug, Serialize)]
@@ -734,6 +806,41 @@ mod tests {
             // newest 2 = m6 (cached, skipped), m5; plus unread m2, m1
             assert_eq!(bodies_to_prefetch(c, 2, 10)?, vec![5, 2, 1]);
             assert_eq!(bodies_to_prefetch(c, 2, 2)?, vec![5, 2]);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn recent_opens_are_newest_first_survive_archive_and_dedupe() {
+        let (db, a, f) = seed();
+        db.with(|c| {
+            upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
+            upsert_message(c, a, f, &msg("m2", "c1", "2026-10-02T10:00:00Z", false))?;
+            upsert_message(c, a, f, &msg("m3", "c2", "2026-10-03T10:00:00Z", true))?;
+            record_open(c, a, "c1")?;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            record_open(c, a, "c2")?;
+            let r = recent_opens(c, 10)?;
+            assert_eq!(r.iter().map(|x| x.thread.conversation_id.as_str()).collect::<Vec<_>>(), vec!["c2", "c1"]);
+            assert_eq!(r[1].thread.subject, "subject m2", "shows the conversation's newest message");
+            assert_eq!(r[1].thread.message_count, 2);
+
+            // Reopening moves it back to the top without duplicating it.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            record_open(c, a, "c1")?;
+            let r = recent_opens(c, 10)?;
+            assert_eq!(r.len(), 2);
+            assert_eq!(r[0].thread.conversation_id, "c1");
+
+            // Archived conversations stay; deleted ones drop out.
+            let archive = ensure_local_folder(c, a, "archive", "Archive")?;
+            let trash = ensure_local_folder(c, a, "deleteditems", "Deleted Items")?;
+            set_folder(c, 1, archive.id)?;
+            set_folder(c, 2, archive.id)?;
+            set_folder(c, 3, trash.id)?;
+            let r = recent_opens(c, 10)?;
+            assert_eq!(r.iter().map(|x| x.thread.conversation_id.as_str()).collect::<Vec<_>>(), vec!["c1"]);
             Ok(())
         })
         .unwrap();

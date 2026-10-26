@@ -77,9 +77,12 @@ export type OutboxStatus = { pending: number; failed: number; lastError: string 
 
 export type CacheLimits = { cacheDays: number; bodyCacheMb: number };
 
-export type Preferences = { hideEmptySplits: boolean };
+export type Preferences = { hideEmptySplits: boolean; showRightPane: boolean };
 
 export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
+
+/** A conversation from the Recent Opens pane: its newest message, plus when it was opened. */
+export type RecentOpen = ThreadRow & { openedAt: string };
 
 export type Cursor = { receivedAt: string; messageId: number };
 
@@ -104,6 +107,8 @@ export const api = {
   syncNow: () => invoke<void>("sync_now"),
   setCacheLimits: (limits: CacheLimits) => invoke<void>("set_cache_limits", { limits }),
   setPreferences: (preferences: Preferences) => invoke<void>("set_preferences", { preferences }),
+  recordOpen: (accountId: number, conversationId: string) => invoke<void>("record_open", { accountId, conversationId }),
+  recentOpens: (limit = 50) => invoke<RecentOpen[]>("recent_opens", { limit }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),
