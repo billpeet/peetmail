@@ -102,6 +102,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `z` | Undo last action (also takes back a send during its undo window) | ✓ |
 | `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
 | `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
+| `Ctrl+Q` | Quit (closing the window keeps PeetMail in the tray) | ✓ |
 | `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
@@ -161,7 +162,7 @@ Deferred from Phase 1:
 - [x] Undo send (delay window, 10s by default, set in Settings), scheduled send. Both wait in the local outbox, so a scheduled message only goes out while PeetMail is running (or as soon as it next starts). Server-side deferred delivery (`PR_DEFERRED_SEND_TIME`) would send with the PC off, but needs the draft-then-send flow; revisit if that matters.
 - [x] Snippets: made in Settings (name + text); in the composer type `;name` or press `Ctrl+;`, pick with ↑/↓, Enter inserts. Placeholders `{first_name}` `{name}` (first recipient; guessed from the address when there's no name) and `{my_first_name}` `{my_name}`. Stored in settings as JSON.
 - Multiple accounts in one unified view
-- Windows notifications, start with Windows, tray icon
+- [x] Windows notifications, start with Windows, tray icon. Toasts for new unread inbox mail (focused only by default; all or off in Settings), only while PeetMail isn't the active window; more than three at once become one summary; snoozes coming back raise a reminder. A per-account watermark on the local row id means the first sync, a backlog and mail older than a day never notify. Tray icon (click opens; menu: Open, Sync now, Quit); closing the window hides to the tray (setting); `Ctrl+Q` quits. Start with Windows (HKCU Run key via tauri-plugin-autostart) launches hidden with `--minimized`. Single instance outside tests: a second launch shows the running window. Clicking a toast doesn't open the conversation (the notification plugin has no click callback on Windows).
 - Gmail provider behind the same provider interface
 
 ## Entra app registration

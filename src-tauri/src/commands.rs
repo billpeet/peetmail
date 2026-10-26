@@ -238,6 +238,40 @@ pub fn unsnooze_thread(app: AppHandle, state: State<'_, AppState>, account_id: i
     Ok(())
 }
 
+// ---------- desktop: start with Windows, quit ----------
+
+/// Tests and the drive CLI keep "start with Windows" in settings instead of the real
+/// registry Run key (PEETMAIL_FAKE_AUTOSTART=1, debug builds only).
+fn fake_autostart() -> bool {
+    crate::testenv::flag("PEETMAIL_FAKE_AUTOSTART")
+}
+
+#[tauri::command]
+pub fn get_autostart(app: AppHandle, state: State<'_, AppState>) -> Result<bool> {
+    if fake_autostart() {
+        return Ok(state.db.with(|c| db::get_setting(c, "fake_autostart"))?.as_deref() == Some("1"));
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Starts PeetMail (hidden, in the tray) when you sign in to Windows.
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<()> {
+    if fake_autostart() {
+        return state.db.with(|c| db::set_setting(c, "fake_autostart", if enabled { "1" } else { "0" }));
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    let l = app.autolaunch();
+    if enabled { l.enable() } else { l.disable() }.map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Really quits (closing the window only hides it to the tray).
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 /// Snoozed conversations, soonest back first.
 #[tauri::command]
 pub fn list_snoozed(state: State<'_, AppState>) -> Result<Vec<actions::SnoozedThread>> {

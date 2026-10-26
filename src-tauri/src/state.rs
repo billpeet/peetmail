@@ -22,6 +22,8 @@ pub const DEFAULT_LIST_WIDTH: i64 = 420;
 pub const KEY_RIGHT_PANE_TAB: &str = "right_pane_tab";
 pub const KEY_WEEK_STARTS_ON: &str = "week_starts_on";
 pub const KEY_UNDO_SEND_SECS: &str = "undo_send_secs";
+pub const KEY_NOTIFY: &str = "notify";
+pub const KEY_CLOSE_TO_TRAY: &str = "close_to_tray";
 pub const DEFAULT_UNDO_SEND_SECS: i64 = 10;
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
@@ -63,6 +65,10 @@ pub struct Preferences {
     pub week_starts_on: i64,
     /// How long a sent message waits, so it can be undone. 0 sends at once.
     pub undo_send_secs: i64,
+    /// New-mail notifications: "off", "focused" (default; not Other) or "all".
+    pub notify: String,
+    /// Closing the window keeps PeetMail running in the tray (default on).
+    pub close_to_tray: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +148,12 @@ impl AppState {
                     .and_then(|v| v.parse::<i64>().ok())
                     .map(|s| s.clamp(0, 60))
                     .unwrap_or(DEFAULT_UNDO_SEND_SECS),
+                notify: match db::get_setting(c, KEY_NOTIFY)?.as_deref() {
+                    Some("off") => "off".into(),
+                    Some("all") => "all".into(),
+                    _ => "focused".into(),
+                },
+                close_to_tray: db::get_setting(c, KEY_CLOSE_TO_TRAY)?.as_deref() != Some("0"),
             })
         })
     }
@@ -156,7 +168,9 @@ impl AppState {
             db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())?;
             db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "calendar" { "calendar" } else { "recent" })?;
             db::set_setting(c, KEY_WEEK_STARTS_ON, &p.week_starts_on.rem_euclid(7).to_string())?;
-            db::set_setting(c, KEY_UNDO_SEND_SECS, &p.undo_send_secs.clamp(0, 60).to_string())
+            db::set_setting(c, KEY_UNDO_SEND_SECS, &p.undo_send_secs.clamp(0, 60).to_string())?;
+            db::set_setting(c, KEY_NOTIFY, match p.notify.as_str() { "off" => "off", "all" => "all", _ => "focused" })?;
+            db::set_setting(c, KEY_CLOSE_TO_TRAY, flag(p.close_to_tray))
         })
     }
 

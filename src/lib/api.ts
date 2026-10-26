@@ -117,6 +117,10 @@ export type Preferences = {
   weekStartsOn: number;
   /** Seconds a sent message waits so it can be undone (0: at once). */
   undoSendSecs: number;
+  /** New-mail notifications. */
+  notify: "off" | "focused" | "all";
+  /** Closing the window keeps PeetMail running in the tray. */
+  closeToTray: boolean;
 };
 
 export type Attendee = { name: string | null; address: string | null; response: string | null; type: string | null };
@@ -187,6 +191,9 @@ export const api = {
   unsnoozeThread: (accountId: number, conversationId: string) => invoke<void>("unsnooze_thread", { accountId, conversationId }),
   listSnoozed: () => invoke<SnoozedThread[]>("list_snoozed"),
   listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  quitApp: () => invoke<void>("quit_app"),
   setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),

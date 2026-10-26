@@ -134,6 +134,7 @@
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
+      { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
       { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },

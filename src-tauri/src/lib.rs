@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod graph;
 mod mail;
+mod notify;
 mod outbox;
 mod query;
 mod sanitize;
@@ -23,8 +24,55 @@ const DEFAULT_SYNC_INTERVAL_SECS: u64 = 60;
 
 /// The main window is built in code (not tauri.conf.json) so the test harness can
 /// run it headless: off-screen, out of the taskbar, and never stealing focus.
+/// Brings the main window back (tray click, second launch, tray menu).
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// Tray icon: click to open; menu with Open, Sync now, Quit.
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    let open = MenuItem::with_id(app, "open", "Open PeetMail", true, None::<&str>)?;
+    let sync = MenuItem::with_id(app, "sync", "Sync now", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit PeetMail", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &sync, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("PeetMail")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match e.id.as_ref() {
+            "open" => show_main_window(app),
+            "sync" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    outbox::kick(&app);
+                    let _ = mail::sync_all(&app).await;
+                });
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, e| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     let headless = testenv::flag("PEETMAIL_HEADLESS");
+    // Started with Windows: wait in the tray.
+    let minimized = std::env::args().any(|a| a == "--minimized");
     let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
         .title("PeetMail")
         .inner_size(1280.0, 820.0)
@@ -33,7 +81,9 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         .decorations(false)
         .shadow(true)
         .background_color(tauri::window::Color(38, 38, 42, 255));
-    builder = if headless {
+    builder = if minimized && !headless {
+        builder.visible(false).center()
+    } else if headless {
         // Never shown: WebView2 keeps rendering (screenshots, input over CDP) for a
         // hidden window, and nothing flashes up or steals focus.
         builder.visible(false).focused(false).skip_taskbar(true)
@@ -65,7 +115,26 @@ pub fn run() {
         ]);
     }
 
-    tauri::Builder::default()
+    // Tests run several copies at once (and alongside the real app), so only a real
+    // install is single-instance: a second launch just shows the running window.
+    let is_test = data_dir_override.is_some();
+    let mut builder = tauri::Builder::default();
+    if !is_test {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)));
+    }
+    builder
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        .on_window_event(|window, event| {
+            // Closing the window hides it to the tray (unless that's turned off).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.app_handle().state::<state::AppState>();
+                if state.preferences().map(|p| p.close_to_tray).unwrap_or(true) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(log.build())
         .setup(move |app| {
@@ -78,6 +147,10 @@ pub fn run() {
             db.with(|c| outbox::reset_inflight(c))?;
             app.manage(state::AppState::new(db));
             create_main_window(app)?;
+            // Headless test runs mustn't put icons in the user's taskbar.
+            if !testenv::flag("PEETMAIL_HEADLESS") {
+                create_tray(app)?;
+            }
 
             // Snoozes wake on time: a cheap indexed check each second.
             let snoozer = app.handle().clone();
@@ -85,11 +158,19 @@ pub fn run() {
                 loop {
                     let state = snoozer.state::<state::AppState>();
                     match state.db.with(|c| actions::wake(c, None)) {
-                        Ok(accounts) if !accounts.is_empty() => {
+                        Ok(woke) if !woke.is_empty() => {
                             outbox::emit_status(&snoozer, &state);
                             outbox::kick(&snoozer);
+                            let mut accounts: Vec<i64> = woke.iter().map(|w| w.0).collect();
+                            accounts.dedup();
                             for a in accounts {
                                 let _ = snoozer.emit(mail::EVENT_MAIL_CHANGED, serde_json::json!({ "accountId": a, "folderId": null }));
+                            }
+                            if state.preferences().map(|p| p.notify != "off").unwrap_or(true) {
+                                match state.db.with(|c| notify::reminder_toasts(c, &woke)) {
+                                    Ok(t) => notify::show(&snoozer, t),
+                                    Err(e) => log::error!("reminder notifications: {e}"),
+                                }
                             }
                         }
                         Ok(_) => {}
@@ -135,6 +216,9 @@ pub fn run() {
             commands::unsnooze_thread,
             commands::list_snoozed,
             commands::list_snippets,
+            commands::get_autostart,
+            commands::set_autostart,
+            commands::quit_app,
             commands::set_snippets,
             commands::cancel_send,
             commands::scheduled_sends,

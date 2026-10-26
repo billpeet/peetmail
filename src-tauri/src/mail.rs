@@ -106,6 +106,7 @@ pub async fn sync_all(app: &AppHandle) -> Result<()> {
         None => SyncStatus { state: "idle", message: None },
     };
     let _ = app.emit(EVENT_SYNC_STATUS, status);
+    crate::notify::after_sync(app);
     tauri::async_runtime::spawn(prefetch_bodies(app.clone()));
     Ok(())
 }

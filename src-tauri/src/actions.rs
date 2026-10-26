@@ -86,8 +86,8 @@ pub fn snooze(conn: &mut Connection, account_id: i64, conversation_id: &str, unt
 }
 
 /// Brings snoozed conversations back to the inbox: those due (`only` None) or one now.
-/// Returns the accounts whose mail changed.
-pub fn wake(conn: &mut Connection, only: Option<(i64, &str)>) -> Result<Vec<i64>> {
+/// Returns the (account, conversation) pairs that came back.
+pub fn wake(conn: &mut Connection, only: Option<(i64, &str)>) -> Result<Vec<(i64, String)>> {
     let now = now_iso();
     let tx = conn.transaction()?;
     let due: Vec<(i64, String)> = {
@@ -116,9 +116,7 @@ pub fn wake(conn: &mut Connection, only: Option<(i64, &str)>) -> Result<Vec<i64>
                 db::set_read(&tx, newest.id, false)?;
                 outbox::enqueue(&tx, account_id, Some(&newest.remote_id), &Op::SetRead { value: false }, std::time::Duration::ZERO)?;
             }
-            if !accounts.contains(&account_id) {
-                accounts.push(account_id);
-            }
+            accounts.push((account_id, conversation_id.clone()));
         }
     }
     tx.commit()?;
@@ -333,7 +331,7 @@ mod tests {
             snooze(c, a, "c1", chrono::Utc::now() + chrono::Duration::hours(3))?;
             c.execute("UPDATE snoozes SET until = '2000-01-01T00:00:00.000Z'", [])?;
             c.execute("DELETE FROM outbox", [])?;
-            assert_eq!(wake(c, None)?, vec![a]);
+            assert_eq!(wake(c, None)?, vec![(a, "c1".to_string())]);
             let threads = list(c);
             assert_eq!(threads[0].conversation_id, "c1");
             assert!(threads[0].reminder);

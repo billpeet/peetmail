@@ -127,6 +127,9 @@ export function testEnv({
     PEETMAIL_AUTH_AUTOFOLLOW: "1",
     PEETMAIL_SYNC_INTERVAL_SECS: String(syncIntervalSecs),
     PEETMAIL_UNDO_SEND_SECS: String(undoSendSecs),
+    // Toasts go to a file the tests read; "start with Windows" never touches the registry.
+    PEETMAIL_NOTIFY_LOG: join(dataDir, "notifications.jsonl"),
+    PEETMAIL_FAKE_AUTOSTART: "1",
     PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),

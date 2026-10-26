@@ -8,6 +8,17 @@
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
   let error = $state<string | null>(null);
+  let autostart = $state(false);
+  api.getAutostart().then((v) => (autostart = v)).catch(() => {});
+
+  async function setAutostart(on: boolean) {
+    try {
+      await api.setAutostart(on);
+      autostart = on;
+    } catch (err) {
+      error = String(err);
+    }
+  }
 
   let first: HTMLInputElement | undefined = $state();
   $effect(() => first?.focus());
@@ -68,6 +79,38 @@
           {/each}
         </select>
       </label>
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Desktop</h3>
+      <label class="flex items-center justify-between text-sm text-ink-300">
+        New mail notifications
+        <select
+          data-testid="notify-select"
+          value={mail.boot?.preferences.notify ?? "focused"}
+          onchange={(e) => mail.setPreference("notify", e.currentTarget.value as "off" | "focused" | "all")}
+          class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"
+        >
+          <option value="focused">Focused mail</option>
+          <option value="all">All mail</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2 text-sm text-ink-300">
+        <input
+          type="checkbox"
+          data-testid="close-to-tray"
+          checked={mail.boot?.preferences.closeToTray ?? true}
+          onchange={(e) => mail.setPreference("closeToTray", e.currentTarget.checked)}
+          class="accent-accent"
+        />
+        Keep running in the tray when the window is closed
+      </label>
+      <label class="flex items-center gap-2 text-sm text-ink-300">
+        <input type="checkbox" data-testid="autostart" checked={autostart} onchange={(e) => setAutostart(e.currentTarget.checked)} class="accent-accent" />
+        Start with Windows (in the tray)
+      </label>
+      <p class="text-xs text-ink-500">Notifications only show while PeetMail isn't the window you're using. <kbd>Ctrl</kbd> <kbd>Q</kbd> quits.</p>
     </section>
 
     <section class="space-y-2">
