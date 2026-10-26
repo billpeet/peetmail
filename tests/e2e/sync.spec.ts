@@ -17,13 +17,14 @@ test("remote read-state changes and deletions sync through delta", async ({ inbo
   await expect(row(page, "conv-plain")).toHaveCount(0);
 });
 
-test("a sync with no changes costs one request per synced folder", async ({ inbox: page, fake }) => {
+test("a sync with no changes costs one request per synced folder plus the calendar", async ({ inbox: page, fake }) => {
   const before = fake.state.requests.length;
   await syncNow(page, fake);
   const reqs = fake.requestsSince(before);
   expect(reqs.map((r) => r.path)).toEqual([
     "/v1.0/me/mailFolders/AAMkAGI2-inbox/messages/delta",
     "/v1.0/me/mailFolders/AAMkAGI2-sent/messages/delta",
+    "/v1.0/me/calendarView/delta",
   ]);
   expect(reqs.every((r) => r.query.includes("deltatoken"))).toBe(true);
 });
@@ -62,7 +63,9 @@ test("if Graph rejects the delta date filter, sync falls back to local filtering
   await signIn(page, fake.clientId);
   await waitForSyncIdle(page);
   await expect(page.getByTestId("thread-count")).toHaveText(`${DEFAULT_CONVERSATIONS} conversations`);
-  const deltas = fake.state.requests.filter((r) => r.path.endsWith("/delta"));
-  expect(deltas[0].status).toBe(400);
-  expect(deltas[1].query).not.toContain("filter");
+  const inboxDeltas = fake.state.requests.filter((r) => r.path.endsWith("/AAMkAGI2-inbox/messages/delta"));
+  expect(inboxDeltas[0].status).toBe(400);
+  // The fallbacks drop the meeting-type field first, then the date filter.
+  const firstOk = inboxDeltas.find((r) => r.status === 200)!;
+  expect(firstOk.query).not.toContain("filter");
 });

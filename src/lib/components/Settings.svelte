@@ -47,6 +47,23 @@
       <SplitEditor />
     </section>
 
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Calendar</h3>
+      <label class="flex items-center justify-between text-sm text-ink-300">
+        Week starts on
+        <select
+          data-testid="week-start-select"
+          value={mail.boot?.preferences.weekStartsOn ?? 1}
+          onchange={(e) => mail.setPreference("weekStartsOn", Number(e.currentTarget.value))}
+          class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"
+        >
+          {#each [1, 0, 6, 2, 3, 4, 5] as d (d)}
+            <option value={d}>{new Date(2024, 0, 7 + d).toLocaleDateString(undefined, { weekday: "long" })}</option>
+          {/each}
+        </select>
+      </label>
+    </section>
+
     <form onsubmit={save} class="space-y-5">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Offline cache</h3>
 

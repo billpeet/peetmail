@@ -21,6 +21,7 @@ import {
   type GraphMessage,
   type Sender,
 } from "./fixtures.ts";
+import { defaultCalendar, makeEvent, type GraphEvent } from "./calendar-fixtures.ts";
 
 /** The only client ID the fake authority accepts. Anything else never redirects back, like Entra. */
 export const CLIENT_ID = "11111111-2222-3333-4444-555555555555";
@@ -56,6 +57,12 @@ export type FakeConfig = {
   failBody: boolean;
   /** Every write (PATCH, move, send) fails with this status; 0 = off. */
   failWrites: number;
+  /** Next calendar delta-link request returns 410 (one-shot). */
+  expireCalendarDelta: boolean;
+  /** Message delta leaves out "@odata.type" (the app must rely on meetingMessageType). */
+  omitODataType: boolean;
+  /** Message delta rejects the derived-type select (eventMessage/meetingMessageType) with 400. */
+  rejectMeetingSelect: boolean;
 };
 
 export type FakeOptions = { port?: number; mailbox?: GraphMessage[]; count?: number; seed?: number; verbose?: boolean };
@@ -70,8 +77,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     accessTokens: new Map<string, number>(), // token -> expiresAt (ms)
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
-    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0 } as FakeConfig,
+    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
     requests: [] as RequestRecord[],
+    events: new Map<string, GraphEvent>(),
+    eventSeq: 0,
+    eventChanges: [] as { seq: number; id: string; removed: boolean }[],
     /** Writes the app made: sends, replies, moves, patches. */
     sent: [] as Json[],
   };
@@ -80,6 +90,10 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   function reset({ count = defaults.count, seed = defaults.seed, messages }: { count?: number; seed?: number; messages?: GraphMessage[] } = {}) {
     state.messages.clear();
     state.changes = [];
+    state.events.clear();
+    state.eventChanges = [];
+    state.eventSeq = 0;
+    for (const e of defaultCalendar()) state.events.set(e.id, e);
     state.sent = [];
     state.sessions.clear();
     state.seq = 0;
@@ -216,6 +230,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     }
 
     if (p === "/me") return reply(200, { ...ACCOUNT, userPrincipalName: ACCOUNT.mail });
+    if (p === "/me/calendarView/delta") return calendarDelta(req, url, reply);
 
     const folder = p.match(/^\/me\/mailFolders\/([^/]+)$/);
     if (folder) {
@@ -271,6 +286,45 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return reply(202, "");
     }
 
+    if (p === "/me/events" && method === "POST") {
+      const b = await readBody(req);
+      if (!b.subject || !b.start?.dateTime || !b.end?.dateTime) return graphError(reply, 400, "ErrorInvalidRequest", "subject, start and end are required");
+      // Timed events arrive in UTC; all-day ones as midnights in the user's zone (local here).
+      const when = (t: { dateTime: string; timeZone: string }) => (t.timeZone === "UTC" ? new Date(`${t.dateTime}Z`) : new Date(t.dateTime));
+      const e = makeEvent({
+        id: `evt-created-${++createdCount}`,
+        subject: b.subject,
+        start: when(b.start),
+        end: when(b.end),
+        allDay: !!b.isAllDay,
+        location: b.location?.displayName,
+        showAs: b.showAs,
+      });
+      state.events.set(e.id, e);
+      eventChange(e.id);
+      state.sent.push({ kind: "create-event", id: e.id, body: b });
+      return reply(201, fullForm(e));
+    }
+
+    const eventGet = p.match(/^\/me\/events\/([^/]+)$/);
+    if (eventGet && method === "GET") {
+      const e = state.events.get(decodeURIComponent(eventGet[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      return reply(200, fullForm(e));
+    }
+
+    const rsvp = p.match(/^\/me\/events\/([^/]+)\/(accept|tentativelyAccept|decline)$/);
+    if (rsvp && method === "POST") {
+      const e = state.events.get(decodeURIComponent(rsvp[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      const b = await readBody(req);
+      const status = { accept: "accepted", tentativelyAccept: "tentativelyAccepted", decline: "declined" }[rsvp[2]]!;
+      e.responseStatus = { response: status, time: new Date().toISOString() };
+      eventChange(e.id);
+      state.sent.push({ kind: "rsvp", eventId: e.id, response: status, sendResponse: b.sendResponse });
+      return reply(202, "");
+    }
+
     const attachmentValue = p.match(/^\/me\/messages\/([^/]+)\/attachments\/([^/]+)\/\$value$/);
     if (attachmentValue) {
       const msg = state.messages.get(decodeURIComponent(attachmentValue[1]));
@@ -305,6 +359,18 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         state.sent.push({ kind: "patch", messageId: msg.id, fields });
         return reply(200, metadata(msg));
       }
+      if ((url.searchParams.get("$expand") ?? "").includes("eventMessage/event")) {
+        const event = msg.eventId ? state.events.get(msg.eventId) : undefined;
+        return reply(200, {
+          id: msg.id,
+          meetingMessageType: msg.meetingMessageType ?? null,
+          meetingRequestType: msg.meetingRequestType ?? null,
+          previousStartDateTime: msg.previousStartDateTime ?? null,
+          previousEndDateTime: msg.previousEndDateTime ?? null,
+          previousLocation: msg.previousLocation ?? null,
+          ...(event ? { event: fullForm(event) } : {}),
+        });
+      }
       if (state.config.failBody) return graphError(reply, 500, "InternalServerError", "Body fetch failed (test)");
       return reply(200, { id: msg.id, body: msg.body });
     }
@@ -318,6 +384,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   }
 
   let sentCount = 0;
+  let createdCount = 0;
   /** Puts a copy of something you sent into Sent Items and logs it for assertions. */
   function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[] }) {
     const id = `msg-sent-new-${++sentCount}`;
@@ -339,10 +406,96 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.sent.push({ kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc });
   }
 
-  const metadata = ({ body, attachments, ...rest }: GraphMessage): Json => rest;
+  const metadata = (m: GraphMessage): Json => {
+    const { body, attachments, eventId, meetingMessageType, meetingRequestType, previousStartDateTime, previousEndDateTime, previousLocation, ...rest } = m;
+    return rest;
+  };
+
+  /** A message as message delta returns it, honouring the derived-type select and config. */
+  function deltaMessage(m: GraphMessage, withMeeting: boolean): Json {
+    const out = metadata(m);
+    if (withMeeting && m.meetingMessageType) out.meetingMessageType = m.meetingMessageType;
+    if (state.config.omitODataType) delete out["@odata.type"];
+    return out;
+  }
+
+  // ---------- calendar ----------
+
+  /** UTC instant of an event boundary (all-day boundaries are local midnights). */
+  const eventInstant = (b: GraphEvent["start"], allDay: boolean) =>
+    allDay ? new Date(b.dateTime.slice(0, 19)).toISOString() : `${b.dateTime.slice(0, 19)}Z`;
+
+  function calendarDelta(req: IncomingMessage, url: URL, reply: Reply) {
+    const q = url.searchParams;
+    const pageSize = Number(String(req.headers.prefer ?? "").match(/odata\.maxpagesize=(\d+)/)?.[1] ?? 10);
+    const base = `${origin}/v1.0/me/calendarView/delta`;
+    if (q.has("$skiptoken")) {
+      const [sid, offset] = (q.get("$skiptoken") ?? "").split(":");
+      const s = state.sessions.get(sid);
+      if (!s) return graphError(reply, 410, "SyncStateNotFound", "Skip token expired");
+      return page(s, sid, Number(offset));
+    }
+    let items: Json[];
+    if (q.has("$deltatoken")) {
+      if (state.config.expireCalendarDelta) {
+        state.config.expireCalendarDelta = false;
+        return graphError(reply, 410, "SyncStateNotFound", "The sync state generation is not found.");
+      }
+      const since = Number(q.get("$deltatoken"));
+      const latest = new Map<string, boolean>();
+      for (const c of state.eventChanges) if (c.seq > since) latest.set(c.id, c.removed);
+      items = [...latest].map(([id, removed]) => (removed || !state.events.has(id) ? { id, "@removed": { reason: "deleted" } } : deltaForm(state.events.get(id)!)));
+    } else {
+      const from = q.get("startDateTime") ?? "";
+      const to = q.get("endDateTime") ?? "";
+      if (!from || !to) return graphError(reply, 400, "ErrorInvalidParameter", "startDateTime and endDateTime are required");
+      items = [...state.events.values()]
+        .filter((e) =>
+          e.type === "seriesMaster"
+            ? !e.hiddenFromDelta
+            : eventInstant(e.start, e.isAllDay) < to && eventInstant(e.end, e.isAllDay) > from,
+        )
+        .map(deltaForm);
+    }
+    const sid = b64url(randomBytes(6));
+    const s: Session = { items, pageSize, deltaLink: `${base}?$deltatoken=${state.eventSeq}` };
+    state.sessions.set(sid, s);
+    return page(s, sid, 0);
+
+    function page(s: Session, sid: string, offset: number) {
+      const body: Json = { value: s.items.slice(offset, offset + s.pageSize) };
+      if (offset + s.pageSize < s.items.length) body["@odata.nextLink"] = `${base}?$skiptoken=${sid}:${offset + s.pageSize}`;
+      else {
+        body["@odata.deltaLink"] = s.deltaLink;
+        state.sessions.delete(sid);
+      }
+      reply(200, body);
+    }
+  }
+
+  /** How calendarView delta presents an event: occurrences bare, everything else in full. */
+  function deltaForm(e: GraphEvent): Json {
+    if (e.bare) return { id: e.id, type: e.type, ...(e.seriesMasterId ? { seriesMasterId: e.seriesMasterId } : {}), start: e.start, end: e.end };
+    return fullForm(e);
+  }
+
+  function fullForm({ bare, hiddenFromDelta, ...rest }: GraphEvent): Json {
+    return rest;
+  }
+
+  function eventChange(id: string, removed = false) {
+    state.eventChanges.push({ seq: ++state.eventSeq, id, removed });
+  }
 
   function delta(req: IncomingMessage, url: URL, reply: Reply, folder: string) {
     const q = url.searchParams;
+    const select = q.get("$select") ?? "";
+    // The select (and so this flag) is baked into next/delta links, like Graph does.
+    const withMeeting = select.includes("eventMessage/meetingMessageType") || q.get("meeting") === "1";
+    const m = withMeeting ? "&meeting=1" : "";
+    if (select.includes("eventMessage/meetingMessageType") && state.config.rejectMeetingSelect) {
+      return graphError(reply, 400, "BadRequest", "Derived type properties are not supported in $select on delta.");
+    }
     const pageSize = Number(String(req.headers.prefer ?? "").match(/odata\.maxpagesize=(\d+)/)?.[1] ?? 10);
     const base = `${origin}/v1.0/me/mailFolders/${folder}/messages/delta`;
 
@@ -363,7 +516,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       }
       const [since, c] = (q.get("$deltatoken") ?? "").split(".");
       cutoff = c ?? "";
-      items = changesSince(folder, Number(since), cutoff);
+      items = changesSince(folder, Number(since), cutoff, withMeeting);
     } else {
       const filter = q.get("$filter");
       if (filter) {
@@ -373,11 +526,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       items = [...state.messages.values()]
         .filter((m) => m.parentFolderId === folder && (!cutoff || m.receivedDateTime >= cutoff))
         .sort((a, b) => b.receivedDateTime.localeCompare(a.receivedDateTime))
-        .map(metadata);
+        .map((m) => deltaMessage(m, withMeeting));
     }
 
     const sid = b64url(randomBytes(6));
-    const s: Session = { items, pageSize, deltaLink: `${base}?$deltatoken=${state.seq}.${cutoff}` };
+    const s: Session = { items, pageSize, deltaLink: `${base}?$deltatoken=${state.seq}.${cutoff}${m}` };
     state.sessions.set(sid, s);
     return page(s, sid, 0);
 
@@ -385,7 +538,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const slice = s.items.slice(offset, offset + s.pageSize);
       const body: Json = { "@odata.context": `${origin}/v1.0/$metadata#Collection(message)`, value: slice };
       if (offset + s.pageSize < s.items.length) {
-        body["@odata.nextLink"] = `${base}?$skiptoken=${sid}:${offset + s.pageSize}`;
+        body["@odata.nextLink"] = `${base}?$skiptoken=${sid}:${offset + s.pageSize}${m}`;
       } else {
         body["@odata.deltaLink"] = s.deltaLink;
         state.sessions.delete(sid);
@@ -395,7 +548,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   }
 
   /** Delta items for one folder: changed messages still in it, and @removed for ones that left. */
-  function changesSince(folder: string, since: number, cutoff: string): Json[] {
+  function changesSince(folder: string, since: number, cutoff: string, withMeeting: boolean): Json[] {
     const latest = new Map<string, { kind: ChangeKind; fields: Json }>();
     for (const c of state.changes) {
       if (c.seq <= since || !c.folders.includes(folder)) continue;
@@ -409,7 +562,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const msg = state.messages.get(id);
       if (c.kind === "remove" || !msg || msg.parentFolderId !== folder) out.push({ id, "@removed": { reason: "deleted" } });
       else if (c.kind === "partial") out.push({ id, ...c.fields });
-      else if (!cutoff || msg.receivedDateTime >= cutoff) out.push(metadata(msg));
+      else if (!cutoff || msg.receivedDateTime >= cutoff) out.push(deltaMessage(msg, withMeeting));
     }
     return out;
   }
@@ -438,7 +591,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
             "POST /_test/throttle {count?=1, status?=429, retryAfter?=1}",
             "POST /_test/move {id, folder: inbox|archive|deleteditems|sentitems}",
             "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status}",
-            "GET  /_test/sent   (writes the app made: send, reply, move, patch)",
+            "GET  /_test/sent   (writes the app made: send, reply, move, patch, rsvp, event)",
+            "POST /_test/event {id, subject?, start?, end? (ISO), allDay?, location?, response?, attendees?: [[name, address]]}   POST /_test/event-remove {id}   GET /_test/event?id=",
             "GET  /_test/message?id=...",
             "POST /_test/expire-tokens",
             "GET  /_test/state",
@@ -489,6 +643,31 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         change(msg.id, "upsert", undefined, [from, dest]);
         return ok();
       }
+      case "POST /_test/event": {
+        // Create or update an event: {id, subject, start, end (ISO), allDay?, location?, response?}
+        const existing = state.events.get(body.id);
+        const e = makeEvent({
+          id: body.id,
+          subject: body.subject ?? existing?.subject ?? "New event",
+          start: new Date(body.start ?? (existing ? eventInstant(existing.start, existing.isAllDay) : Date.now())),
+          end: new Date(body.end ?? (existing ? eventInstant(existing.end, existing.isAllDay) : Date.now() + 3600_000)),
+          allDay: body.allDay,
+          location: body.location,
+          response: body.response,
+          attendees: (body.attendees as [string, string][] | undefined)?.map(([name, address]) => ({ name, address })),
+        });
+        state.events.set(e.id, e);
+        eventChange(e.id);
+        return ok(e);
+      }
+      case "POST /_test/event-remove":
+        state.events.delete(body.id);
+        eventChange(body.id, true);
+        return ok();
+      case "GET /_test/event": {
+        const e = state.events.get(url.searchParams.get("id") ?? "");
+        return e ? ok(fullForm(e)) : send(res, 404, { error: "no such event" });
+      }
       case "GET /_test/sent":
         return ok(state.sent);
       case "GET /_test/message": {
@@ -527,7 +706,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state,
     /** Calls the control API, e.g. control("deliver", { subject: "Hi" }). */
     async control(route: string, body?: Json): Promise<any> {
-      const isGet = body === undefined && /^(state|requests|sent|message\?.*)$/.test(route);
+      const isGet = body === undefined && /^(state|requests|sent|message\?.*|event\?.*)$/.test(route);
       const res = await fetch(`${origin}/_test/${route}`, {
         method: isGet ? "GET" : "POST",
         headers: { "Content-Type": "application/json" },

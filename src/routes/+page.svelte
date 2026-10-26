@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, onMailChanged, onOutbox, onSyncStatus } from "$lib/api";
+  import { api, onCalendarChanged, onMailChanged, onOutbox, onSyncStatus } from "$lib/api";
+  import { calendar } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import Setup from "$lib/components/Setup.svelte";
@@ -12,11 +13,27 @@
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
   import { Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
+  import WeekView from "$lib/components/WeekView.svelte";
+  import Rail from "$lib/components/Rail.svelte";
+  import EventDetails from "$lib/components/EventDetails.svelte";
+  import QuickAdd from "$lib/components/QuickAdd.svelte";
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
 
-  // `ready`: signed in, nothing modal open. Every mail binding hangs off it.
-  const ready = () => !!mail.account && mail.overlay === null && !mail.composer;
+  // `base`: signed in, nothing modal open (global keys). `ready`: base, in the mail views
+  // (every mail binding hangs off it, so mail keys don't act on a hidden conversation
+  // while the calendar is showing).
+  const base = () => !!mail.account && mail.overlay === null && !mail.composer;
+  const ready = () => base() && mail.view !== "calendar";
+  const inCalendar = () => base() && mail.view === "calendar";
+  /** An answerable invite is on screen (reader, or the reading pane). */
+  const hasInvite = () =>
+    ready() &&
+    (mail.view === "reader" || mail.previewing) &&
+    !!mail.invite &&
+    !mail.invite.event.isOrganizer &&
+    !mail.invite.event.isCancelled &&
+    mail.invite.meetingMessageType !== "meetingCancelled";
   const inList = () => ready() && mail.view === "list";
   const inReader = () => ready() && mail.view === "reader";
   const hasThread = () => ready() && !!mail.current;
@@ -56,6 +73,7 @@
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
+      onCalendarChanged(() => calendar.refresh()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
         mail.setOutbox(s);
@@ -74,8 +92,16 @@
       { id: "list.bottom", keys: "G", label: "Jump to bottom", group: "Navigate", when: inList, run: () => mail.select(mail.threads.length - 1) },
       { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
       { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
-      { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: ready, run: () => mail.switchSplit(0) },
-      { id: "search", keys: "/", label: "Search", group: "Go to", when: ready, run: focusSearch },
+      { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
+      { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
+      { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
+      { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
+      { id: "search", keys: "/", label: "Search", group: "Go to", when: base, run: focusSearch },
+      { id: "calendar.new", keys: "C", label: "New event", group: "Calendar", when: base, run: () => (mail.overlay = "quickadd") },
+      { id: "calendar.prev", keys: "ArrowLeft", label: "Previous week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(-1) },
+      { id: "calendar.next", keys: "ArrowRight", label: "Next week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(1) },
+      { id: "calendar.today", keys: "t", label: "This week", group: "Calendar", when: inCalendar, run: () => calendar.thisWeek() },
+      { id: "calendar.back", keys: "Escape", label: "Back to inbox", group: "Calendar", when: inCalendar, run: () => mail.back() },
 
       { id: "triage.archive", keys: "e", label: "Archive", group: "Triage", when: hasThread, run: () => mail.act("archive") },
       { id: "triage.trash", keys: "#", label: "Delete", group: "Triage", when: hasThread, run: () => mail.act("trash") },
@@ -83,20 +109,27 @@
       { id: "triage.flag", keys: "s", label: "Toggle flag", group: "Triage", when: hasThread, run: () => mail.toggleFlag() },
       { id: "triage.undo", keys: "z", label: "Undo", group: "Triage", when: ready, run: () => mail.undo() },
 
-      { id: "compose.new", keys: "c", label: "Compose", group: "Write", when: ready, run: () => mail.compose() },
+      { id: "compose.new", keys: "c", label: "Compose", group: "Write", when: base, run: () => mail.compose() },
       { id: "compose.reply", keys: "r", label: "Reply", group: "Write", when: hasThread, run: () => mail.respond("reply") },
       { id: "compose.replyAll", keys: "a", label: "Reply all", group: "Write", when: hasThread, run: () => mail.respond("replyAll") },
       { id: "compose.forward", keys: "f", label: "Forward", group: "Write", when: hasThread, run: () => mail.respond("forward") },
 
       { id: "layout.toggle", keys: "v", label: "Toggle reading pane", group: "App", when: ready, run: () => mail.toggleLayout() },
-      { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: ready, run: () => mail.toggleRightPane() },
+      { id: "calendar.pane", keys: "0", label: "Toggle calendar", group: "Calendar", when: base, run: () => mail.toggleCalendarPane() },
+      { id: "app.pane", keys: "\\", label: "Toggle right pane", group: "App", when: base, run: () => mail.toggleRightPane() },
+      { id: "invite.accept", keys: "y", label: "Accept invite", group: "Calendar", when: hasInvite, run: () => mail.rsvp("accept") },
+      { id: "invite.maybe", keys: "m", label: "Maybe (tentative)", group: "Calendar", when: hasInvite, run: () => mail.rsvp("tentative") },
+      { id: "invite.decline", keys: "n", label: "Decline invite", group: "Calendar", when: hasInvite, run: () => mail.rsvp("decline") },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
-      { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: ready, run: () => mail.syncNow() },
-      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: ready, run: () => (mail.overlay = "settings") },
+      { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
+      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
-      { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null, run: () => (mail.overlay = null) },
+      { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null, run: () => {
+        mail.overlay = null;
+        calendar.selected = null;
+      } },
     ]);
 
     return () => {
@@ -131,6 +164,10 @@
     <Setup />
   {:else}
     <div class="flex min-h-0 flex-1">
+    <Rail />
+    {#if mail.view === "calendar"}
+      <WeekView />
+    {:else}
     <div class="flex min-w-0 flex-1 flex-col">
     <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
       {#if mail.search === null}
@@ -224,6 +261,7 @@
       {/if}
     </main>
     </div>
+    {/if}
     <!-- Hidden on narrow windows (< 1280px) so the list keeps its room. -->
     {#if showPane}<div class="hidden xl:flex"><RightPane /></div>{/if}
     </div>
@@ -266,3 +304,5 @@
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
 {#if mail.overlay === "settings"}<Settings />{/if}
 {#if mail.overlay === "palette"}<Palette />{/if}
+{#if mail.overlay === "event"}<EventDetails />{/if}
+{#if mail.overlay === "quickadd"}<QuickAdd />{/if}

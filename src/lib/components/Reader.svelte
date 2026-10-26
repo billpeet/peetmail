@@ -1,15 +1,38 @@
 <script lang="ts">
   import { mail } from "$lib/mail.svelte";
   import { longDate, senderName } from "$lib/format";
-  import type { Recipient } from "$lib/api";
+  import type { MessageRow, Recipient } from "$lib/api";
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
+  import InviteCard from "./InviteCard.svelte";
   import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
 
   /** Shown as the reading pane beside the list (preview layout), not full width. */
   const inPane = $derived(mail.previewing && mail.view === "list");
 
   const flagged = $derived(mail.current?.isFlagged ?? false);
+
+  /** Label for meeting messages: invitations, updates, and how people answered. */
+  function meetingLabel(m: MessageRow): { text: string; tone: string } | null {
+    const mine = m.folderRole === "sentitems" || m.fromAddress?.toLowerCase() === mail.account?.email.toLowerCase();
+    switch (m.meetingMessageType) {
+      case "meetingRequest": {
+        const earlier = mail.thread.some((o) => o.meetingMessageType === "meetingRequest" && o.receivedAt < m.receivedAt);
+        return { text: earlier ? "Updated invitation" : "Invitation", tone: "bg-accent/15 text-accent" };
+      }
+      case "meetingAccepted":
+        return { text: mine ? "You accepted" : "Accepted", tone: "bg-emerald-400/15 text-emerald-300" };
+      case "meetingTenativelyAccepted":
+      case "meetingTentativelyAccepted":
+        return { text: mine ? "You said maybe" : "Tentative", tone: "bg-amber-400/15 text-amber-300" };
+      case "meetingDeclined":
+        return { text: mine ? "You declined" : "Declined", tone: "bg-red-400/15 text-red-300" };
+      case "meetingCancelled":
+        return { text: "Cancelled", tone: "bg-red-400/15 text-red-300" };
+      default:
+        return null;
+    }
+  }
 
   const images = $derived(mail.imagesFor !== null && mail.imagesFor === mail.threadFor);
 
@@ -71,6 +94,7 @@
 <div data-testid="reader" class="min-h-0 flex-1 overflow-y-auto">
   <div class="mx-auto max-w-4xl px-8 py-6">
     <h1 class="mb-5 text-xl font-semibold text-ink-100 select-text">{mail.current?.subject || "(no subject)"}</h1>
+    {#if mail.invite}<InviteCard invite={mail.invite} />{/if}
 
     <div class="space-y-2">
       {#each mail.thread as m (m.id)}
@@ -78,7 +102,12 @@
         <article data-testid="message" data-message-id={m.id} data-expanded={open} class="overflow-hidden rounded-lg border border-ink-700 bg-ink-900">
           <button data-testid="message-header" class="flex w-full items-baseline gap-3 px-4 py-2.5 text-left text-sm" onclick={() => toggle(m.id)}>
             <span class="shrink-0 font-medium text-ink-100">{senderName(m.fromName, m.fromAddress)}</span>
-            {#if m.folderRole === "sentitems"}<span class="shrink-0 rounded bg-ink-800 px-1.5 text-[11px] text-ink-500">Sent</span>{/if}
+            {#if meetingLabel(m)}
+              {@const label = meetingLabel(m)!}
+              <span data-testid="meeting-label" class="shrink-0 rounded px-1.5 text-[11px] font-medium {label.tone}">{label.text}</span>
+            {:else if m.folderRole === "sentitems"}
+              <span class="shrink-0 rounded bg-ink-800 px-1.5 text-[11px] text-ink-500">Sent</span>
+            {/if}
             {#if m.isFlagged}<span class="shrink-0 text-xs text-amber-400" title="Flagged">●</span>{/if}
             {#if open}
               <span class="min-w-0 flex-1 truncate text-xs text-ink-500">

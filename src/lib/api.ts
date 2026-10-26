@@ -54,6 +54,10 @@ export type MessageRow = {
   isFlagged: boolean;
   /** Folder holding this copy: inbox, sentitems, archive, ... */
   folderRole: string;
+  /** "message", or "eventMessage" for meeting invites and responses. */
+  messageType: string;
+  /** meetingRequest | meetingCancelled | meetingAccepted | meetingTenativelyAccepted (Graph's spelling) | meetingDeclined */
+  meetingMessageType: string | null;
 };
 
 export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
@@ -85,6 +89,36 @@ export type Preferences = {
   /** "list": Enter opens a conversation. "preview": list with a reading pane beside it. */
   layout: Layout;
   listWidth: number;
+  /** What the right pane shows. */
+  rightPaneTab: "recent" | "calendar";
+  /** First day of the week: 0 = Sunday, 1 = Monday ... 6 = Saturday. */
+  weekStartsOn: number;
+};
+
+export type Attendee = { name: string | null; address: string | null; response: string | null; type: string | null };
+
+export type CalendarEvent = {
+  id: number;
+  accountId: number;
+  remoteId: string;
+  subject: string;
+  /** UTC ISO instant, or YYYY-MM-DD for all-day events. */
+  startAt: string;
+  /** Exclusive: UTC ISO instant, or YYYY-MM-DD for all-day events. */
+  endAt: string;
+  isAllDay: boolean;
+  location: string | null;
+  organizerName: string | null;
+  organizerAddress: string | null;
+  attendees: Attendee[];
+  /** none | organizer | accepted | tentativelyAccepted | declined | notResponded */
+  response: string | null;
+  isOrganizer: boolean;
+  isCancelled: boolean;
+  showAs: string | null;
+  joinUrl: string | null;
+  webLink: string | null;
+  preview: string;
 };
 
 export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
@@ -117,6 +151,13 @@ export const api = {
   setPreferences: (preferences: Preferences) => invoke<void>("set_preferences", { preferences }),
   recordOpen: (accountId: number, conversationId: string) => invoke<void>("record_open", { accountId, conversationId }),
   recentOpens: (limit = 50) => invoke<RecentOpen[]>("recent_opens", { limit }),
+  /** Timed events by UTC instants [from, to); all-day events by local dates [fromDate, toDate). */
+  listEvents: (from: string, to: string, fromDate: string, toDate: string) =>
+    invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
+  inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
+  createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
+  respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
+    invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),
@@ -136,6 +177,31 @@ export const onMailChanged = (cb: (p: { accountId: number; folderId: number }) =
 
 export const onOutbox = (cb: (s: OutboxStatus) => void): Promise<UnlistenFn> =>
   listen<OutboxStatus>("outbox-changed", (e) => cb(e.payload));
+
+export type Rsvp = "accept" | "tentative" | "decline";
+/** A new event: timed ones as UTC ISO instants, all-day ones as YYYY-MM-DD (end exclusive). */
+export type NewEvent = {
+  subject: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location: string | null;
+  /** IANA zone the all-day dates belong to. */
+  timeZone: string;
+};
+/** The calendar event behind a meeting-invite message. */
+export type Invite = {
+  meetingMessageType: string | null;
+  /** newMeetingRequest | fullUpdate | informationalUpdate | silentUpdate | outdated | ... */
+  meetingRequestType: string | null;
+  /** Where an updated meeting used to be (UTC instants / text). */
+  previousStart: string | null;
+  previousEnd: string | null;
+  previousLocation: string | null;
+  event: CalendarEvent;
+};
+
+export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 
 export const onSyncStatus = (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
   listen<SyncStatus>("sync-status", (e) => cb(e.payload));

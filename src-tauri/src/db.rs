@@ -13,6 +13,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_outbox_search.sql"),
     include_str!("../migrations/0003_recent_opens.sql"),
+    include_str!("../migrations/0004_calendar.sql"),
+    include_str!("../migrations/0005_event_series.sql"),
+    include_str!("../migrations/0006_meeting_messages.sql"),
 ];
 
 pub struct Db {
@@ -132,6 +135,10 @@ pub struct MessageRow {
     pub is_flagged: bool,
     /// Role of the folder holding this copy (inbox, sentitems, archive, ...).
     pub folder_role: String,
+    /// "message", or "eventMessage" for meeting invites and responses.
+    pub message_type: String,
+    /// meetingRequest | meetingCancelled | meetingAccepted | meetingTenativelyAccepted | meetingDeclined
+    pub meeting_message_type: Option<String>,
 }
 
 /// Fields from one Graph message. `None` means "not in this delta page",
@@ -153,6 +160,7 @@ pub struct MessageUpsert {
     pub importance: Option<String>,
     pub inference: Option<String>,
     pub message_type: Option<String>,
+    pub meeting_message_type: Option<String>,
 }
 
 // ---------- accounts ----------
@@ -281,10 +289,10 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
     conn.execute(
         "INSERT INTO messages (account_id, folder_id, remote_id, conversation_id, subject, from_name, from_address,
                                to_json, cc_json, received_at, preview, is_read, is_flagged, has_attachments,
-                               importance, inference, message_type)
+                               importance, inference, message_type, meeting_message_type)
          SELECT ?1, ?2, ?3, COALESCE(?4, ?3), COALESCE(?5, ''), ?6, ?7, COALESCE(?8, '[]'), COALESCE(?9, '[]'),
                 ?10, COALESCE(?11, ''), COALESCE(?12, 0), COALESCE(?13, 0), COALESCE(?14, 0), ?15, ?16,
-                COALESCE(?17, 'message')
+                COALESCE(?17, 'message'), ?18
          WHERE ?10 IS NOT NULL
          ON CONFLICT (account_id, remote_id) DO UPDATE SET
            folder_id       = excluded.folder_id,
@@ -301,11 +309,12 @@ pub fn upsert_message(conn: &Connection, account_id: i64, folder_id: i64, m: &Me
            has_attachments = COALESCE(?14, has_attachments),
            importance      = COALESCE(?15, importance),
            inference       = COALESCE(?16, inference),
-           message_type    = COALESCE(?17, message_type)",
+           message_type    = COALESCE(?17, message_type),
+           meeting_message_type = COALESCE(?18, meeting_message_type)",
         params![
             account_id, folder_id, m.remote_id, m.conversation_id, m.subject, m.from_name, m.from_address,
             m.to_json, m.cc_json, m.received_at, m.preview, m.is_read, m.is_flagged, m.has_attachments,
-            m.importance, m.inference, m.message_type
+            m.importance, m.inference, m.message_type, m.meeting_message_type
         ],
     )?;
     if m.received_at.is_none() {
@@ -448,7 +457,7 @@ pub fn count_threads(conn: &Connection, folder_id: i64, filter: &crate::query::F
 pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str) -> Result<Vec<MessageRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.id, m.subject, m.from_name, m.from_address, m.to_json, m.cc_json, m.received_at, m.preview,
-                m.is_read, m.has_attachments, m.is_flagged, COALESCE(f.role, '')
+                m.is_read, m.has_attachments, m.is_flagged, COALESCE(f.role, ''), m.message_type, m.meeting_message_type
          FROM messages m JOIN folders f ON f.id = m.folder_id
          WHERE m.account_id = ?1 AND m.conversation_id = ?2 AND COALESCE(f.role, '') <> 'deleteditems'
          ORDER BY m.received_at ASC, m.id ASC",
@@ -469,6 +478,8 @@ pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str) -> 
             has_attachments: r.get(9)?,
             is_flagged: r.get(10)?,
             folder_role: r.get(11)?,
+            message_type: r.get(12)?,
+            meeting_message_type: r.get(13)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

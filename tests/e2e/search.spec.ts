@@ -21,8 +21,10 @@ test("/ searches all mail, including Sent, and Esc returns to the split", async 
 
 test("query terms filter by sender and type", async ({ inbox: page }) => {
   await search(page, "is:invite");
-  await expect(page.getByTestId("thread-row")).toHaveCount(1);
+  // The design-review invite and the moved team-health meeting.
+  await expect(page.getByTestId("thread-row")).toHaveCount(2);
   await expect(row(page, "conv-invite")).toHaveCount(1);
+  await expect(row(page, "conv-update")).toHaveCount(1);
 
   await page.getByTestId("search-input").fill("from:github.com");
   await expect(page.getByTestId("thread-row").first()).toContainText("GitHub");
@@ -59,7 +61,7 @@ test("a custom split from Settings shows up as a tab", async ({ inbox: page }, t
   await page.keyboard.press("Control+,");
   await page.getByTestId("split-add").click();
   await page.getByTestId("split-name").last().fill("Invites");
-  await page.getByTestId("split-query").last().fill("is:invite");
+  await page.getByTestId("split-query").last().fill("is:invite from:calendar-noreply");
   await page.getByTestId("split-save").click();
   await snap(page, testInfo, "split-editor");
   await page.keyboard.press("Escape");
@@ -122,7 +124,7 @@ test("Ctrl+K runs any command by name", async ({ inbox: page }, testInfo) => {
 test("empty splits can be hidden; the tab you're on stays until you leave it", async ({ inbox: page }, testInfo) => {
   await page.keyboard.press("Control+,");
   const editor = page.getByTestId("split-editor");
-  for (const [name, query] of [["Invites", "is:invite"], ["Nobody", "from:nobody@nowhere.test"]]) {
+  for (const [name, query] of [["Invites", "is:invite from:calendar-noreply"], ["Nobody", "from:nobody@nowhere.test"]]) {
     await page.getByTestId("split-add").click();
     await editor.getByTestId("split-name").last().fill(name);
     await editor.getByTestId("split-query").last().fill(query);
@@ -189,6 +191,6 @@ test("split tabs show their total, in bold only when something is unread", async
 });
 
 test("a single conversation is counted in the singular", async ({ inbox: page }) => {
-  await search(page, "is:invite");
+  await search(page, "is:invite from:calendar-noreply");
   await expect(page.getByTestId("thread-count")).toHaveText("1 conversation");
 });

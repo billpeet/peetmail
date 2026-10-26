@@ -1,10 +1,16 @@
 <script lang="ts">
-  // Right-hand pane. For now it shows Recent Opens, like Superhuman: conversations you
-  // opened, newest first, grouped by when. Click one to reopen it (even if archived).
+  // Right-hand pane with two tabs, like Superhuman: Recent Opens (conversations you opened,
+  // newest first; click to reopen, even if archived) and Calendar (today's day view).
   import { mail } from "$lib/mail.svelte";
   import { recentGroup, recentTime, senderName } from "$lib/format";
   import type { RecentOpen } from "$lib/api";
   import ResizeHandle from "./ResizeHandle.svelte";
+  import DayView from "./DayView.svelte";
+  import { calendar } from "$lib/calendar.svelte";
+
+  // An open invite shows the calendar (its day, event highlighted) without changing the
+  // saved tab; closing the invite returns to it.
+  const tab = $derived(calendar.focus ? "calendar" : (mail.boot?.preferences.rightPaneTab ?? "recent"));
 
   // ----- resizing (see ResizeHandle) -----
   const DEFAULT_WIDTH = 320;
@@ -49,7 +55,23 @@
     onpreview={(w) => (dragWidth = w)}
     onchange={(w) => mail.setPreference("rightPaneWidth", w)}
   />
-  <h2 class="px-6 pt-5 pb-3 text-[15px] font-semibold text-ink-100">Recent Opens</h2>
+  <div class="flex gap-1 px-4 pt-4 pb-3" role="tablist">
+    {#each [["recent", "Recent Opens"], ["calendar", "Calendar"]] as [id, name] (id)}
+      <button
+        role="tab"
+        data-testid="pane-tab-{id}"
+        aria-selected={tab === id}
+        onclick={() => mail.setPreference("rightPaneTab", id as "recent" | "calendar")}
+        class={["rounded-md px-2.5 py-1 text-[15px]", tab === id ? "font-semibold text-ink-100" : "text-ink-500 hover:text-ink-100"]}
+      >{name}</button>
+    {/each}
+  </div>
+  {#if tab === "calendar"}
+    <DayView onselect={(e) => {
+      calendar.selected = e;
+      mail.overlay = "event";
+    }} />
+  {:else}
   <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
     {#each groups as g (g.label)}
       <section class="mb-4">
@@ -77,4 +99,5 @@
       <p data-testid="recent-empty" class="px-3 text-sm text-ink-500">Conversations you open show up here.</p>
     {/each}
   </div>
+  {/if}
 </aside>

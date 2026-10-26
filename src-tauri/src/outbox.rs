@@ -30,6 +30,52 @@ pub enum Op {
     /// `destination` is a Graph well-known folder name (inbox, archive, deleteditems) or folder id.
     Move { destination: String },
     Send(Draft),
+    /// RSVP to a meeting; the outbox row's remote_id is the event's id.
+    Respond { response: Rsvp },
+    /// Create an event; the outbox row's remote_id is the local placeholder ("local:...")
+    /// that's swapped for the real event once Graph returns it.
+    CreateEvent(NewEvent),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NewEvent {
+    pub subject: String,
+    /// Timed: UTC ISO instants. All-day: YYYY-MM-DD (end exclusive).
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub location: Option<String>,
+    /// IANA zone for all-day events (their dates are local to it).
+    pub time_zone: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum Rsvp {
+    Accept,
+    Tentative,
+    Decline,
+}
+
+impl Rsvp {
+    /// Graph action segment: /me/events/{id}/{action}.
+    fn action(self) -> &'static str {
+        match self {
+            Rsvp::Accept => "accept",
+            Rsvp::Tentative => "tentativelyAccept",
+            Rsvp::Decline => "decline",
+        }
+    }
+
+    /// The event's `responseStatus.response` once this reply lands.
+    pub fn status(self) -> &'static str {
+        match self {
+            Rsvp::Accept => "accepted",
+            Rsvp::Tentative => "tentativelyAccepted",
+            Rsvp::Decline => "declined",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -174,9 +220,14 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
         };
 
         let result = execute(state, &row).await;
+        // Either way a creation changes the calendar: the real event, or the placeholder removed.
+        let calendar_touched = matches!(row.op, Op::CreateEvent(_)) && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
         state.db.with(|c| {
             match &result {
-                Ok(()) => {
+                Ok(response) => {
+                    if let (Op::CreateEvent(_), Some(local)) = (&row.op, row.remote_id.as_deref()) {
+                        crate::calendar::finish_create(c, row.account_id, local, response)?;
+                    }
                     c.execute("DELETE FROM outbox WHERE id = ?1", [row.id])?;
                 }
                 // The message is gone on the server; nothing left to do.
@@ -186,6 +237,10 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
                 }
                 Err(e) if is_permanent(e) || row.attempts + 1 >= MAX_ATTEMPTS => {
                     log::error!("outbox op {} failed permanently: {e}", row.id);
+                    // A rejected creation mustn't leave its placeholder in the calendar.
+                    if let (Op::CreateEvent(_), Some(local)) = (&row.op, row.remote_id.as_deref()) {
+                        crate::calendar::delete_event(c, row.account_id, local)?;
+                    }
                     c.execute(
                         "UPDATE outbox SET status = 'failed', attempts = attempts + 1, last_error = ?2 WHERE id = ?1",
                         params![row.id, e.to_string()],
@@ -204,6 +259,9 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
             Ok(())
         })?;
         sent_any |= result.is_ok();
+        if calendar_touched {
+            let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, json!({ "accountId": row.account_id }));
+        }
         emit_status(app, state);
         if result.is_err() && !is_permanent(result.as_ref().unwrap_err()) {
             // Transient failure: stop for now; the next kick or sync tick retries.
@@ -230,7 +288,8 @@ pub fn emit_status(app: &AppHandle, state: &AppState) {
     }
 }
 
-async fn execute(state: &AppState, row: &Row) -> Result<()> {
+/// Sends one op. Returns Graph's response body (the created event for CreateEvent).
+async fn execute(state: &AppState, row: &Row) -> Result<Value> {
     let base = graph::base();
     let msg_url = |rid: &str| format!("{base}/me/messages/{rid}");
     let rid = || row.remote_id.as_deref().ok_or_else(|| AppError::Other("op has no target message".into()));
@@ -243,9 +302,38 @@ async fn execute(state: &AppState, row: &Row) -> Result<()> {
         ),
         Op::Move { destination } => (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination })),
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
+        Op::Respond { response } => (
+            Method::POST,
+            format!("{base}/me/events/{}/{}", rid()?, response.action()),
+            json!({ "sendResponse": true }),
+        ),
+        Op::CreateEvent(e) => (Method::POST, format!("{base}/me/events"), create_body(e)),
     };
-    mail::graph_call(state, row.account_id, method, &url, Some(&body), &[PREFER_IMMUTABLE]).await?;
-    Ok(())
+    let prefer: &[&str] = if matches!(row.op, Op::CreateEvent(_)) {
+        &[PREFER_IMMUTABLE, r#"outlook.timezone="UTC""#]
+    } else {
+        &[PREFER_IMMUTABLE]
+    };
+    mail::graph_call(state, row.account_id, method, &url, Some(&body), prefer).await
+}
+
+/// POST /me/events body. Timed events go in UTC; all-day events are midnights in the
+/// user's own zone, which is how Graph defines them.
+fn create_body(e: &NewEvent) -> Value {
+    let (start, end) = if e.all_day {
+        (
+            json!({ "dateTime": format!("{}T00:00:00", e.start), "timeZone": e.time_zone }),
+            json!({ "dateTime": format!("{}T00:00:00", e.end), "timeZone": e.time_zone }),
+        )
+    } else {
+        let bare = |s: &str| s.trim_end_matches('Z').to_string();
+        (json!({ "dateTime": bare(&e.start), "timeZone": "UTC" }), json!({ "dateTime": bare(&e.end), "timeZone": "UTC" }))
+    };
+    let mut body = json!({ "subject": e.subject, "start": start, "end": end, "isAllDay": e.all_day, "showAs": if e.all_day { "free" } else { "busy" } });
+    if let Some(l) = &e.location {
+        body["location"] = json!({ "displayName": l });
+    }
+    body
 }
 
 fn recipients(list: &[String]) -> Value {
@@ -322,6 +410,32 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn create_event_bodies() {
+        let timed = NewEvent {
+            subject: "Lunch".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(),
+            all_day: false, location: Some("Café".into()), time_zone: "Australia/Sydney".into(),
+        };
+        let b = create_body(&timed);
+        assert_eq!(b["start"], json!({ "dateTime": "2026-10-30T02:00:00", "timeZone": "UTC" }));
+        assert_eq!(b["location"]["displayName"], "Café");
+        let all_day = NewEvent { start: "2026-11-06".into(), end: "2026-11-07".into(), all_day: true, location: None, ..timed };
+        let b = create_body(&all_day);
+        assert_eq!(b["start"], json!({ "dateTime": "2026-11-06T00:00:00", "timeZone": "Australia/Sydney" }));
+        assert_eq!(b["isAllDay"], true);
+        assert!(b.get("location").is_none());
+    }
+
+    #[test]
+    fn rsvp_ops_round_trip() {
+        let op = Op::Respond { response: Rsvp::Tentative };
+        let s = serde_json::to_string(&op).unwrap();
+        assert_eq!(s, r#"{"type":"respond","response":"tentative"}"#);
+        assert_eq!(serde_json::from_str::<Op>(&s).unwrap(), op);
+        assert_eq!(Rsvp::Tentative.action(), "tentativelyAccept");
+        assert_eq!(Rsvp::Decline.status(), "declined");
     }
 
     #[test]

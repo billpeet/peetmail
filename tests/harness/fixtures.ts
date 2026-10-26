@@ -46,6 +46,14 @@ export type GraphMessage = {
   body: { contentType: "html" | "text"; content: string };
   /** Not part of Graph's message payload; served from /attachments. */
   attachments?: FakeAttachment[];
+  /** Meeting invites: the calendar event behind the message (served via $expand). */
+  eventId?: string;
+  meetingMessageType?: string;
+  /** eventMessageRequest properties (updated invites). */
+  meetingRequestType?: string;
+  previousStartDateTime?: { dateTime: string; timeZone: string } | null;
+  previousEndDateTime?: { dateTime: string; timeZone: string } | null;
+  previousLocation?: { displayName: string } | null;
 };
 
 type Variant = "default" | "newsletter" | "hostile" | "quoted" | "plain";
@@ -200,6 +208,38 @@ export function defaultMailbox({ now = Date.now(), count = 160, seed = 42 }: { n
       receivedAt: now - 4 * HOUR, isRead: false,
     }),
     "@odata.type": "#microsoft.graph.eventMessage",
+    eventId: "evt-invite",
+    meetingMessageType: "meetingRequest",
+  });
+
+  // A meeting that moved after you accepted (the reported case): the original request,
+  // your acceptance in Sent, then the organiser's update with the new time.
+  const utc = (d: Date) => ({ dateTime: d.toISOString().replace(/\.\d{3}Z$/, ".0000000"), timeZone: "UTC" });
+  const oldStart = new Date(now + 48 * HOUR);
+  oldStart.setHours(14, 0, 0, 0);
+  messages.push({
+    ...makeMessage({
+      id: "msg-update-req1", conversationId: "conv-update", sender: SENDERS[0], subject: "Team health: conflict & commitment",
+      receivedAt: now - 6 * 24 * HOUR, isRead: true, snippet: "Pre-work required, about 10 minutes.",
+    }),
+    "@odata.type": "#microsoft.graph.eventMessageRequest", eventId: "evt-update", meetingMessageType: "meetingRequest",
+    meetingRequestType: "newMeetingRequest",
+  });
+  messages.push({
+    ...makeMessage({
+      id: "msg-update-accept", conversationId: "conv-update", sender: ME, to: [SENDERS[0]], folder: "sentitems",
+      subject: "Accepted: Team health: conflict & commitment", receivedAt: now - 6 * 24 * HOUR + 20 * 60_000, isRead: true, snippet: "",
+    }),
+    "@odata.type": "#microsoft.graph.eventMessageResponse", meetingMessageType: "meetingAccepted",
+  });
+  messages.push({
+    ...makeMessage({
+      id: "msg-update-req2", conversationId: "conv-update", sender: SENDERS[0], subject: "Team health: conflict & commitment",
+      receivedAt: now - 4.5 * HOUR, isRead: false, snippet: "The time has changed. Pre-work required, about 10 minutes.",
+    }),
+    "@odata.type": "#microsoft.graph.eventMessageRequest", eventId: "evt-update", meetingMessageType: "meetingRequest",
+    meetingRequestType: "fullUpdate", previousStartDateTime: utc(oldStart), previousEndDateTime: utc(new Date(oldStart.getTime() + 45 * 60_000)),
+    previousLocation: { displayName: "Room 1" },
   });
 
   for (let i = 0; messages.length < count; i++) {

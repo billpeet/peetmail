@@ -1,0 +1,152 @@
+// Calendar state for the day view (right pane) and, later, the week view.
+import { api, type CalendarEvent } from "./api";
+
+const DAY = 86_400_000;
+
+/** Local midnight of the day containing `d`. */
+export function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+export function addDays(d: Date, n: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+}
+
+/** YYYY-MM-DD of a local date. */
+export function localDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export function isAllDay(e: CalendarEvent): boolean {
+  return e.isAllDay;
+}
+
+/** Start/end as Dates. All-day dates become local midnights. */
+export function eventTimes(e: CalendarEvent): { start: Date; end: Date } {
+  if (e.isAllDay) {
+    const [ys, ms, ds] = e.startAt.split("-").map(Number);
+    const [ye, me, de] = e.endAt.split("-").map(Number);
+    return { start: new Date(ys, ms - 1, ds), end: new Date(ye, me - 1, de) };
+  }
+  return { start: new Date(e.startAt), end: new Date(e.endAt) };
+}
+
+/** Events overlapping local days `[from, to)`. */
+export function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
+  return api.listEvents(from.toISOString(), to.toISOString(), localDate(from), localDate(to));
+}
+
+/** First day of the week containing `d` (local midnight). `weekStartsOn`: 0 = Sunday ... 6 = Saturday. */
+export function startOfWeek(d: Date, weekStartsOn = 1): Date {
+  const day = startOfDay(d);
+  const offset = (day.getDay() - weekStartsOn + 7) % 7;
+  return addDays(day, -offset);
+}
+
+class CalendarStore {
+  /** Day shown in the day view (local midnight). */
+  day = $state(startOfDay(new Date()));
+  dayEvents = $state.raw<CalendarEvent[]>([]);
+  /** First day of the week (0 = Sunday ... 6 = Saturday); from preferences. */
+  weekStartsOn = $state(1);
+  /** First day of the week shown in the week view. */
+  weekStart = $state(startOfWeek(new Date()));
+  weekEvents = $state.raw<CalendarEvent[]>([]);
+  /** Event whose details are open. */
+  selected = $state.raw<CalendarEvent | null>(null);
+  /**
+   * While an invite is open: the event to show in context. The day view jumps to its day
+   * and highlights it; the right pane shows the calendar. Cleared when the invite closes.
+   */
+  focus = $state.raw<CalendarEvent | null>(null);
+  #dayBeforeFocus: Date | null = null;
+  #seq = 0;
+  #weekSeq = 0;
+
+  get isThisWeek(): boolean {
+    return this.weekStart.getTime() === startOfWeek(new Date(), this.weekStartsOn).getTime();
+  }
+
+  /** Applies the week-start preference, keeping the same week on screen. */
+  setWeekStartsOn(day: number) {
+    if (day === this.weekStartsOn) return;
+    const anchor = this.isThisWeek ? new Date() : this.weekStart;
+    this.weekStartsOn = day;
+    this.weekStart = startOfWeek(anchor, day);
+    return this.loadWeek();
+  }
+
+  /** Shows the week containing `d`. */
+  showWeekOf(d: Date) {
+    this.weekStart = startOfWeek(d, this.weekStartsOn);
+    return this.loadWeek();
+  }
+
+  async loadWeek() {
+    const seq = ++this.#weekSeq;
+    const events = await fetchEvents(this.weekStart, addDays(this.weekStart, 7));
+    if (seq === this.#weekSeq) this.weekEvents = events;
+  }
+
+  shiftWeek(n: number) {
+    this.weekStart = addDays(this.weekStart, 7 * n);
+    return this.loadWeek();
+  }
+
+  thisWeek() {
+    return this.showWeekOf(new Date());
+  }
+
+  /** Reloads everything that's showing (after a sync or a change). */
+  async refresh() {
+    await Promise.all([this.load(), this.loadWeek()]);
+    if (this.selected) {
+      const id = this.selected.id;
+      const fresh = [...this.dayEvents, ...this.weekEvents].find((e) => e.id === id);
+      if (fresh) this.selected = fresh;
+    }
+  }
+
+  /** Shows an invite's event in the day view (its day, highlighted). */
+  async showInContext(e: CalendarEvent) {
+    if (this.focus?.remoteId === e.remoteId && this.focus.response === e.response) return;
+    if (!this.focus) this.#dayBeforeFocus = this.day;
+    this.focus = e;
+    await this.goToDay(eventTimes(e).start);
+  }
+
+  /** Back to where the day view was before the invite opened. */
+  async clearContext() {
+    if (!this.focus) return;
+    this.focus = null;
+    const back = this.#dayBeforeFocus ?? new Date();
+    this.#dayBeforeFocus = null;
+    await this.goToDay(back);
+  }
+
+  get isToday(): boolean {
+    return this.day.getTime() === startOfDay(new Date()).getTime();
+  }
+
+  async load() {
+    const seq = ++this.#seq;
+    const events = await fetchEvents(this.day, addDays(this.day, 1));
+    if (seq === this.#seq) this.dayEvents = events;
+  }
+
+  async goToDay(d: Date) {
+    this.day = startOfDay(d);
+    await this.load();
+  }
+
+  shiftDay(n: number) {
+    return this.goToDay(addDays(this.day, n));
+  }
+
+  today() {
+    return this.goToDay(new Date());
+  }
+}
+
+export const calendar = new CalendarStore();
+export { DAY };

@@ -19,6 +19,8 @@ pub const DEFAULT_RIGHT_PANE_WIDTH: i64 = 320;
 pub const KEY_LAYOUT: &str = "layout";
 pub const KEY_LIST_WIDTH: &str = "list_width";
 pub const DEFAULT_LIST_WIDTH: i64 = 420;
+pub const KEY_RIGHT_PANE_TAB: &str = "right_pane_tab";
+pub const KEY_WEEK_STARTS_ON: &str = "week_starts_on";
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
@@ -53,6 +55,10 @@ pub struct Preferences {
     pub layout: String,
     /// Width of the list in the preview layout, in CSS pixels.
     pub list_width: i64,
+    /// What the right pane shows: "recent" (Recent Opens) or "calendar" (day view).
+    pub right_pane_tab: String,
+    /// First day of the week in the calendar: 0 = Sunday, 1 = Monday ... 6 = Saturday.
+    pub week_starts_on: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +125,14 @@ impl AppState {
                     _ => "list".into(),
                 },
                 list_width: db::get_setting(c, KEY_LIST_WIDTH)?.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_LIST_WIDTH),
+                right_pane_tab: match db::get_setting(c, KEY_RIGHT_PANE_TAB)?.as_deref() {
+                    Some("calendar") => "calendar".into(),
+                    _ => "recent".into(),
+                },
+                week_starts_on: db::get_setting(c, KEY_WEEK_STARTS_ON)?
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|d| (0..7).contains(d))
+                    .unwrap_or(1),
             })
         })
     }
@@ -130,7 +144,9 @@ impl AppState {
             db::set_setting(c, KEY_SHOW_RIGHT_PANE, flag(p.show_right_pane))?;
             db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())?;
             db::set_setting(c, KEY_LAYOUT, if p.layout == "preview" { "preview" } else { "list" })?;
-            db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())
+            db::set_setting(c, KEY_LIST_WIDTH, &p.list_width.clamp(200, 2000).to_string())?;
+            db::set_setting(c, KEY_RIGHT_PANE_TAB, if p.right_pane_tab == "calendar" { "calendar" } else { "recent" })?;
+            db::set_setting(c, KEY_WEEK_STARTS_ON, &p.week_starts_on.rem_euclid(7).to_string())
         })
     }
 

@@ -8,11 +8,14 @@ import {
   type OutboxStatus,
   type Preferences,
   type RecentOpen,
+  type Invite,
+  type Rsvp,
   type SplitInfo,
   type SyncStatus,
   type ThreadRow,
 } from "./api";
 import { prefetchBody } from "./bodies";
+import { calendar } from "./calendar.svelte";
 
 const PAGE = 200;
 /** Load the next page when the selection gets this close to the end. */
@@ -23,8 +26,8 @@ const TOAST_MS = 5000;
 /** In the preview layout, a conversation counts as read once it's been shown this long. */
 const PREVIEW_DWELL_MS = 1500;
 
-export type View = "list" | "reader";
-export type Overlay = null | "help" | "settings" | "palette";
+export type View = "list" | "reader" | "calendar";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd";
 
 export type ComposerState = {
   kind: DraftKind;
@@ -75,6 +78,9 @@ class MailStore {
   thread = $state.raw<MessageRow[]>([]);
   /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
   threadFor = $state<string | null>(null);
+  /** The meeting invite in the open conversation, if any (for the RSVP card and y/m/n). */
+  invite = $state.raw<Invite | null>(null);
+  #inviteSeq = 0;
   /** Remote images allowed for the open conversation. */
   imagesFor = $state<string | null>(null);
 
@@ -98,6 +104,7 @@ class MailStore {
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #slowTimer: ReturnType<typeof setTimeout> | undefined;
+  #toastAt = 0;
   #dwellTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Preview layout: list on the left, the selected conversation beside it. */
@@ -128,6 +135,7 @@ class MailStore {
   async init() {
     try {
       this.boot = await api.bootstrap();
+      calendar.setWeekStartsOn(this.boot.preferences.weekStartsOn);
       await this.loadFolder();
     } catch (e) {
       this.error = String(e);
@@ -160,6 +168,7 @@ class MailStore {
     if (!this.boot) return;
     const preferences = { ...this.boot.preferences, [key]: value };
     this.boot = { ...this.boot, preferences };
+    if (key === "weekStartsOn") calendar.setWeekStartsOn(value as number);
     await api.setPreferences(preferences);
   }
 
@@ -169,6 +178,18 @@ class MailStore {
 
   toggleRightPane() {
     this.setPreference("showRightPane", !(this.boot?.preferences.showRightPane ?? true));
+  }
+
+  /** `0`: show the calendar in the right pane, or go back to Recent Opens if it's showing. */
+  async toggleCalendarPane() {
+    const p = this.boot?.preferences;
+    if (!p) return;
+    if (!p.showRightPane || p.rightPaneTab !== "calendar") {
+      await this.setPreference("showRightPane", true);
+      await this.setPreference("rightPaneTab", "calendar");
+    } else {
+      await this.setPreference("rightPaneTab", "recent");
+    }
   }
 
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
@@ -199,11 +220,13 @@ class MailStore {
         this.view = "list";
         this.thread = [];
         this.threadFor = null;
+        this.invite = null;
       } else {
         const thread = await api.getThread(cur.accountId, cur.conversationId);
         if (seq !== this.#listSeq) return;
         this.thread = thread;
         this.threadFor = cur.conversationId;
+        this.#loadInvite();
       }
     }
   }
@@ -247,6 +270,7 @@ class MailStore {
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
+    this.#loadInvite();
     this.view = "reader";
     api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
     // Opening a conversation reads it, like every mail client; not worth an undo entry.
@@ -271,12 +295,14 @@ class MailStore {
     if (!t) {
       this.thread = [];
       this.threadFor = null;
+      this.invite = null;
       return;
     }
     const rows = await api.getThread(t.accountId, t.conversationId);
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
+    this.#loadInvite();
     this.#dwellTimer = setTimeout(() => {
       if (this.current?.conversationId !== t.conversationId || !this.previewing) return;
       api.recordOpen(t.accountId, t.conversationId).then(async () => (this.recent = await api.recentOpens()));
@@ -302,9 +328,19 @@ class MailStore {
     await this.open();
   }
 
+  /** `1` / the rail: back to mail from wherever you are (the calendar, the reader stays). */
+  showMail() {
+    if (this.view === "calendar") this.view = "list";
+  }
+
   back() {
     this.view = "list";
     this.pinned = null;
+    // In the list layout the invite is no longer on screen.
+    if (!this.previewing) {
+      this.invite = null;
+      calendar.clearContext();
+    }
   }
 
   // ---------- splits and search ----------
@@ -378,6 +414,52 @@ class MailStore {
     await this.act(action);
   }
 
+  /** Finds the newest invite in the loaded thread and fetches its event. */
+  async #loadInvite() {
+    const seq = ++this.#inviteSeq;
+    // The newest actual request (invite or update); responses and cancellations don't get
+    // RSVP buttons. Fall back to any meeting message if its kind isn't known yet.
+    const newestFirst = [...this.thread].reverse();
+    const msg =
+      newestFirst.find((m) => m.meetingMessageType === "meetingRequest") ??
+      newestFirst.find((m) => m.messageType === "eventMessage" && !m.meetingMessageType);
+    if (!msg) {
+      this.invite = null;
+      calendar.clearContext();
+      return;
+    }
+    try {
+      const invite = await api.inviteEvent(msg.id);
+      if (seq !== this.#inviteSeq) return;
+      this.invite = invite;
+      // Show the meeting in the calendar sidebar, among everything else that day.
+      if (invite) calendar.showInContext(invite.event);
+      else calendar.clearContext();
+    } catch {
+      if (seq === this.#inviteSeq) {
+        this.invite = null;
+        calendar.clearContext();
+      }
+    }
+  }
+
+  async rsvp(response: Rsvp) {
+    const inv = this.invite;
+    if (!inv) return;
+    const status = { accept: "accepted", tentative: "tentativelyAccepted", decline: "declined" }[response];
+    // An invite fetch still in flight (e.g. from the refresh after opening) would bring
+    // back the server's old answer; it must not overwrite this one.
+    this.#inviteSeq++;
+    try {
+      await api.respondToEvent(inv.event.accountId, inv.event.remoteId, response);
+      this.invite = { ...inv, event: { ...inv.event, response: status } };
+      calendar.focus = this.invite.event;
+      this.showToast({ text: { accept: "Accepted", tentative: "Tentatively accepted", decline: "Declined" }[response] });
+    } catch (e) {
+      this.showToast({ text: String(e), error: true });
+    }
+  }
+
   async toggleRead() {
     const t = this.current;
     if (t) await this.act(t.unreadCount > 0 ? "markRead" : "markUnread");
@@ -399,7 +481,10 @@ class MailStore {
   }
 
   showToast(t: Toast) {
+    // A routine toast ("Created") mustn't wipe an error that has only just appeared.
+    if (!t.error && this.toast?.error && Date.now() - this.#toastAt < 2000) return;
     this.toast = t;
+    this.#toastAt = Date.now();
     clearTimeout(this.#toastTimer);
     this.#toastTimer = setTimeout(() => (this.toast = null), TOAST_MS);
   }

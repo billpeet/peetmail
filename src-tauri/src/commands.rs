@@ -139,8 +139,10 @@ pub async fn get_message_body(state: State<'_, AppState>, message_id: i64) -> Re
     mail::message_body(&state, message_id).await
 }
 
+/// Ctrl+R: retry anything queued (e.g. after being offline), then pull changes.
 #[tauri::command]
 pub async fn sync_now(app: AppHandle) -> Result<()> {
+    outbox::kick(&app);
     mail::sync_all(&app).await
 }
 
@@ -357,6 +359,65 @@ pub fn record_open(state: State<'_, AppState>, account_id: i64, conversation_id:
 #[tauri::command]
 pub fn recent_opens(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<RecentOpen>> {
     state.db.with(|c| db::recent_opens(c, limit.unwrap_or(50).clamp(1, 200)))
+}
+
+// ---------- calendar ----------
+
+/// Events overlapping a range: `from`/`to` are UTC instants for timed events, `from_date`/
+/// `to_date` local dates (YYYY-MM-DD, end exclusive) for all-day events.
+#[tauri::command]
+pub fn list_events(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+    from_date: String,
+    to_date: String,
+) -> Result<Vec<crate::calendar::Event>> {
+    state.db.with(|c| crate::calendar::list_events(c, &from, &to, &from_date, &to_date))
+}
+
+/// Creates an event (quick add). It shows at once; the outbox creates it on the server.
+#[tauri::command]
+pub fn create_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    event: crate::outbox::NewEvent,
+) -> Result<crate::calendar::Event> {
+    if event.subject.trim().is_empty() {
+        return Err(AppError::Other("an event needs a title".into()));
+    }
+    let created = state.db.with(|c| {
+        let accounts = db::list_accounts(c)?;
+        let me = accounts.iter().find(|a| a.id == account_id).ok_or_else(|| AppError::Other("unknown account".into()))?;
+        crate::calendar::create(c, account_id, &event, (&me.email, me.display_name.as_deref()))
+    })?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(created)
+}
+
+/// The event behind a meeting invite (None for ordinary mail).
+#[tauri::command]
+pub async fn invite_event(state: State<'_, AppState>, message_id: i64) -> Result<Option<crate::calendar::Invite>> {
+    crate::calendar::invite_for_message(&state, message_id).await
+}
+
+/// RSVP to an event: updates the calendar at once and sends the reply in the background.
+#[tauri::command]
+pub fn respond_to_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    event_remote_id: String,
+    response: crate::outbox::Rsvp,
+) -> Result<()> {
+    state.db.with(|c| crate::calendar::respond(c, account_id, &event_remote_id, response))?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(())
 }
 
 // ---------- images and attachments ----------
