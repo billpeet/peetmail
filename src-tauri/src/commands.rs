@@ -125,7 +125,12 @@ pub fn list_threads(
         Some(tab) => query::split_filter(&split_queries(&state)?, tab),
         None => query::compile(query.as_deref().unwrap_or("")),
     };
-    let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::AllMail);
+    // No folder: a split tab means the unified inbox, plain search means all mail.
+    let scope = match (folder_id, split) {
+        (Some(f), _) => Scope::Folder(f),
+        (None, Some(_)) => Scope::Inboxes,
+        (None, None) => Scope::AllMail,
+    };
     state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))
 }
 
@@ -453,7 +458,7 @@ fn split_queries(state: &AppState) -> Result<Vec<String>> {
 /// Tabs of the split inbox for the given inbox folder: the built-in Inbox first, then the
 /// user's splits, each with conversation counts. Every message lands in exactly one tab.
 #[tauri::command]
-pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<SplitInfo>> {
+pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>) -> Result<Vec<SplitInfo>> {
     let splits = load_splits(&state)?;
     let queries: Vec<String> = splits.iter().map(|s| s.query.clone()).collect();
     let tabs = std::iter::once(("Inbox".to_string(), String::new(), true))
@@ -461,7 +466,8 @@ pub fn list_splits(state: State<'_, AppState>, folder_id: i64) -> Result<Vec<Spl
     state.db.with(|c| {
         tabs.enumerate()
             .map(|(i, (name, query, builtin))| {
-                let (count, unread) = db::count_threads(c, folder_id, &query::split_filter(&queries, i))?;
+                let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::Inboxes);
+                let (count, unread) = db::count_threads(c, scope, &query::split_filter(&queries, i))?;
                 Ok(SplitInfo { name, query, builtin, count, unread })
             })
             .collect()

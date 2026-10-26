@@ -65,9 +65,21 @@ export type FakeConfig = {
   rejectMeetingSelect: boolean;
 };
 
-export type FakeOptions = { port?: number; mailbox?: GraphMessage[]; count?: number; seed?: number; verbose?: boolean };
+export type FakeOptions = {
+  port?: number;
+  mailbox?: GraphMessage[];
+  count?: number;
+  seed?: number;
+  verbose?: boolean;
+  /** Whose mailbox this is (default: the fixtures' ACCOUNT). */
+  account?: { displayName: string; mail: string };
+  /** Prefix for codes and tokens, so a proxy can tell two fakes' tokens apart (fake-pair.ts). */
+  prefix?: string;
+  /** Calendar events (default: the fixtures' calendar). */
+  calendar?: GraphEvent[];
+};
 
-export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose = false }: FakeOptions = {}) {
+export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose = false, account = ACCOUNT, prefix = "", calendar }: FakeOptions = {}) {
   const state = {
     messages: new Map<string, GraphMessage>(),
     seq: 0,
@@ -95,7 +107,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.events.clear();
     state.eventChanges = [];
     state.eventSeq = 0;
-    for (const e of defaultCalendar()) state.events.set(e.id, e);
+    for (const e of calendar ?? defaultCalendar()) state.events.set(e.id, e);
     state.sent = [];
     state.extraFolders.clear();
     state.sessions.clear();
@@ -172,7 +184,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       if (q.get("code_challenge_method") !== "S256" || !q.get("code_challenge")) {
         return reply(400, "<h1>PKCE required</h1>");
       }
-      const code = b64url(randomBytes(16));
+      const code = prefix + b64url(randomBytes(16));
       const redirectUri = q.get("redirect_uri") ?? "";
       state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri });
       const back = new URL(redirectUri);
@@ -204,8 +216,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   }
 
   function issueTokens() {
-    const access = `at-${b64url(randomBytes(12))}`;
-    const refresh = `rt-${b64url(randomBytes(12))}`;
+    const access = `${prefix}at-${b64url(randomBytes(12))}`;
+    const refresh = `${prefix}rt-${b64url(randomBytes(12))}`;
     state.accessTokens.set(access, Date.now() + state.config.tokenTtl * 1000);
     state.refreshTokens.add(refresh);
     return { token_type: "Bearer", access_token: access, refresh_token: refresh, expires_in: state.config.tokenTtl, scope: "Mail.ReadWrite" };
@@ -232,7 +244,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return graphError(reply, state.config.failWrites, "ErrorInternalServerError", "Write failed (test)");
     }
 
-    if (p === "/me") return reply(200, { ...ACCOUNT, userPrincipalName: ACCOUNT.mail });
+    if (p === "/me") return reply(200, { ...account, userPrincipalName: account.mail });
     if (p === "/me/calendarView/delta") return calendarDelta(req, url, reply);
 
     if (p === "/me/mailFolders" && method === "GET") {
@@ -285,7 +297,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         return reply(201, metadata(msg));
       }
       const kind = action[2] as "reply" | "replyAll" | "forward";
-      const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== ACCOUNT.mail);
+      const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== account.mail);
       const to =
         b.toRecipients ?? b.message?.toRecipients ??
         (kind === "forward" ? [] : kind === "reply" ? [msg.from] : [msg.from, ...others(msg.toRecipients)]);

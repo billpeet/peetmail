@@ -203,7 +203,8 @@ export const api = {
   cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
-  listSplits: (folderId: number) => invoke<SplitInfo[]>("list_splits", { folderId }),
+  /** `folderId` null: the unified inbox (every signed-in account). */
+  listSplits: (folderId: number | null) => invoke<SplitInfo[]>("list_splits", { folderId }),
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
   getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
   listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),

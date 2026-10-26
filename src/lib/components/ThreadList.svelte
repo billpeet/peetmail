@@ -40,7 +40,7 @@
     </div>
   {:else}
     <div style:height="{mail.threads.length * ROW}px" class="relative">
-      {#each visible as t, i (t.conversationId)}
+      {#each visible as t, i (t.accountId + ":" + t.conversationId)}
         {@const index = start + i}
         {@const selected = index === mail.selected}
         {@const unread = t.unreadCount > 0}
@@ -49,6 +49,7 @@
           role="option"
           data-testid="thread-row"
           data-conversation-id={t.conversationId}
+          data-account-id={t.accountId}
           data-unread={unread}
           tabindex="-1"
           aria-selected={selected}
@@ -64,7 +65,7 @@
             <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
               <span class="flex items-baseline gap-2">
                 <span class={["min-w-0 flex-1 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-                  {senderName(t.fromName, t.fromAddress)}
+                  {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
                   {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
                 </span>
                 {#if t.reminder}<span data-testid="thread-reminder" class="text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
@@ -77,7 +78,7 @@
             </span>
           {:else}
             <span class={["w-48 shrink-0 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-              {senderName(t.fromName, t.fromAddress)}
+              {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
               {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
             </span>
             <span class="min-w-0 flex-1 truncate">

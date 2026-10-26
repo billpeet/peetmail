@@ -14,7 +14,7 @@
 
   /** Label for meeting messages: invitations, updates, and how people answered. */
   function meetingLabel(m: MessageRow): { text: string; tone: string } | null {
-    const mine = m.folderRole === "sentitems" || m.fromAddress?.toLowerCase() === mail.account?.email.toLowerCase();
+    const mine = m.folderRole === "sentitems" || mail.isMe(m.fromAddress);
     switch (m.meetingMessageType) {
       case "meetingRequest": {
         const earlier = mail.thread.some((o) => o.meetingMessageType === "meetingRequest" && o.receivedAt < m.receivedAt);

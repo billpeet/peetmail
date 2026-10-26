@@ -4,6 +4,7 @@
   import ClientIdForm from "./ClientIdForm.svelte";
   import SplitEditor from "./SplitEditor.svelte";
   import SnippetEditor from "./SnippetEditor.svelte";
+  import AccountsSection from "./AccountsSection.svelte";
 
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
@@ -34,14 +35,6 @@
     }
   }
 
-  async function signOut() {
-    if (!mail.account) return;
-    await api.signOut(mail.account.id);
-    mail.overlay = null;
-    mail.threads = [];
-    mail.folder = null;
-    await mail.init();
-  }
 </script>
 
 <div data-testid="settings" onclick={(e) => e.target === e.currentTarget && (mail.overlay = null)} role="presentation" class="fixed inset-x-0 top-9 bottom-0 z-20 grid place-items-center bg-black/60">
@@ -49,7 +42,12 @@
     <h2 class="text-sm font-semibold text-ink-100">Settings</h2>
 
     <section class="space-y-2">
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft account</h3>
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Accounts</h3>
+      <AccountsSection />
+    </section>
+
+    <section class="space-y-2">
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft app (client ID)</h3>
       <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
       <ClientIdForm onsaved={() => (mail.overlay = null)} />
     </section>
@@ -155,10 +153,7 @@
 
     {#if error}<p class="text-sm text-red-300">{error}</p>{/if}
 
-    <div class="flex items-center justify-between pt-2">
-      <button type="button" onclick={signOut} class="text-sm text-ink-500 hover:text-red-300">
-        Sign out {mail.account?.email}
-      </button>
+    <div class="flex items-center justify-end pt-2">
       <button class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">Save <kbd class="ml-1">Enter</kbd></button>
     </div>
   </form>

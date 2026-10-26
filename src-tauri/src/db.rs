@@ -375,10 +375,28 @@ pub struct Cursor {
 
 /// Which messages a thread listing draws from.
 pub enum Scope {
-    /// One folder (the inbox, a split).
+    /// One folder.
     Folder(i64),
+    /// The inbox of every signed-in account (the unified inbox and its splits).
+    Inboxes,
     /// Every cached folder except Deleted Items (search).
     AllMail,
+}
+
+impl Scope {
+    /// SQL condition on `m` (messages), pushing any parameter it needs.
+    fn sql(&self, params: &mut Vec<rusqlite::types::Value>) -> String {
+        match self {
+            Scope::Folder(id) => {
+                params.push(rusqlite::types::Value::Integer(*id));
+                "m.folder_id = ?".to_string()
+            }
+            Scope::Inboxes => "m.folder_id IN (SELECT f.id FROM folders f JOIN accounts a ON a.id = f.account_id
+                                WHERE f.role = 'inbox' AND a.token_blob IS NOT NULL)"
+                .to_string(),
+            Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')".to_string(),
+        }
+    }
 }
 
 /// One row per conversation (its newest matching message), newest first, keyset-paginated.
@@ -392,13 +410,7 @@ pub fn list_threads(
 ) -> Result<Vec<ThreadRow>> {
     use rusqlite::types::Value as V;
     let mut params: Vec<V> = Vec::new();
-    let scope_sql = match scope {
-        Scope::Folder(id) => {
-            params.push(V::Integer(id));
-            "m.folder_id = ?".to_string()
-        }
-        Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')".to_string(),
-    };
+    let scope_sql = scope.sql(&mut params);
     params.extend(filter.params.iter().cloned());
     let cursor_sql = match cursor {
         Some(c) => {
@@ -413,11 +425,11 @@ pub fn list_threads(
         "WITH ranked AS (
            SELECT m.*,
                   ROW_NUMBER()     OVER w AS rn,
-                  COUNT(*)         OVER (PARTITION BY conversation_id) AS cnt,
-                  SUM(1 - is_read) OVER (PARTITION BY conversation_id) AS unread
+                  COUNT(*)         OVER (PARTITION BY account_id, conversation_id) AS cnt,
+                  SUM(1 - is_read) OVER (PARTITION BY account_id, conversation_id) AS unread
            FROM messages m
            WHERE {scope_sql} AND ({filter})
-           WINDOW w AS (PARTITION BY conversation_id ORDER BY received_at DESC, id DESC)
+           WINDOW w AS (PARTITION BY account_id, conversation_id ORDER BY received_at DESC, id DESC)
          )
          SELECT id, account_id, conversation_id, subject, from_name, from_address, received_at, preview,
                 cnt, unread, is_flagged, has_attachments, sort_at
@@ -449,14 +461,16 @@ pub fn list_threads(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Conversations (and unread conversations) in a folder matching a filter. Used for split tab counts.
-pub fn count_threads(conn: &Connection, folder_id: i64, filter: &crate::query::Filter) -> Result<(i64, i64)> {
-    use rusqlite::types::Value as V;
-    let mut params: Vec<V> = vec![V::Integer(folder_id)];
+/// Conversations (and unread conversations) in a scope matching a filter. Used for split tab counts.
+pub fn count_threads(conn: &Connection, scope: Scope, filter: &crate::query::Filter) -> Result<(i64, i64)> {
+    let mut params = Vec::new();
+    let scope_sql = scope.sql(&mut params);
     params.extend(filter.params.iter().cloned());
+    // Conversation ids are per account, so count (account, conversation) pairs.
     let sql = format!(
-        "SELECT COUNT(DISTINCT conversation_id), COUNT(DISTINCT CASE WHEN is_read = 0 THEN conversation_id END)
-         FROM messages m WHERE m.folder_id = ? AND ({})",
+        "SELECT COUNT(DISTINCT account_id || ':' || conversation_id),
+                COUNT(DISTINCT CASE WHEN is_read = 0 THEN account_id || ':' || conversation_id END)
+         FROM messages m WHERE {scope_sql} AND ({})",
         filter.sql
     );
     Ok(conn.query_row(&sql, rusqlite::params_from_iter(params), |r| Ok((r.get(0)?, r.get(1)?)))?)
@@ -780,6 +794,33 @@ mod tests {
             let page2 = list_threads(c, Scope::Folder(f), &crate::query::compile(""), Some(&cur), 10)?;
             assert_eq!(page2.len(), 1);
             assert_eq!(page2[0].conversation_id, "c2");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unified_inbox_spans_signed_in_accounts() {
+        let (db, a, f) = seed();
+        db.with(|c| {
+            let b = upsert_account(c, "microsoft", "boris@work.example", None, b"t")?.id;
+            let fb = insert_folder(c, b, "B-INBOX", "inbox", "Inbox")?.id;
+            let b_sent = insert_folder(c, b, "B-SENT", "sentitems", "Sent")?.id;
+            upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
+            upsert_message(c, b, fb, &msg("w1", "c1", "2026-10-02T10:00:00Z", true))?; // same conversation id, other account
+            upsert_message(c, b, b_sent, &msg("w2", "c9", "2026-10-03T10:00:00Z", true))?;
+            let all = |q: &str| list_threads(c, Scope::Inboxes, &crate::query::compile(q), None, 10).unwrap();
+
+            let t = all("");
+            assert_eq!(t.iter().map(|t| (t.account_id, t.conversation_id.as_str())).collect::<Vec<_>>(), vec![(b, "c1"), (a, "c1")]);
+            assert!(t.iter().all(|t| t.message_count == 1), "conversations don't merge across accounts");
+            assert_eq!(count_threads(c, Scope::Inboxes, &crate::query::compile(""))?, (2, 1));
+            assert_eq!(all("account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![b]);
+            assert_eq!(all("-account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![a]);
+
+            // A signed-out account's cached mail leaves the unified inbox.
+            c.execute("UPDATE accounts SET token_blob = NULL WHERE id = ?1", [b])?;
+            assert_eq!(all("").len(), 1);
             Ok(())
         })
         .unwrap();

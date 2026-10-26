@@ -33,6 +33,8 @@ export type View = "list" | "reader" | "calendar";
 export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed";
 
 export type ComposerState = {
+  /** The account it's sent from. */
+  accountId: number;
   kind: DraftKind;
   /** Message replied to or forwarded. */
   referenceMessageId: number | null;
@@ -46,7 +48,26 @@ export type Toast = { text: string; undo?: boolean; error?: boolean };
 
 class MailStore {
   boot = $state<Bootstrap | null>(null);
-  account = $derived(this.boot?.accounts.find((a) => a.signedIn) ?? null);
+  /** Signed-in accounts; their inboxes make up the unified inbox. */
+  accounts = $derived(this.boot?.accounts.filter((a) => a.signedIn) ?? []);
+  /** The first signed-in account: the default for new mail and events. */
+  account = $derived(this.accounts[0] ?? null);
+
+  accountOf(id: number) {
+    return this.boot?.accounts.find((a) => a.id === id) ?? null;
+  }
+
+  /** True for any of your own addresses. */
+  isMe(address: string | null | undefined): boolean {
+    const a = address?.toLowerCase();
+    return !!a && (this.boot?.accounts.some((x) => x.email.toLowerCase() === a) ?? false);
+  }
+
+  /** Dot colour that tells accounts apart (by sign-in order). */
+  accountColor(id: number): string {
+    const i = Math.max(0, this.boot?.accounts.findIndex((a) => a.id === id) ?? 0);
+    return ["bg-sky-400", "bg-amber-400", "bg-emerald-400", "bg-rose-400", "bg-violet-400"][i % 5];
+  }
   folder = $state<Folder | null>(null);
 
   splits = $state.raw<SplitInfo[]>([]);
@@ -118,6 +139,8 @@ class MailStore {
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #slowTimer: ReturnType<typeof setTimeout> | undefined;
   #toastAt = 0;
+  /** Bumped when you navigate back; an open() still loading then doesn't take you back in. */
+  #navSeq = 0;
   #dwellTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Preview layout: list on the left, the selected conversation beside it. */
@@ -142,7 +165,8 @@ class MailStore {
   /** Query and scope behind the current list. */
   get listQuery(): { folderId: number | null; query: string; split: number | null } {
     if (this.search !== null) return { folderId: null, query: this.search, split: null };
-    return { folderId: this.folder?.id ?? null, query: "", split: this.splitIndex };
+    // No folder: the unified inbox of every signed-in account.
+    return { folderId: null, query: "", split: this.splitIndex };
   }
 
   async init() {
@@ -166,14 +190,14 @@ class MailStore {
     }
     const folders = await api.listFolders(this.account.id);
     this.folder = folders.find((f) => f.role === "inbox") ?? null;
-    if (this.folder) await this.refresh();
+    await this.refresh();
   }
 
   /** Called on every `mail-changed` event; coalesces bursts during initial sync. */
   scheduleRefresh() {
     clearTimeout(this.#refreshTimer);
     this.#refreshTimer = setTimeout(() => {
-      if (this.folder) this.refresh();
+      if (this.account) this.refresh();
       else this.loadFolder();
       this.refreshSnoozed();
     }, REFRESH_DEBOUNCE_MS);
@@ -209,9 +233,9 @@ class MailStore {
 
   /** Reloads everything currently loaded, keeping the selection on the same conversation. */
   async refresh() {
-    if (!this.folder) return;
+    if (!this.account) return;
     const seq = ++this.#listSeq;
-    const folderForSplits = this.folder.id;
+    const folderForSplits = null; // split tabs count the unified inbox
     const { folderId, query, split } = this.listQuery;
     const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
@@ -247,7 +271,7 @@ class MailStore {
   }
 
   async loadMore() {
-    if (!this.folder || this.#exhausted || this.#loadingMore) return;
+    if (!this.account || this.#exhausted || this.#loadingMore) return;
     const last = this.threads.at(-1);
     if (!last) return;
     this.#loadingMore = true;
@@ -280,9 +304,12 @@ class MailStore {
   async open() {
     const t = this.current;
     if (!t) return;
+    const nav = this.#navSeq;
     // Load the thread first (a local query) so the reader never flashes empty or stale.
     const rows = await api.getThread(t.accountId, t.conversationId);
     if (this.current?.conversationId !== t.conversationId) return;
+    // Esc (back to the list) while it loaded wins: don't reopen the reader behind it.
+    if (nav !== this.#navSeq) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
     this.#loadInvite();
@@ -349,6 +376,7 @@ class MailStore {
   }
 
   back() {
+    this.#navSeq++;
     this.view = "list";
     this.pinned = null;
     // In the list layout the invite is no longer on screen.
@@ -574,16 +602,19 @@ class MailStore {
   // ---------- compose ----------
 
   compose() {
-    this.composer = { kind: "new", referenceMessageId: null, to: "", cc: "", subject: "", body: "" };
+    if (!this.account) return;
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: "", cc: "", subject: "", body: "" };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
   async respond(kind: Exclude<DraftKind, "new">) {
     const t = this.current;
-    if (!t || !this.account) return;
+    // Reply from the account the conversation belongs to.
+    const account = this.accountOf(t?.accountId ?? -1);
+    if (!t || !account) return;
     const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId);
     // Reply to the newest message someone else sent, if there is one.
-    const me = this.account.email.toLowerCase();
+    const me = account.email.toLowerCase();
     const ref = [...msgs].reverse().find((m) => m.fromAddress?.toLowerCase() !== me) ?? msgs.at(-1);
     if (!ref) return;
     const notMe = (a: string | null | undefined): a is string => !!a && a.toLowerCase() !== me;
@@ -597,6 +628,7 @@ class MailStore {
     }
     const bare = ref.subject.replace(/^((re|fw|fwd):\s*)+/i, "");
     this.composer = {
+      accountId: account.id,
       kind,
       referenceMessageId: ref.id,
       to: to.join(", "),
@@ -609,11 +641,11 @@ class MailStore {
   /** Sends the composer's message after the undo delay, or at `sendAt` when scheduling. */
   async send(sendAt?: Date) {
     const c = this.composer;
-    if (!c || !this.account) return;
+    if (!c) return;
     const split = (s: string) => s.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
     try {
       const out = await api.sendMessage({
-        accountId: this.account.id,
+        accountId: c.accountId,
         kind: c.kind,
         referenceMessageId: c.referenceMessageId,
         to: split(c.to),
@@ -641,6 +673,7 @@ class MailStore {
     if (!q) return false;
     const d = q.draft;
     this.composer = {
+      accountId: q.accountId,
       kind: d.kind,
       referenceMessageId: d.referenceMessageId ?? null,
       to: d.to.join(", "),

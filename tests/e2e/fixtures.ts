@@ -11,19 +11,28 @@
 import { test as base, expect, type Page, type TestInfo } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { startFakeGraph } from "../harness/fake-graph.ts";
+import { startFakePair } from "../harness/fake-pair.ts";
 import { launchApp, signIn } from "../harness/app.ts";
 import { defaultMailbox, FOLDER_IDS } from "../harness/fixtures.ts";
 
 type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
+type Pair = Awaited<ReturnType<typeof startFakePair>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair }>({
+  /** Serve a second mailbox too (`test.use({ secondAccount: true })`), then use `pair`. */
+  secondAccount: [false, { option: true }],
+  /** The two-mailbox fake (only with secondAccount): `pair.second`, `pair.signInAs("b")`. */
+  pair: async ({ fake, secondAccount }, use) => {
+    if (!secondAccount) throw new Error("the pair fixture needs test.use({ secondAccount: true })");
+    await use(fake as Pair);
+  },
   /** Undo-send delay for this test's app (`test.use({ undoSendSecs: 3 })`); 0 sends at once. */
   undoSendSecs: [0, { option: true }],
 
   // eslint-disable-next-line no-empty-pattern
-  fake: async ({}, use) => {
-    const fake = await startFakeGraph();
+  fake: async ({ secondAccount }, use) => {
+    const fake = secondAccount ? await startFakePair() : await startFakeGraph();
     await use(fake);
     await fake.close();
   },

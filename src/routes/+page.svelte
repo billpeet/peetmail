@@ -291,7 +291,9 @@
       <span class="ml-auto flex items-center gap-3">
         <button data-testid="footer-palette" onclick={() => (mail.overlay = "palette")} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>K</kbd> commands</button>
         <button data-testid="footer-help" onclick={() => (mail.overlay = "help")} class="hover:text-ink-100"><kbd>?</kbd> shortcuts</button>
-        <span class="text-ink-500">{mail.account.email}</span>
+        <span data-testid="footer-accounts" class="text-ink-500" title={mail.accounts.map((a) => a.email).join("\n")}>
+          {mail.accounts.length > 1 ? `${mail.accounts.length} accounts` : mail.account.email}
+        </span>
         <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => (mail.overlay = "settings")} class="icon-btn size-6"><SettingsIcon size={14} /></button>
       </span>
     </footer>

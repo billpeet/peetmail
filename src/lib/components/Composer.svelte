@@ -20,6 +20,7 @@
   let subject = $state(c.subject);
   let body = $state(c.body);
   let showCc = $state(c.cc.length > 0);
+  let from = $state(c.accountId);
   let armedDiscard = $state(false);
 
   // ----- send later -----
@@ -123,7 +124,8 @@
       const known = (await api.suggestContacts(person.address).catch(() => [])).find((c) => c.address.toLowerCase() === person!.address.toLowerCase());
       if (known?.name) person = { ...person, name: known.name };
     }
-    const me = mail.account ? { name: mail.account.displayName, address: mail.account.email } : null;
+    const acct = mail.accountOf(from);
+    const me = acct ? { name: acct.displayName, address: acct.email } : null;
     const text = expandSnippet(s.body, { to: person, me });
     body = body.slice(0, start) + text + body.slice(end);
     const caret = start + text.length;
@@ -155,7 +157,7 @@
 
   // Keep the store in sync so send() sees the latest text.
   $effect(() => {
-    if (mail.composer) Object.assign(mail.composer, { to, cc, subject, body });
+    if (mail.composer) Object.assign(mail.composer, { to, cc, subject, body, accountId: from });
   });
 
   // ----- contact suggestions for the field being typed in -----
@@ -248,6 +250,23 @@
     </div>
 
     <div class="space-y-0 border-b border-ink-800 text-sm">
+      {#if mail.accounts.length > 1}
+        <label class="flex items-center gap-3 border-b border-ink-800 px-4 py-2">
+          <span class="w-14 shrink-0 text-ink-500">From</span>
+          <span class={["size-2 shrink-0 rounded-full", mail.accountColor(from)]}></span>
+          <select
+            data-testid="compose-from"
+            bind:value={from}
+            disabled={c.kind !== "new"}
+            title={c.kind !== "new" ? "Replies and forwards go from the account the mail came to" : ""}
+            class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none disabled:text-ink-300"
+          >
+            {#each mail.accounts as a (a.id)}
+              <option value={a.id} class="bg-ink-900">{a.displayName ? `${a.displayName} <${a.email}>` : a.email}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
       <label class="relative flex items-center gap-3 px-4 py-2">
         <span class="w-14 shrink-0 text-ink-500">To</span>
         <input
