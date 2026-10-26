@@ -138,6 +138,8 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
     attendees: [ME, SAM, PRIYA], response: "notResponded", join: true, showAs: "tentative",
   }));
   events.push(makeEvent({ id: "evt-lunch", subject: "Lunch with Sam", start: localAt(0, 13, 0, now), end: localAt(0, 14, 0, now), location: "Café Beetroot" }));
+  // One you created: Graph reports your response as "none" (reported: these showed as pending).
+  events.push({ ...makeEvent({ id: "evt-own", subject: "Gym", start: localAt(0, 18, 0, now), end: localAt(0, 19, 0, now) }), responseStatus: { response: "none" } });
   events.push(makeEvent({ id: "evt-1on1", subject: "1:1 Priya", start: localAt(0, 15, 0, now), end: localAt(0, 15, 45, now), organizer: PRIYA, attendees: [ME] }));
   events.push(makeEvent({ id: "evt-focus", subject: "Focus time", start: localAt(0, 15, 30, now), end: localAt(0, 16, 30, now), showAs: "busy" }));
   events.push(makeEvent({ id: "evt-dentist", subject: "Dentist", start: localAt(1, 10, 0, now), end: localAt(1, 11, 0, now), location: "12 Smile St" }));

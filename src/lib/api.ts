@@ -91,6 +91,8 @@ export type Preferences = {
   listWidth: number;
   /** What the right pane shows. */
   rightPaneTab: "recent" | "calendar";
+  /** First day of the week: 0 = Sunday, 1 = Monday ... 6 = Saturday. */
+  weekStartsOn: number;
 };
 
 export type Attendee = { name: string | null; address: string | null; response: string | null; type: string | null };

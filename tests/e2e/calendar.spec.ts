@@ -170,3 +170,48 @@ test("the left sidebar switches between Mail and Calendar, and so do 1 and 2", a
   await expect(page.getByTestId("compose-body")).toHaveValue("2 tickets");
   await expect(page.getByTestId("week-view")).toHaveCount(0);
 });
+
+test("the first day of the week is a setting the week view follows", async ({ inbox: page }, testInfo) => {
+  const firstDay = () => page.getByTestId("week-day").first().textContent();
+  await page.keyboard.press("2");
+  expect(await firstDay()).toMatch(/^Mon/);
+
+  await page.keyboard.press("Control+,");
+  await page.getByTestId("week-start-select").selectOption("0");
+  await snap(page, testInfo, "week-start-setting");
+  await page.keyboard.press("Escape");
+  await expect.poll(firstDay).toMatch(/^Sun/);
+  await expect(page.locator("[data-testid=week-day][data-today=true]")).toHaveCount(1); // still this week
+
+  await page.reload();
+  await expect(page.getByTestId("thread-row").first()).toBeVisible();
+  await page.keyboard.press("2");
+  await expect.poll(firstDay).toMatch(/^Sun/);
+});
+
+test("event details with a long guest list scroll instead of overflowing the window", async ({ inbox: page, fake }) => {
+  const attendees = Array.from({ length: 60 }, (_, i) => [`Guest ${i + 1}`, `guest${i + 1}@example.com`]);
+  await fake.control("event", { id: "evt-big", subject: "Campaign afternoon tea", start: localAt(0, 20).toISOString(), end: localAt(0, 21).toISOString(), attendees });
+  await syncNow(page, fake);
+  await page.keyboard.press("2");
+  await page.locator('[data-testid=week-event][data-remote-id="evt-big"]').click();
+
+  await expect(page.getByTestId("event-guest-count")).toContainText("60 guests");
+  const viewport = page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
+  const panel = (await page.getByTestId("event-panel").boundingBox())!;
+  expect(panel.y + panel.height).toBeLessThanOrEqual(viewport.height);
+  await expect(page.getByTestId("event-close")).toBeInViewport();
+  await expect(page.getByTestId("event-actions")).toBeInViewport();
+  const scroll = page.getByTestId("event-scroll");
+  expect(await scroll.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+});
+
+test("events you created look confirmed, not pending", async ({ inbox: page }) => {
+  await showCalendar(page);
+  await page.getByTestId("day-grid").evaluate((el) => (el.scrollTop = 12 * 44));
+  await expect(event(page, "evt-own")).toHaveAttribute("data-tone", "confirmed"); // response "none", you organised it
+  await expect(event(page, "evt-lunch")).toHaveAttribute("data-tone", "confirmed");
+  await expect(event(page, "evt-invite")).toHaveAttribute("data-tone", "pending"); // someone else's, unanswered
+  await event(page, "evt-own").click();
+  await expect(page.getByTestId("event-response")).toHaveCount(0);
+});

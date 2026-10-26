@@ -5,6 +5,7 @@
   import { ChevronLeft, ChevronRight } from "@lucide/svelte";
   import { calendar, eventTimes } from "$lib/calendar.svelte";
   import { layoutDay } from "$lib/eventLayout";
+  import { eventTone, TONE_CLASSES } from "$lib/eventTone";
   import type { CalendarEvent } from "$lib/api";
 
   let { onselect }: { onselect?: (e: CalendarEvent) => void } = $props();
@@ -32,12 +33,7 @@
   const hourLabel = (h: number) => new Date(2000, 0, 1, h).toLocaleTimeString(undefined, { hour: "numeric" });
 
   /** Colour by how you've answered: solid when going, outlined when undecided, faded when declined. */
-  function tone(e: CalendarEvent) {
-    if (e.response === "declined") return "border border-ink-700 text-ink-500 line-through";
-    if (e.response === "notResponded" || e.response === "tentativelyAccepted" || e.response === "none")
-      return "border border-dashed border-accent/70 bg-accent/10 text-ink-100";
-    return "border border-accent/40 bg-accent/25 text-ink-100";
-  }
+  const tone = (e: CalendarEvent) => TONE_CLASSES[eventTone(e)];
 
   async function scrollToWorkday() {
     await tick();
@@ -78,7 +74,7 @@
   {#if allDay.length}
     <div class="space-y-1 border-b border-ink-800 px-4 pb-2">
       {#each allDay as e (e.id)}
-        <button data-testid="all-day-event" data-remote-id={e.remoteId} onclick={() => onselect?.(e)} class="block w-full truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{e.subject}</button>
+        <button data-testid="all-day-event" data-remote-id={e.remoteId} data-tone={eventTone(e)} onclick={() => onselect?.(e)} class="block w-full truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{e.subject}</button>
       {/each}
     </div>
   {/if}
@@ -102,6 +98,7 @@
             data-col={p.col}
             data-cols={p.cols}
             data-response={e.response ?? "none"}
+            data-tone={eventTone(e)}
             data-focused={focused(e)}
             onclick={() => onselect?.(e)}
             title="{e.subject}{e.location ? ` · ${e.location}` : ''}"

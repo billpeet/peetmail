@@ -1,10 +1,11 @@
 <script lang="ts">
-  // Full calendar (g c): a Monday-first week with an all-day row, overlap columns per day,
+  // Full calendar (g c): a week (starting on the day set in Settings) with an all-day row, overlap columns per day,
   // and a now-line in today's column. ←/→ change week, t jumps to today, Esc goes back.
   import { onMount, tick } from "svelte";
   import { ArrowLeft, ChevronLeft, ChevronRight } from "@lucide/svelte";
   import { addDays, calendar, eventTimes, startOfDay } from "$lib/calendar.svelte";
   import { layoutDay } from "$lib/eventLayout";
+  import { eventTone, TONE_CLASSES } from "$lib/eventTone";
   import { mail } from "$lib/mail.svelte";
   import type { CalendarEvent } from "$lib/api";
 
@@ -51,12 +52,7 @@
   const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   const hourLabel = (h: number) => new Date(2000, 0, 1, h).toLocaleTimeString(undefined, { hour: "numeric" });
 
-  function tone(e: CalendarEvent) {
-    if (e.response === "declined") return "border border-ink-700 text-ink-500 line-through";
-    if (e.response === "notResponded" || e.response === "tentativelyAccepted" || e.response === "none")
-      return "border border-dashed border-accent/70 bg-accent/10 text-ink-100";
-    return "border border-accent/40 bg-accent/25 text-ink-100";
-  }
+  const tone = (e: CalendarEvent) => TONE_CLASSES[eventTone(e)];
 
   function select(e: CalendarEvent) {
     calendar.selected = e;
@@ -99,6 +95,7 @@
           <button
             data-testid="week-all-day"
             data-remote-id={e.remoteId}
+            data-tone={eventTone(e)}
             onclick={() => select(e)}
             style:grid-column="{from + 1} / {to + 1}"
             class="mx-0.5 truncate rounded px-2 py-0.5 text-left text-xs {tone(e)}">{e.subject}</button
@@ -127,6 +124,7 @@
               data-testid="week-event"
               data-remote-id={e.remoteId}
               data-response={e.response ?? "none"}
+            data-tone={eventTone(e)}
               onclick={() => select(e)}
               title="{e.subject}{e.location ? ` · ${e.location}` : ''}"
               class={[

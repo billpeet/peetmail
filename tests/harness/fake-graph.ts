@@ -571,7 +571,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
             "POST /_test/move {id, folder: inbox|archive|deleteditems|sentitems}",
             "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status}",
             "GET  /_test/sent   (writes the app made: send, reply, move, patch, rsvp, event)",
-            "POST /_test/event {id, subject?, start?, end? (ISO), allDay?, location?, response?}   POST /_test/event-remove {id}   GET /_test/event?id=",
+            "POST /_test/event {id, subject?, start?, end? (ISO), allDay?, location?, response?, attendees?: [[name, address]]}   POST /_test/event-remove {id}   GET /_test/event?id=",
             "GET  /_test/message?id=...",
             "POST /_test/expire-tokens",
             "GET  /_test/state",
@@ -633,6 +633,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
           allDay: body.allDay,
           location: body.location,
           response: body.response,
+          attendees: (body.attendees as [string, string][] | undefined)?.map(([name, address]) => ({ name, address })),
         });
         state.events.set(e.id, e);
         eventChange(e.id);

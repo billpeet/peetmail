@@ -1,7 +1,7 @@
 <script lang="ts">
   // RSVP card shown above a conversation containing a meeting invite. y / m / n answer it.
   import { CalendarClock, Check, HelpCircle, MapPin, X } from "@lucide/svelte";
-  import { calendar, eventTimes, startOfWeek } from "$lib/calendar.svelte";
+  import { calendar, eventTimes } from "$lib/calendar.svelte";
   import { mail } from "$lib/mail.svelte";
   import type { Invite, Rsvp } from "$lib/api";
 
@@ -63,8 +63,7 @@
   ];
 
   function showInCalendar() {
-    calendar.weekStart = startOfWeek(eventTimes(e).start);
-    calendar.loadWeek();
+    calendar.showWeekOf(eventTimes(e).start);
     mail.view = "calendar";
     calendar.selected = e;
     mail.overlay = "event";

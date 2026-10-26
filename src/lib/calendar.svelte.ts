@@ -36,10 +36,10 @@ export function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
   return api.listEvents(from.toISOString(), to.toISOString(), localDate(from), localDate(to));
 }
 
-/** Monday of the week containing `d` (local midnight). */
-export function startOfWeek(d: Date): Date {
+/** First day of the week containing `d` (local midnight). `weekStartsOn`: 0 = Sunday ... 6 = Saturday. */
+export function startOfWeek(d: Date, weekStartsOn = 1): Date {
   const day = startOfDay(d);
-  const offset = (day.getDay() + 6) % 7; // Mon = 0
+  const offset = (day.getDay() - weekStartsOn + 7) % 7;
   return addDays(day, -offset);
 }
 
@@ -47,7 +47,9 @@ class CalendarStore {
   /** Day shown in the day view (local midnight). */
   day = $state(startOfDay(new Date()));
   dayEvents = $state.raw<CalendarEvent[]>([]);
-  /** Monday of the week shown in the week view. */
+  /** First day of the week (0 = Sunday ... 6 = Saturday); from preferences. */
+  weekStartsOn = $state(1);
+  /** First day of the week shown in the week view. */
   weekStart = $state(startOfWeek(new Date()));
   weekEvents = $state.raw<CalendarEvent[]>([]);
   /** Event whose details are open. */
@@ -62,7 +64,22 @@ class CalendarStore {
   #weekSeq = 0;
 
   get isThisWeek(): boolean {
-    return this.weekStart.getTime() === startOfWeek(new Date()).getTime();
+    return this.weekStart.getTime() === startOfWeek(new Date(), this.weekStartsOn).getTime();
+  }
+
+  /** Applies the week-start preference, keeping the same week on screen. */
+  setWeekStartsOn(day: number) {
+    if (day === this.weekStartsOn) return;
+    const anchor = this.isThisWeek ? new Date() : this.weekStart;
+    this.weekStartsOn = day;
+    this.weekStart = startOfWeek(anchor, day);
+    return this.loadWeek();
+  }
+
+  /** Shows the week containing `d`. */
+  showWeekOf(d: Date) {
+    this.weekStart = startOfWeek(d, this.weekStartsOn);
+    return this.loadWeek();
   }
 
   async loadWeek() {
@@ -77,8 +94,7 @@ class CalendarStore {
   }
 
   thisWeek() {
-    this.weekStart = startOfWeek(new Date());
-    return this.loadWeek();
+    return this.showWeekOf(new Date());
   }
 
   /** Reloads everything that's showing (after a sync or a change). */

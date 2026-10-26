@@ -134,6 +134,7 @@ class MailStore {
   async init() {
     try {
       this.boot = await api.bootstrap();
+      calendar.setWeekStartsOn(this.boot.preferences.weekStartsOn);
       await this.loadFolder();
     } catch (e) {
       this.error = String(e);
@@ -166,6 +167,7 @@ class MailStore {
     if (!this.boot) return;
     const preferences = { ...this.boot.preferences, [key]: value };
     this.boot = { ...this.boot, preferences };
+    if (key === "weekStartsOn") calendar.setWeekStartsOn(value as number);
     await api.setPreferences(preferences);
   }
 
