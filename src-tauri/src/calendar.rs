@@ -368,7 +368,10 @@ pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) ->
             if full {
                 // Anything the full listing didn't mention is gone (or now outside the window).
                 // Series masters are kept while an occurrence still points at them.
-                let mut stmt = c.prepare("SELECT remote_id FROM events WHERE account_id = ?1 AND event_type <> 'seriesMaster'")?;
+                // Placeholders for events still being created aren't on the server yet either.
+                let mut stmt = c.prepare(
+                    "SELECT remote_id FROM events WHERE account_id = ?1 AND event_type <> 'seriesMaster' AND remote_id NOT LIKE 'local:%'",
+                )?;
                 let stale: Vec<String> = stmt
                     .query_map([account_id], |r| r.get::<_, String>(0))?
                     .filter_map(|r| r.ok())
@@ -471,6 +474,57 @@ pub async fn invite_for_message(state: &AppState, message_id: i64) -> Result<Opt
         previous_location: v.pointer("/previousLocation/displayName").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
         event,
     }))
+}
+
+/// Creates an event: shows it at once under a local placeholder id and queues the real
+/// creation. Returns the placeholder event.
+pub fn create(conn: &mut Connection, account_id: i64, e: &crate::outbox::NewEvent, organizer: (&str, Option<&str>)) -> Result<Event> {
+    let local_id = format!("local:{}", uuid_like());
+    let tx = conn.transaction()?;
+    upsert_event(
+        &tx,
+        account_id,
+        &EventUpsert {
+            remote_id: local_id.clone(),
+            subject: e.subject.clone(),
+            start_at: e.start.clone(),
+            end_at: e.end.clone(),
+            is_all_day: e.all_day,
+            location: e.location.clone(),
+            organizer_name: organizer.1.map(String::from),
+            organizer_address: Some(organizer.0.to_string()),
+            attendees_json: "[]".into(),
+            response: Some("organizer".into()),
+            is_organizer: true,
+            is_cancelled: false,
+            show_as: Some(if e.all_day { "free" } else { "busy" }.into()),
+            join_url: None,
+            web_link: None,
+            preview: String::new(),
+            event_type: "singleInstance".into(),
+            series_master_id: None,
+            has_details: true,
+        },
+    )?;
+    crate::outbox::enqueue(&tx, account_id, Some(&local_id), &crate::outbox::Op::CreateEvent(e.clone()), std::time::Duration::ZERO)?;
+    let event = event_by_remote(&tx, account_id, &local_id)?.ok_or_else(|| AppError::Other("event vanished".into()))?;
+    tx.commit()?;
+    Ok(event)
+}
+
+/// Swaps a placeholder for the event Graph created.
+pub fn finish_create(conn: &Connection, account_id: i64, local_id: &str, created: &Value) -> Result<()> {
+    delete_event(conn, account_id, local_id)?;
+    if let Some(e) = parse_event(created) {
+        upsert_event(conn, account_id, &e)?;
+    }
+    Ok(())
+}
+
+fn uuid_like() -> String {
+    let mut b = [0u8; 12];
+    getrandom::fill(&mut b).expect("OS RNG unavailable");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Records an RSVP locally and queues it for Graph.
@@ -630,6 +684,30 @@ mod tests {
             assert!(missing_details(c, a, 10)?.is_empty());
             upsert_event(c, a, &parse_event(&bare).unwrap())?;
             assert_eq!(event_by_remote(c, a, "solo")?.unwrap().subject, "Event solo");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn created_events_show_at_once_and_swap_to_the_server_copy() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", Some("Boris"), b"t")?.id;
+            let new = crate::outbox::NewEvent {
+                subject: "Lunch with Sam".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(),
+                all_day: false, location: None, time_zone: "UTC".into(),
+            };
+            let local = create(c, a, &new, ("b@x.com", Some("Boris")))?;
+            assert!(local.remote_id.starts_with("local:"));
+            assert_eq!(local.response.as_deref(), Some("organizer"));
+            let got = list_events(c, "2026-10-29T13:00:00Z", "2026-10-30T13:00:00Z", "2026-10-30", "2026-10-31")?;
+            assert_eq!(got.len(), 1);
+            assert!(crate::outbox::busy_remote_ids(c, a)?.contains(&local.remote_id));
+
+            finish_create(c, a, &local.remote_id, &timed("srv-1", "2026-10-30T02:00:00", "2026-10-30T02:30:00"))?;
+            let got = list_events(c, "2026-10-29T13:00:00Z", "2026-10-30T13:00:00Z", "2026-10-30", "2026-10-31")?;
+            assert_eq!(got.iter().map(|e| e.remote_id.as_str()).collect::<Vec<_>>(), vec!["srv-1"]);
             Ok(())
         })
         .unwrap();

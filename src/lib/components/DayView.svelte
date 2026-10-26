@@ -2,7 +2,8 @@
   // Day calendar for the right pane: all-day chips, a 24h grid with overlap columns,
   // and a now-line. Scrolls to the working part of the day.
   import { onMount, tick } from "svelte";
-  import { ChevronLeft, ChevronRight } from "@lucide/svelte";
+  import { ChevronLeft, ChevronRight, Plus } from "@lucide/svelte";
+  import { mail } from "$lib/mail.svelte";
   import { calendar, eventTimes } from "$lib/calendar.svelte";
   import { layoutDay } from "$lib/eventLayout";
   import { eventTone, TONE_CLASSES } from "$lib/eventTone";
@@ -66,6 +67,7 @@
 <div data-testid="day-view" class="flex min-h-0 flex-1 flex-col">
   <div class="flex items-center gap-1 px-4 pb-2">
     <span data-testid="day-label" class="flex-1 truncate text-sm font-semibold text-ink-100">{dayLabel}</span>
+    <button data-testid="day-new" title="New event (Shift+C)" aria-label="New event" onclick={() => (mail.overlay = "quickadd")} class="icon-btn size-7"><Plus size={16} /></button>
     <button data-testid="day-prev" title="Previous day" aria-label="Previous day" onclick={() => calendar.shiftDay(-1)} class="icon-btn size-7"><ChevronLeft size={16} /></button>
     <button data-testid="day-today" onclick={() => calendar.today()} disabled={calendar.isToday} class="rounded-md px-2 py-1 text-xs text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40">Today</button>
     <button data-testid="day-next" title="Next day" aria-label="Next day" onclick={() => calendar.shiftDay(1)} class="icon-btn size-7"><ChevronRight size={16} /></button>

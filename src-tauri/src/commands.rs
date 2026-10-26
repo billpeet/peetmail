@@ -376,6 +376,28 @@ pub fn list_events(
     state.db.with(|c| crate::calendar::list_events(c, &from, &to, &from_date, &to_date))
 }
 
+/// Creates an event (quick add). It shows at once; the outbox creates it on the server.
+#[tauri::command]
+pub fn create_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    event: crate::outbox::NewEvent,
+) -> Result<crate::calendar::Event> {
+    if event.subject.trim().is_empty() {
+        return Err(AppError::Other("an event needs a title".into()));
+    }
+    let created = state.db.with(|c| {
+        let accounts = db::list_accounts(c)?;
+        let me = accounts.iter().find(|a| a.id == account_id).ok_or_else(|| AppError::Other("unknown account".into()))?;
+        crate::calendar::create(c, account_id, &event, (&me.email, me.display_name.as_deref()))
+    })?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(created)
+}
+
 /// The event behind a meeting invite (None for ordinary mail).
 #[tauri::command]
 pub async fn invite_event(state: State<'_, AppState>, message_id: i64) -> Result<Option<crate::calendar::Invite>> {

@@ -215,3 +215,14 @@ test("events you created look confirmed, not pending", async ({ inbox: page }) =
   await event(page, "evt-own").click();
   await expect(page.getByTestId("event-response")).toHaveCount(0);
 });
+
+test("week view day headers line up with the day columns below them", async ({ inbox: page }) => {
+  await page.keyboard.press("2");
+  const headers = await page.getByTestId("week-day").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.right]));
+  const columns = await page.getByTestId("week-column").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.right]));
+  expect(columns).toHaveLength(7);
+  for (let i = 0; i < 7; i++) {
+    expect(Math.abs(headers[i][0] - columns[i][0])).toBeLessThanOrEqual(1);
+    expect(Math.abs(headers[i][1] - columns[i][1])).toBeLessThanOrEqual(1);
+  }
+});

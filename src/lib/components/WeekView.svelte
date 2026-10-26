@@ -2,7 +2,7 @@
   // Full calendar (g c): a week (starting on the day set in Settings) with an all-day row, overlap columns per day,
   // and a now-line in today's column. ←/→ change week, t jumps to today, Esc goes back.
   import { onMount, tick } from "svelte";
-  import { ArrowLeft, ChevronLeft, ChevronRight } from "@lucide/svelte";
+  import { ArrowLeft, ChevronLeft, ChevronRight, Plus } from "@lucide/svelte";
   import { addDays, calendar, eventTimes, startOfDay } from "$lib/calendar.svelte";
   import { layoutDay } from "$lib/eventLayout";
   import { eventTone, TONE_CLASSES } from "$lib/eventTone";
@@ -72,14 +72,16 @@
     <button data-testid="week-back" title="Back to inbox (Esc)" aria-label="Back to inbox" onclick={() => mail.back()} class="icon-btn"><ArrowLeft size={17} /></button>
     <h1 data-testid="week-title" class="ml-1 text-[17px] font-semibold text-ink-100">{title}</h1>
     <span class="ml-auto flex items-center gap-1">
+      <button data-testid="week-new" title="New event (Shift+C)" aria-label="New event" onclick={() => (mail.overlay = "quickadd")} class="icon-btn"><Plus size={17} /></button>
       <button data-testid="week-prev" title="Previous week (←)" aria-label="Previous week" onclick={() => calendar.shiftWeek(-1)} class="icon-btn"><ChevronLeft size={17} /></button>
       <button data-testid="week-today" onclick={() => calendar.thisWeek()} disabled={calendar.isThisWeek} class="rounded-md px-2.5 py-1 text-sm text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40">Today</button>
       <button data-testid="week-next" title="Next week (→)" aria-label="Next week" onclick={() => calendar.shiftWeek(1)} class="icon-btn"><ChevronRight size={17} /></button>
     </span>
   </header>
 
-  <!-- Day headers + all-day row share the grid's columns. -->
-  <div class="grid shrink-0 grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] border-b border-ink-800">
+  <!-- Day headers + all-day row share the grid's columns. Both reserve the scrollbar's
+       width (scrollbar-gutter), so header and body columns line up. -->
+  <div class="grid shrink-0 grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] overflow-y-hidden border-b border-ink-800 [scrollbar-gutter:stable]">
     <span></span>
     {#each days as d (d.getTime())}
       {@const today = d.getTime() === todayMs}
@@ -105,7 +107,7 @@
     {/if}
   </div>
 
-  <div bind:this={scroller} class="min-h-0 flex-1 overflow-y-auto">
+  <div bind:this={scroller} class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
     <div class="relative grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]" style:height="{24 * HOUR}px">
       <div class="relative">
         {#each Array.from({ length: 24 }, (_, h) => h) as h (h)}

@@ -286,6 +286,26 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return reply(202, "");
     }
 
+    if (p === "/me/events" && method === "POST") {
+      const b = await readBody(req);
+      if (!b.subject || !b.start?.dateTime || !b.end?.dateTime) return graphError(reply, 400, "ErrorInvalidRequest", "subject, start and end are required");
+      // Timed events arrive in UTC; all-day ones as midnights in the user's zone (local here).
+      const when = (t: { dateTime: string; timeZone: string }) => (t.timeZone === "UTC" ? new Date(`${t.dateTime}Z`) : new Date(t.dateTime));
+      const e = makeEvent({
+        id: `evt-created-${++createdCount}`,
+        subject: b.subject,
+        start: when(b.start),
+        end: when(b.end),
+        allDay: !!b.isAllDay,
+        location: b.location?.displayName,
+        showAs: b.showAs,
+      });
+      state.events.set(e.id, e);
+      eventChange(e.id);
+      state.sent.push({ kind: "create-event", id: e.id, body: b });
+      return reply(201, fullForm(e));
+    }
+
     const eventGet = p.match(/^\/me\/events\/([^/]+)$/);
     if (eventGet && method === "GET") {
       const e = state.events.get(decodeURIComponent(eventGet[1]));
@@ -364,6 +384,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   }
 
   let sentCount = 0;
+  let createdCount = 0;
   /** Puts a copy of something you sent into Sent Items and logs it for assertions. */
   function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[] }) {
     const id = `msg-sent-new-${++sentCount}`;

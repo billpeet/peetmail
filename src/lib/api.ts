@@ -155,6 +155,7 @@ export const api = {
   listEvents: (from: string, to: string, fromDate: string, toDate: string) =>
     invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
   inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
+  createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp) =>
     invoke<void>("respond_to_event", { accountId, eventRemoteId, response }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
@@ -178,6 +179,16 @@ export const onOutbox = (cb: (s: OutboxStatus) => void): Promise<UnlistenFn> =>
   listen<OutboxStatus>("outbox-changed", (e) => cb(e.payload));
 
 export type Rsvp = "accept" | "tentative" | "decline";
+/** A new event: timed ones as UTC ISO instants, all-day ones as YYYY-MM-DD (end exclusive). */
+export type NewEvent = {
+  subject: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location: string | null;
+  /** IANA zone the all-day dates belong to. */
+  timeZone: string;
+};
 /** The calendar event behind a meeting-invite message. */
 export type Invite = {
   meetingMessageType: string | null;

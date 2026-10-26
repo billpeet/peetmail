@@ -16,6 +16,7 @@
   import WeekView from "$lib/components/WeekView.svelte";
   import Rail from "$lib/components/Rail.svelte";
   import EventDetails from "$lib/components/EventDetails.svelte";
+  import QuickAdd from "$lib/components/QuickAdd.svelte";
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
 
@@ -96,6 +97,7 @@
       { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
       { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "search", keys: "/", label: "Search", group: "Go to", when: base, run: focusSearch },
+      { id: "calendar.new", keys: "C", label: "New event", group: "Calendar", when: base, run: () => (mail.overlay = "quickadd") },
       { id: "calendar.prev", keys: "ArrowLeft", label: "Previous week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(-1) },
       { id: "calendar.next", keys: "ArrowRight", label: "Next week", group: "Calendar", when: inCalendar, run: () => calendar.shiftWeek(1) },
       { id: "calendar.today", keys: "t", label: "This week", group: "Calendar", when: inCalendar, run: () => calendar.thisWeek() },
@@ -303,3 +305,4 @@
 {#if mail.overlay === "settings"}<Settings />{/if}
 {#if mail.overlay === "palette"}<Palette />{/if}
 {#if mail.overlay === "event"}<EventDetails />{/if}
+{#if mail.overlay === "quickadd"}<QuickAdd />{/if}

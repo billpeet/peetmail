@@ -27,7 +27,7 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd";
 
 export type ComposerState = {
   kind: DraftKind;
@@ -104,6 +104,7 @@ class MailStore {
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #slowTimer: ReturnType<typeof setTimeout> | undefined;
+  #toastAt = 0;
   #dwellTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Preview layout: list on the left, the selected conversation beside it. */
@@ -480,7 +481,10 @@ class MailStore {
   }
 
   showToast(t: Toast) {
+    // A routine toast ("Created") mustn't wipe an error that has only just appeared.
+    if (!t.error && this.toast?.error && Date.now() - this.#toastAt < 2000) return;
     this.toast = t;
+    this.#toastAt = Date.now();
     clearTimeout(this.#toastTimer);
     this.#toastTimer = setTimeout(() => (this.toast = null), TOAST_MS);
   }
