@@ -77,7 +77,7 @@ export type OutboxStatus = { pending: number; failed: number; lastError: string 
 
 export type CacheLimits = { cacheDays: number; bodyCacheMb: number };
 
-export type Preferences = { hideEmptySplits: boolean; showRightPane: boolean };
+export type Preferences = { hideEmptySplits: boolean; showRightPane: boolean; rightPaneWidth: number };
 
 export type Bootstrap = { clientId: string | null; accounts: Account[]; cacheLimits: CacheLimits; preferences: Preferences };
 

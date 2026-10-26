@@ -14,6 +14,8 @@ pub const KEY_BODY_CACHE_MB: &str = "body_cache_mb";
 pub const KEY_SPLITS: &str = "splits";
 pub const KEY_HIDE_EMPTY_SPLITS: &str = "hide_empty_splits";
 pub const KEY_SHOW_RIGHT_PANE: &str = "show_right_pane";
+pub const KEY_RIGHT_PANE_WIDTH: &str = "right_pane_width";
+pub const DEFAULT_RIGHT_PANE_WIDTH: i64 = 320;
 
 pub const DEFAULT_CACHE_DAYS: i64 = 90;
 pub const DEFAULT_BODY_CACHE_MB: i64 = 500;
@@ -42,6 +44,8 @@ pub struct Preferences {
     pub hide_empty_splits: bool,
     /// Show the right-hand pane (Recent Opens). On by default.
     pub show_right_pane: bool,
+    /// Right pane width in CSS pixels (the UI clamps it to fit the window).
+    pub right_pane_width: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +104,9 @@ impl AppState {
             Ok(Preferences {
                 hide_empty_splits: db::get_setting(c, KEY_HIDE_EMPTY_SPLITS)?.as_deref() == Some("1"),
                 show_right_pane: db::get_setting(c, KEY_SHOW_RIGHT_PANE)?.as_deref() != Some("0"),
+                right_pane_width: db::get_setting(c, KEY_RIGHT_PANE_WIDTH)?
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_RIGHT_PANE_WIDTH),
             })
         })
     }
@@ -108,7 +115,8 @@ impl AppState {
         let flag = |b: bool| if b { "1" } else { "0" };
         self.db.with(|c| {
             db::set_setting(c, KEY_HIDE_EMPTY_SPLITS, flag(p.hide_empty_splits))?;
-            db::set_setting(c, KEY_SHOW_RIGHT_PANE, flag(p.show_right_pane))
+            db::set_setting(c, KEY_SHOW_RIGHT_PANE, flag(p.show_right_pane))?;
+            db::set_setting(c, KEY_RIGHT_PANE_WIDTH, &p.right_pane_width.clamp(160, 2000).to_string())
         })
     }
 

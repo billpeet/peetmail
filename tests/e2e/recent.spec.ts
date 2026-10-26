@@ -49,3 +49,43 @@ test("\ toggles the pane, and both the choice and the history survive a reload",
   await expect(page.getByTestId("right-pane")).toBeVisible();
   await expect.poll(() => recentIds(page)).toEqual(["conv-plain"]);
 });
+
+test("the right pane resizes by dragging its edge, remembers the width, and resets on double-click", async ({ inbox: page }, testInfo) => {
+  const pane = page.getByTestId("right-pane");
+  const handle = page.getByTestId("pane-resize");
+  const width = async () => Number(await pane.getAttribute("data-width"));
+  expect(await width()).toBe(320);
+
+  // Drag the left edge 150px further left: the pane grows by 150.
+  const box = (await handle.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + 200;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - 75, y, { steps: 5 });
+  await page.mouse.move(x - 150, y, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(width).toBe(470);
+  expect(Math.round((await pane.boundingBox())!.width)).toBe(470);
+  await snap(page, testInfo, "wide-pane");
+
+  // Saved: still 470 after a reload.
+  await page.reload();
+  await expect(page.getByTestId("thread-row").first()).toBeVisible();
+  await expect.poll(width).toBe(470);
+
+  // Can't shrink below the minimum.
+  const box2 = (await handle.boundingBox())!;
+  await page.mouse.move(box2.x + 4, y);
+  await page.mouse.down();
+  await page.mouse.move(box2.x + 900, y, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(width).toBe(240);
+
+  // Keyboard: focus the handle, arrows widen/narrow; double-click resets.
+  await handle.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(width).toBe(256);
+  await handle.dblclick();
+  await expect.poll(width).toBe(320);
+});
