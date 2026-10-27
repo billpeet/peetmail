@@ -48,6 +48,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Tests format dates with the default locale (Node and WebView2 both follow the
+      # Windows region format) and were written on an en-AU, Sydney machine. Runners are
+      # en-US and UTC. Each later step is a new process, so it picks these up.
+      - name: Use the en-AU region and Sydney time zone
+        shell: pwsh
+        run: |
+          Set-Culture en-AU
+          Set-TimeZone -Id 'AUS Eastern Standard Time'
+          node -e "const o = Intl.DateTimeFormat().resolvedOptions(); console.log(o.locale, o.timeZone)"
+
       - name: Version is consistent
         run: pnpm version:check
 
