@@ -253,7 +253,6 @@ class MailStore {
     const seq = ++this.#listSeq;
     const folderForSplits = null; // split tabs count the unified inbox
     const { folderId, query, split } = this.listQuery;
-    const keep = this.current?.conversationId;
     const count = Math.max(PAGE, this.threads.length);
     const [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits, this.hiddenIds),
@@ -261,6 +260,9 @@ class MailStore {
       api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
+    // The selection as it is now, not when the refresh started: j/k pressed while it was in
+    // flight (a sync landing mid-navigation) must not be undone.
+    const keep = this.current?.conversationId;
     this.recent = recent;
     this.splits = splits;
     if (this.splitIndex >= splits.length) this.splitIndex = 0;
