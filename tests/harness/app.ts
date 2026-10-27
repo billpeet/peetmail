@@ -242,20 +242,26 @@ function webview2Diagnostics(profile: string): string {
 }
 
 export async function connect(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  // Playwright attaches to existing targets asynchronously, and the page may still be
-  // on about:blank while WebView2 navigates, so poll briefly.
+  // Playwright attaches to existing targets asynchronously, and the page may still be on
+  // about:blank while WebView2 navigates, so poll. page.url() is what Playwright last heard,
+  // though: attached at the wrong moment (seen on a loaded CI runner) it misses the
+  // navigation and says about:blank for good. A fresh attach reads the page as it is now.
   const isApp = (p: Page) => /tauri\.localhost|localhost:1420/.test(p.url());
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    const pages = browser.contexts().flatMap((c) => c.pages());
-    const page = pages.find(isApp);
-    if (page) return { browser, page };
-    await new Promise((r) => setTimeout(r, 100));
+  const ATTEMPTS = 3;
+  let seen: string[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const page = browser.contexts().flatMap((c) => c.pages()).find(isApp);
+      if (page) return { browser, page };
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    seen = browser.contexts().flatMap((c) => c.pages()).map((p) => p.url());
+    await browser.close().catch(() => {});
+    if (attempt < ATTEMPTS) console.warn(`[harness] app page not seen over CDP (pages: ${JSON.stringify(seen)}); attaching again`);
   }
-  const seen = browser.contexts().flatMap((c) => c.pages()).map((p) => p.url());
-  await browser.close().catch(() => {});
-  throw new Error(`PeetMail page not found over CDP (pages: ${JSON.stringify(seen)})`);
+  throw new Error(`PeetMail page not found over CDP after ${ATTEMPTS} attaches (pages: ${JSON.stringify(seen)})`);
 }
 
 export function killTree(pid: number | undefined) {
