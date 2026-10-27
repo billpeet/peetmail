@@ -36,6 +36,8 @@ And these **variables** (Settings → Secrets and variables → Actions → Vari
 
 And for telemetry, one more secret: `PEETMAIL_OTLP_HEADERS`, the gateway's auth header(s) as `key=value,key=value` (e.g. `Authorization=Basic …`). It's compiled into the app, so use a write-only token that's PeetMail's own.
 
+The gateway is `https://otlp.biap.cc`: Traefik basic auth in front of Alloy's OTLP receiver, in the `futura-observability` compose app in Dokploy on futura. PeetMail's user is `peetmail`, appended to the `traefik.http.middlewares.futura-otlp-auth.basicauth.users` label after the env-provided `polycode` user (the env is encrypted by Dokploy; the compose is not). To rotate: generate a new password, `htpasswd -nBi -C 12 peetmail` on futura, replace the `peetmail:` entry in that label in Dokploy's compose (dollars doubled), redeploy, and `gh secret set PEETMAIL_OTLP_HEADERS` with `Authorization=Basic <base64 of peetmail:password>`. Released builds keep the old credential until they update, so rotate only together with a release.
+
 ### The updater signing key
 
 The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); every installed copy only accepts updates signed by the private half. The key was generated with:
