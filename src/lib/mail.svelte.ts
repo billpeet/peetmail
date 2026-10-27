@@ -395,8 +395,10 @@ class MailStore {
     this.#navSeq++;
     this.view = "list";
     this.pinned = null;
-    // In the list layout the invite is no longer on screen.
+    // In the list layout the invite is no longer on screen. An invite lookup still in
+    // flight (e.g. from the refresh after an RSVP) mustn't bring it back afterwards.
     if (!this.previewing) {
+      this.#inviteSeq++;
       this.invite = null;
       calendar.clearContext();
     }

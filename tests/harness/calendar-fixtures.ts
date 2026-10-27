@@ -95,7 +95,7 @@ export function makeEvent(s: Spec): GraphEvent {
     isOrganizer,
     isCancelled: false,
     showAs: s.showAs ?? "busy",
-    onlineMeeting: s.join ? { joinUrl: `https://teams.example/join/${s.id}` } : null,
+    onlineMeeting: s.join ? { joinUrl: `https://teams.microsoft.com/l/meetup-join/${s.id}` } : null,
     webLink: `https://outlook.office.com/calendar/item/${s.id}`,
     bodyPreview: "",
     type: s.type ?? (s.seriesMasterId ? "occurrence" : "singleInstance"),
@@ -167,8 +167,14 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
     id: "evt-invite", subject: "Design review", start: localAt(0, 11, 0, now), end: localAt(0, 12, 0, now),
     location: "Room 4 / Teams", organizer: { name: "Calendar", address: "calendar-noreply@contoso.com" },
     attendees: [ME, SAM, PRIYA], response: "notResponded", join: true, showAs: "tentative",
-    body: '<p>Agenda:</p><ul><li>New onboarding mockups</li><li>Open questions</li></ul><p><a href="https://teams.example/join/evt-invite">Join on Teams</a></p>',
+    body: '<p>Agenda:</p><ul><li>New onboarding mockups</li><li>Open questions</li></ul><p><a href="https://teams.microsoft.com/l/meetup-join/evt-invite">Join on Teams</a></p>',
     reminder: 15, categories: ["Design"],
+  }));
+  // On right now, with its Teams link only in the location (an external invite, like the
+  // reported "National Helpdesk Team Meeting"): the app must find the join link itself.
+  events.push(makeEvent({
+    id: "evt-helpdesk", subject: "Helpdesk team meeting", start: new Date(now.getTime() - 5 * 60_000), end: new Date(now.getTime() + 25 * 60_000),
+    location: "https://teams.microsoft.com/meet/497178154226638?p=q8OarGuMU3YgdVWxcF", organizer: SAM, attendees: [ME],
   }));
   // All hands: a long guest list (collapsed in the popup).
   events.push(makeEvent({

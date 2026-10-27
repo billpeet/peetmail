@@ -4,6 +4,7 @@
   import { onMount, tick } from "svelte";
   import { ChevronLeft, ChevronRight, Plus } from "@lucide/svelte";
   import { mail } from "$lib/mail.svelte";
+  import JoinChip from "./JoinChip.svelte";
   import { calendar, eventTimes } from "$lib/calendar.svelte";
   import { layoutDay } from "$lib/eventLayout";
   import { eventTone, TONE_CLASSES } from "$lib/eventTone";
@@ -116,6 +117,7 @@
             style:left="calc({(p.col / p.cols) * 100}% + 1px)"
             style:width="calc({100 / p.cols}% - 2px)"
           >
+            <JoinChip {e} {now} testid="cal-join" compact={px < 16} />
             <span class="block truncate font-semibold">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject || "(no title)"}</span>
             <!-- Extra lines only when there's room for the whole line. -->
             {#if px >= 36}

@@ -148,6 +148,8 @@ export type CalendarEvent = {
   joinUrl: string | null;
   webLink: string | null;
   preview: string;
+  /** "Microsoft Teams", "Zoom", "Google Meet", "Webex" or "Online meeting" (with joinUrl). */
+  joinProvider: string | null;
   /** singleInstance | occurrence | exception */
   eventType: string;
   /** The series an occurrence belongs to. */
@@ -167,6 +169,9 @@ export type EventDetail = {
   sensitivity: string;
   categories: string[];
   importance: string;
+  /** A join link found in the description (when the event has none). */
+  joinUrl: string | null;
+  joinProvider: string | null;
 };
 
 export type Bootstrap = {
@@ -225,6 +230,8 @@ export const api = {
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   quitApp: () => invoke<void>("quit_app"),
+  /** Opens a link in the browser / mail app (recorded instead in tests). */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
   setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),

@@ -321,6 +321,24 @@ pub fn debug_panic() -> Result<()> {
     Ok(())
 }
 
+/// Opens a link (http, https, mailto) in the default browser or mail app. Every link the
+/// UI opens comes through here, so tests (PEETMAIL_OPEN_LOG, debug builds only) record it
+/// in a file instead of popping windows open on the test machine.
+#[tauri::command]
+pub fn open_external(app: AppHandle, url: String) -> Result<()> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")) {
+        return Err(AppError::Other(format!("won't open {url}")));
+    }
+    if let Some(path) = crate::testenv::get("PEETMAIL_OPEN_LOG") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(f, "{url}")?;
+        return Ok(());
+    }
+    app.opener().open_url(&url, None::<&str>).map_err(|e| AppError::Other(format!("couldn't open the link: {e}")))
+}
+
 /// Really quits (closing the window only hides it to the tray).
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {

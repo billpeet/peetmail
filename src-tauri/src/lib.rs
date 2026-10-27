@@ -9,6 +9,7 @@ mod gmail;
 mod gmail_send;
 mod graph;
 mod mail;
+mod meeting_links;
 mod notify;
 mod outbox;
 mod query;
@@ -240,6 +241,7 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::quit_app,
+            commands::open_external,
             commands::debug_panic,
             commands::set_snippets,
             commands::cancel_send,

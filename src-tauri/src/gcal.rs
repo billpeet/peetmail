@@ -303,6 +303,8 @@ pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) ->
         .to_string(),
         categories: vec![],
         importance: "normal".into(),
+        join_url: None,
+        join_provider: None,
     })
 }
 

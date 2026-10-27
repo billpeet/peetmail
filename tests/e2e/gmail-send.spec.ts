@@ -100,6 +100,7 @@ test("a forward carries the original's attachments and inline image, in a new th
 test("a reply to Latin-1 mail quotes it correctly in UTF-8", async ({ inbox: page, gmail }) => {
   await addGmail(page);
   await selectWithKeys(page, "g-thread-latin");
+  await expect(selectedRow(page)).toHaveAttribute("data-conversation-id", "g-thread-latin");
   await page.keyboard.press("r");
   await expect(page.getByTestId("compose-body")).toBeFocused();
   await page.keyboard.type("Obrigado!");

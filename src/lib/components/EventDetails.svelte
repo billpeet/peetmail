@@ -4,7 +4,6 @@
   // fetched when it opens. Occurrences of a series say so up front, and answering one asks
   // whether you mean just it or the whole series. Esc or the backdrop closes it.
   import { onMount } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { Bell, CalendarClock, Check, CircleHelp, Clock, ExternalLink, Lock, MapPin, Repeat, Tag, Users, Video, X } from "@lucide/svelte";
   import { api, type Attendee, type EventDetail, type Rsvp } from "$lib/api";
   import { calendar, eventTimes } from "$lib/calendar.svelte";
@@ -65,9 +64,12 @@
     return `${m} minutes before`;
   });
 
-  const joinLabel = $derived(
-    !e?.joinUrl ? "" : e.joinUrl.includes("meet.google.com") ? "Google Meet" : e.joinUrl.includes("teams") ? "Microsoft Teams meeting" : "Online meeting",
-  );
+  /** The event's join link, or one found in its description. */
+  const joinUrl = $derived(e?.joinUrl ?? detail?.joinUrl ?? null);
+  const joinLabel = $derived.by(() => {
+    const p = e?.joinUrl ? e.joinProvider : detail?.joinProvider;
+    return !joinUrl ? "" : p === "Google Meet" ? "Google Meet" : p && p !== "Online meeting" ? `${p} meeting` : "Online meeting";
+  });
 
   const SHOW_AS: Record<string, string> = { free: "Free", tentative: "Tentative", busy: "Busy", oof: "Out of office", workingElsewhere: "Working elsewhere" };
 
@@ -139,7 +141,7 @@
       { id: "event.decline", keys: "n", label: "Decline", group: "Event", when: () => open() && canRespond, run: () => answer("decline") },
       { id: "event.scope.one", keys: "o", label: "Answer this occurrence", group: "Event", when: () => open() && pending !== null, run: () => pending && send(pending, false) },
       { id: "event.scope.series", keys: "s", label: "Answer the whole series", group: "Event", when: () => open() && pending !== null, run: () => pending && send(pending, true) },
-      { id: "event.join", keys: "j", label: "Join online meeting", group: "Event", when: () => open() && !!e?.joinUrl, run: () => e?.joinUrl && openUrl(e.joinUrl) },
+      { id: "event.join", keys: "j", label: "Join online meeting", group: "Event", when: () => open() && !!joinUrl, run: () => joinUrl && api.openExternal(joinUrl) },
     ]);
   });
 </script>
@@ -187,10 +189,10 @@
           {#if e.location}
             <div class="flex gap-3"><MapPin size={16} class="mt-0.5 shrink-0 text-ink-500" /><span data-testid="event-location" class="select-text">{e.location}</span></div>
           {/if}
-          {#if e.joinUrl}
+          {#if joinUrl}
             <div class="flex gap-3">
               <Video size={16} class="mt-0.5 shrink-0 text-ink-500" />
-              <button data-testid="event-join-link" onclick={() => openUrl(e.joinUrl!)} class="truncate text-left text-accent hover:underline">
+              <button data-testid="event-join-link" onclick={() => api.openExternal(joinUrl!)} class="truncate text-left text-accent hover:underline">
                 {joinLabel}
               </button>
             </div>
@@ -284,13 +286,13 @@
       </div>
 
       <div data-testid="event-actions" class="flex shrink-0 gap-2 border-t border-ink-800 p-5 pt-4">
-        {#if e.joinUrl}
-          <button data-testid="event-join" onclick={() => openUrl(e.joinUrl!)} class="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome">
+        {#if joinUrl}
+          <button data-testid="event-join" onclick={() => api.openExternal(joinUrl!)} class="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome">
             <Video size={15} /> Join <kbd class="opacity-70">j</kbd>
           </button>
         {/if}
         {#if e.webLink}
-          <button data-testid="event-open" onclick={() => openUrl(e.webLink!)} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
+          <button data-testid="event-open" onclick={() => api.openExternal(e.webLink!)} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
             <ExternalLink size={15} /> {account?.provider === "google" ? "Open in Google Calendar" : "Open in Outlook"}
           </button>
         {/if}

@@ -132,6 +132,8 @@ export function testEnv({
     // Toasts go to a file the tests read; "start with Windows" never touches the registry.
     PEETMAIL_NOTIFY_LOG: join(dataDir, "notifications.jsonl"),
     PEETMAIL_FAKE_AUTOSTART: "1",
+    // Links the app opens are written here instead of opening a browser on this machine.
+    PEETMAIL_OPEN_LOG: join(dataDir, "opened.txt"),
     PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),

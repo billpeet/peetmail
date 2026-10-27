@@ -50,7 +50,11 @@ pub struct Event {
     pub is_organizer: bool,
     pub is_cancelled: bool,
     pub show_as: Option<String>,
+    /// The online meeting's join link: the one the service marked, else one found in the
+    /// location or preview (a Teams link pasted into the location, external invites).
     pub join_url: Option<String>,
+    /// "Microsoft Teams", "Zoom", "Google Meet", "Webex" or "Online meeting".
+    pub join_provider: Option<String>,
     pub web_link: Option<String>,
     pub preview: String,
     /// singleInstance | occurrence | exception (series masters are never listed).
@@ -212,6 +216,14 @@ const EVENT_COLS: &str = "id, account_id, remote_id, subject, start_at, end_at, 
 
 fn event_from_row(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     let attendees: String = r.get(10)?;
+    let location: Option<String> = r.get(7)?;
+    let preview: String = r.get(17)?;
+    // Found at read time, so events synced before this existed get it too.
+    let join_url = r
+        .get::<_, Option<String>>(15)?
+        .or_else(|| location.as_deref().and_then(crate::meeting_links::find))
+        .or_else(|| crate::meeting_links::find(&preview));
+    let join_provider = join_url.as_deref().map(|u| crate::meeting_links::provider_name(u).to_string());
     Ok(Event {
         id: r.get(0)?,
         account_id: r.get(1)?,
@@ -220,7 +232,7 @@ fn event_from_row(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         start_at: r.get(4)?,
         end_at: r.get(5)?,
         is_all_day: r.get(6)?,
-        location: r.get(7)?,
+        location,
         organizer_name: r.get(8)?,
         organizer_address: r.get(9)?,
         attendees: serde_json::from_str(&attendees).unwrap_or_default(),
@@ -228,9 +240,10 @@ fn event_from_row(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         is_organizer: r.get(12)?,
         is_cancelled: r.get(13)?,
         show_as: r.get(14)?,
-        join_url: r.get(15)?,
+        join_url,
+        join_provider,
         web_link: r.get(16)?,
-        preview: r.get(17)?,
+        preview,
         event_type: r.get(18)?,
         series_master_id: r.get(19)?,
     })
@@ -465,11 +478,23 @@ pub struct EventDetail {
     pub categories: Vec<String>,
     /// low | normal | high
     pub importance: String,
+    /// A join link found in the description (when the event itself has none).
+    pub join_url: Option<String>,
+    pub join_provider: Option<String>,
+}
+
+impl EventDetail {
+    /// Fills in the join link from the description.
+    fn with_join_from_body(mut self) -> Self {
+        self.join_url = crate::meeting_links::find(&self.body_html);
+        self.join_provider = self.join_url.as_deref().map(|u| crate::meeting_links::provider_name(u).to_string());
+        self
+    }
 }
 
 pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) -> Result<EventDetail> {
     if state.db.with(|c| crate::db::account_provider(c, account_id))? == "google" {
-        return crate::gcal::event_detail(state, account_id, remote_id).await;
+        return Ok(crate::gcal::event_detail(state, account_id, remote_id).await?.with_join_from_body());
     }
     let get = |id: &str, select: &str| {
         let url = format!("{}/me/events/{id}?$select={select}", graph::base());
@@ -500,7 +525,10 @@ pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) ->
         sensitivity: v["sensitivity"].as_str().unwrap_or("normal").to_string(),
         categories: v["categories"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect(),
         importance: v["importance"].as_str().unwrap_or("normal").to_string(),
-    })
+        join_url: None,
+        join_provider: None,
+    }
+    .with_join_from_body())
 }
 
 // ---------- invites ----------
