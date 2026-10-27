@@ -183,12 +183,48 @@ function tail(path: string, lines = 30): string {
 function launchDiagnostics(dataDir: string, logPath: string, proc: ReturnType<typeof spawnType>): string {
   const logsDir = join(dataDir, "logs");
   const appLogs = existsSync(logsDir) ? readdirSync(logsDir).map((f) => `--- ${f}\n${tail(join(logsDir, f))}`).join("\n") : "(no logs dir)";
+  const profile = join(dataDir, "webview2");
   return [
     `exe: ${EXE} (exists: ${existsSync(EXE)}), pid ${proc.pid}, still running: ${proc.exitCode === null}`,
-    `WebView2 profile created: ${existsSync(join(dataDir, "webview2"))}`,
+    `WebView2 profile created: ${existsSync(profile)}`,
     `--- stdout/stderr (${logPath})\n${tail(logPath)}`,
     appLogs,
+    webview2Diagnostics(profile),
   ].join("\n");
+}
+
+/**
+ * Whether WebView2 got (and honoured) --remote-debugging-port: the profile's contents, the
+ * port file it writes when debugging is on, the browser processes' command lines, and any
+ * Edge/WebView2 policies (a machine policy can switch remote debugging off).
+ */
+function webview2Diagnostics(profile: string): string {
+  const out: string[] = [];
+  const list = (dir: string, depth: number, indent = ""): void => {
+    if (depth < 0 || !existsSync(dir)) return;
+    for (const f of readdirSync(dir).slice(0, 25)) {
+      out.push(`${indent}${f}`);
+      try {
+        if (statSync(join(dir, f)).isDirectory()) list(join(dir, f), depth - 1, indent + "  ");
+      } catch {}
+    }
+  };
+  out.push("--- WebView2 profile");
+  list(profile, 1);
+  const portFile = join(profile, "EBWebView", "DevToolsActivePort");
+  out.push(`DevToolsActivePort: ${existsSync(portFile) ? readFileSync(portFile, "utf8").replace(/\s+/g, " ") : "(none: debugging not on)"}`);
+  const ps = (cmd: string) =>
+    spawnSync("powershell", ["-NoProfile", "-Command", cmd], { encoding: "utf8", timeout: 15_000 }).stdout?.trim() || "(none)";
+  const name = profile.replace(/'/g, "''");
+  out.push(
+    "--- msedgewebview2 processes for this profile",
+    ps(
+      `Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*${name}*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.CommandLine.Substring(0, [Math]::Min(1500, $_.CommandLine.Length)) }`,
+    ),
+    "--- Edge / WebView2 policies",
+    ps(`Get-ChildItem -Recurse 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge','HKCU:\\SOFTWARE\\Policies\\Microsoft\\Edge' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; ($_ | Get-ItemProperty | Out-String).Trim() }`),
+  );
+  return out.join("\n");
 }
 
 export async function connect(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
