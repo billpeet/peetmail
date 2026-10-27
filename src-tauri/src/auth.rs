@@ -35,13 +35,37 @@ const GOOGLE_TOKEN: &str = "https://oauth2.googleapis.com/token";
 pub const GOOGLE_SCOPES: &str =
     "openid email profile https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events";
 
+/// Optional Microsoft permissions an account can grant later (Settings or the event editor),
+/// on top of SCOPES. User.ReadBasic.All lets findRooms list the tenant's rooms where plain
+/// User.Read isn't enough; users can consent to it themselves.
+pub const SCOPE_DIRECTORY: &str = "User.ReadBasic.All";
+/// The Places API's room list: needs an admin's approval.
+pub const SCOPE_PLACES: &str = "Place.Read.All";
+
+/// `base` plus `extra`, without repeats (scopes are case-insensitive).
+pub fn merge_scopes(base: &str, extra: &[&str]) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for s in base.split_whitespace().chain(extra.iter().flat_map(|e| e.split_whitespace())) {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(s)) {
+            out.push(s);
+        }
+    }
+    out.join(" ")
+}
+
+pub fn has_scope(scopes: &str, scope: &str) -> bool {
+    scopes.split_whitespace().any(|s| s.eq_ignore_ascii_case(scope) || s.rsplit('/').next().is_some_and(|t| t.eq_ignore_ascii_case(scope)))
+}
+
 /// Where and how one identity provider signs in.
 pub struct OAuthConfig {
     authorize_url: String,
     token_url: String,
     client_id: String,
     client_secret: Option<String>,
-    scopes: &'static str,
+    scopes: String,
+    /// Pre-fills the account picker (reconnecting a known account).
+    login_hint: Option<String>,
     /// Extra authorize parameters.
     extra: &'static [(&'static str, &'static str)],
     /// Loopback host for the redirect (Entra wants "localhost", Google "127.0.0.1").
@@ -57,7 +81,8 @@ impl OAuthConfig {
             token_url: format!("{}/token", *AUTHORITY),
             client_id: client_id.into(),
             client_secret: None,
-            scopes: SCOPES,
+            scopes: SCOPES.into(),
+            login_hint: None,
             extra: &[("response_mode", "query"), ("prompt", "select_account")],
             redirect_host: "localhost",
             scope_on_token: true,
@@ -71,12 +96,30 @@ impl OAuthConfig {
             token_url: base.as_ref().map(|b| format!("{b}/token")).unwrap_or_else(|| GOOGLE_TOKEN.into()),
             client_id: client_id.into(),
             client_secret: client_secret.filter(|s| !s.is_empty()).map(String::from),
-            scopes: GOOGLE_SCOPES,
+            scopes: GOOGLE_SCOPES.into(),
+            login_hint: None,
             // offline + consent: always hand back a refresh token, even on a repeat sign-in.
             extra: &[("access_type", "offline"), ("prompt", "consent select_account")],
             redirect_host: "127.0.0.1",
             scope_on_token: false,
         }
+    }
+}
+
+impl OAuthConfig {
+    pub fn scopes(&self) -> &str {
+        &self.scopes
+    }
+
+    /// Signs in with these scopes instead of the defaults (the defaults plus extras granted later).
+    pub fn with_scopes(mut self, scopes: String) -> Self {
+        self.scopes = scopes;
+        self
+    }
+
+    pub fn with_login_hint(mut self, email: &str) -> Self {
+        self.login_hint = Some(email.into());
+        self
     }
 }
 
@@ -88,6 +131,11 @@ pub struct TokenSet {
     pub refresh_token: String,
     /// Unix seconds.
     pub expires_at: i64,
+    /// What was asked for (and consented to) at sign-in. Entra wants the scopes again on every
+    /// refresh, and asking for one never granted fails it, so each account keeps its own.
+    /// None: signed in before this existed, i.e. the provider's defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<String>,
 }
 
 impl TokenSet {
@@ -150,12 +198,15 @@ pub async fn sign_in(
         ("client_id", &cfg.client_id),
         ("response_type", "code"),
         ("redirect_uri", &redirect_uri),
-        ("scope", cfg.scopes),
+        ("scope", &cfg.scopes),
         ("state", &state),
         ("code_challenge", &challenge),
         ("code_challenge_method", "S256"),
     ];
     params.extend(cfg.extra.iter().copied());
+    if let Some(hint) = &cfg.login_hint {
+        params.push(("login_hint", hint));
+    }
     let auth_url = Url::parse_with_params(&cfg.authorize_url, &params).map_err(|e| AppError::Auth(e.to_string()))?;
 
     if crate::testenv::flag("PEETMAIL_AUTH_AUTOFOLLOW") {
@@ -189,22 +240,25 @@ pub async fn sign_in(
         ("redirect_uri", &redirect_uri),
         ("code_verifier", &verifier),
     ];
-    token_request(http, cfg, &mut form, None).await
+    token_request(http, cfg, &cfg.scopes, &mut form, None).await
 }
 
-pub async fn refresh(http: &reqwest::Client, cfg: &OAuthConfig, refresh_token: &str) -> Result<TokenSet> {
-    let mut form = vec![("client_id", cfg.client_id.as_str()), ("grant_type", "refresh_token"), ("refresh_token", refresh_token)];
-    Ok(token_request(http, cfg, &mut form, Some(refresh_token)).await?.0)
+/// New tokens for the same scopes the account signed in with.
+pub async fn refresh(http: &reqwest::Client, cfg: &OAuthConfig, current: &TokenSet) -> Result<TokenSet> {
+    let scopes = current.scopes.clone().unwrap_or_else(|| cfg.scopes.clone());
+    let mut form = vec![("client_id", cfg.client_id.as_str()), ("grant_type", "refresh_token"), ("refresh_token", current.refresh_token.as_str())];
+    Ok(token_request(http, cfg, &scopes, &mut form, Some(&current.refresh_token)).await?.0)
 }
 
 async fn token_request<'a>(
     http: &reqwest::Client,
     cfg: &'a OAuthConfig,
+    scopes: &'a str,
     form: &mut Vec<(&'a str, &'a str)>,
     old_refresh: Option<&str>,
 ) -> Result<(TokenSet, Option<String>)> {
     if cfg.scope_on_token {
-        form.push(("scope", cfg.scopes));
+        form.push(("scope", scopes));
     }
     if let Some(secret) = &cfg.client_secret {
         form.push(("client_secret", secret));
@@ -225,7 +279,7 @@ async fn token_request<'a>(
         .or_else(|| old_refresh.map(String::from))
         .ok_or_else(|| AppError::Auth("no refresh token returned (is offline_access granted?)".into()))?;
     Ok((
-        TokenSet { access_token: t.access_token, refresh_token, expires_at: chrono::Utc::now().timestamp() + t.expires_in },
+        TokenSet { access_token: t.access_token, refresh_token, expires_at: chrono::Utc::now().timestamp() + t.expires_in, scopes: Some(scopes.to_string()) },
         t.id_token,
     ))
 }
@@ -280,6 +334,16 @@ fn parse_redirect(request: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scopes_merge_without_repeats_and_match_short_or_full_names() {
+        assert_eq!(merge_scopes("openid User.Read", &["user.read", "User.ReadBasic.All"]), "openid User.Read User.ReadBasic.All");
+        assert!(has_scope("openid https://graph.microsoft.com/User.ReadBasic.All", SCOPE_DIRECTORY));
+        assert!(!has_scope("openid User.Read", SCOPE_DIRECTORY));
+        // Tokens stored before per-account scopes still load.
+        let old: TokenSet = serde_json::from_str(r#"{"access_token":"a","refresh_token":"r","expires_at":1}"#).unwrap();
+        assert_eq!(old.scopes, None);
+    }
 
     #[test]
     fn pkce_matches_rfc7636_example() {

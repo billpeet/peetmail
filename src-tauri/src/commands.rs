@@ -130,6 +130,47 @@ pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Optio
     Ok(account)
 }
 
+/// Signs a known account in again in place: new tokens, optionally with extra permissions
+/// (`add_scopes`), keeping its mail, settings and calendar. Used for an expired sign-in and
+/// for granting a permission a feature needs (rooms). It must be the same account.
+#[tauri::command]
+pub async fn reconnect_account(app: AppHandle, state: State<'_, AppState>, account_id: i64, add_scopes: Option<Vec<String>>) -> Result<Account> {
+    let account = state
+        .db
+        .with(|c| db::list_accounts(c))?
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| AppError::Other("no such account".into()))?;
+    let base = state.oauth_for(&account.provider)?;
+    // Keep what the account already granted; a stale or missing token just means the defaults.
+    let had = state.granted_scopes(account_id).await.unwrap_or_else(|_| base.scopes().to_string());
+    let extra: Vec<&str> = add_scopes.iter().flatten().map(String::as_str).collect();
+    let cfg = base.with_scopes(auth::merge_scopes(&had, &extra)).with_login_hint(&account.email);
+
+    cancel_pending_sign_in(&state);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    *state.sign_in_cancel.lock().expect("cancel mutex") = Some(tx);
+    let (tokens, _) = auth::sign_in(&app, &state.http, &cfg, rx).await?;
+    let email = if account.provider == "google" {
+        crate::gmail::fetch_profile(&state.http, &tokens.access_token).await?
+    } else {
+        mail::fetch_profile(&state.http, &tokens.access_token).await?.0
+    };
+    if !email.eq_ignore_ascii_case(&account.email) {
+        return Err(AppError::Auth(format!("You signed in as {email}, not {}. Try again and choose {}.", account.email, account.email)));
+    }
+    let blob = AppState::store_tokens_blob(&tokens)?;
+    state.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
+    state.remember_tokens(account_id, tokens).await;
+    crate::rooms::forget(account_id);
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = mail::sync_all(&app2).await;
+    });
+    Ok(Account { signed_in: true, ..account })
+}
+
 #[tauri::command]
 pub async fn sign_out(state: State<'_, AppState>, account_id: i64) -> Result<()> {
     state.forget_tokens(account_id).await;
@@ -735,7 +776,7 @@ pub fn delete_calendar_event(
 
 /// Meeting rooms of a Microsoft 365 account (location suggestions); none for others.
 #[tauri::command]
-pub async fn list_rooms(state: State<'_, AppState>, account_id: i64) -> Result<Vec<crate::rooms::Room>> {
+pub async fn list_rooms(state: State<'_, AppState>, account_id: i64) -> Result<crate::rooms::RoomList> {
     crate::rooms::list(&state, account_id).await
 }
 

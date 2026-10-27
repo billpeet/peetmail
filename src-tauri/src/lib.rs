@@ -236,6 +236,7 @@ pub fn run() {
             commands::event_detail,
             commands::event_for_edit,
             commands::list_rooms,
+            commands::reconnect_account,
             commands::update_event,
             commands::delete_calendar_event,
             commands::create_event,

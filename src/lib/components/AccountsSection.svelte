@@ -20,6 +20,22 @@
     }
   }
 
+  let reconnecting = $state<number | null>(null);
+  /** Sign in again in place: fixes an expired sign-in without removing the account or its mail. */
+  async function reconnect(id: number) {
+    reconnecting = id;
+    error = null;
+    try {
+      await api.reconnectAccount(id);
+      await mail.init();
+    } catch (err) {
+      const msg = String(err);
+      if (!msg.endsWith("cancelled")) error = msg;
+    } finally {
+      reconnecting = null;
+    }
+  }
+
   async function signOut(id: number) {
     try {
       await api.signOut(id);
@@ -42,8 +58,22 @@
           {#if a.displayName}<span class="text-ink-500"> · {a.displayName}</span>{/if}
           {#if !a.signedIn}<span class="text-amber-300"> · signed out</span>{/if}
         </span>
-        {#if a.signedIn}
-          <button data-testid="account-signout" onclick={() => signOut(a.id)} class="text-xs text-ink-500 hover:text-red-300">Sign out</button>
+        {#if reconnecting === a.id}
+          <span data-testid="account-reconnecting" class="text-xs text-ink-300">Finish in your browser…</span>
+          <button onclick={() => api.cancelSignIn()} class="text-xs text-ink-500 hover:text-ink-100">Cancel</button>
+        {:else}
+          <button
+            data-testid="account-reconnect"
+            onclick={() => reconnect(a.id)}
+            disabled={reconnecting !== null || busy}
+            title="Sign in to this account again, keeping its mail"
+            class={["text-xs disabled:opacity-40", a.signedIn ? "text-ink-500 hover:text-ink-100" : "text-amber-300 hover:text-amber-200"]}
+          >
+            {a.signedIn ? "Reconnect" : "Sign in again"}
+          </button>
+          {#if a.signedIn}
+            <button data-testid="account-signout" onclick={() => signOut(a.id)} class="text-xs text-ink-500 hover:text-red-300">Sign out</button>
+          {/if}
         {/if}
       </li>
     {/each}
@@ -69,7 +99,7 @@
     {/if}
   </div>
   <p class="text-xs text-ink-500">
-    All accounts share one inbox. Signing out removes that account's cached mail from this PC. Use <code>account:work</code> in search or a split to
+    All accounts share one inbox. Reconnect signs in again without losing anything (for an expired sign-in or a new permission). Signing out removes that account's cached mail from this PC. Use <code>account:work</code> in search or a split to
     see one account.
   </p>
 </div>

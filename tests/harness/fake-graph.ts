@@ -52,6 +52,10 @@ type Reply = (status: number, body: Json | string, headers?: Record<string, stri
 export type RequestRecord = { method: string; path: string; query: string; status: number; at: number };
 
 export type FakeConfig = {
+  /** findRooms is refused unless the token was granted this scope (like some real tenants). */
+  roomsNeedScope?: string;
+  /** Scopes the user can't consent to (admin approval): asking for one comes back access_denied. */
+  denyScopes?: string[];
   /** Return 400 for the delta `$filter`, like a tenant that doesn't support it. */
   rejectDeltaFilter: boolean;
   /** Next delta-link request returns 410 SyncStateNotFound (one-shot). */
@@ -92,8 +96,12 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     seq: 0,
     changes: [] as Change[],
     sessions: new Map<string, Session>(),
-    codes: new Map<string, { challenge: string; redirectUri: string }>(),
+    codes: new Map<string, { challenge: string; redirectUri: string; scopes: string[] }>(),
     accessTokens: new Map<string, number>(), // token -> expiresAt (ms)
+    /** What each access and refresh token was granted (lowercase). */
+    tokenScopes: new Map<string, string[]>(),
+    /** The query of each sign-in page opened (login_hint, scope...). */
+    authorizations: [] as Record<string, string>[],
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
     config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
@@ -193,8 +201,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       }
       const code = prefix + b64url(randomBytes(16));
       const redirectUri = q.get("redirect_uri") ?? "";
-      state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri });
+      const scopes = (q.get("scope") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+      state.authorizations.push(Object.fromEntries(q));
       const back = new URL(redirectUri);
+      const denied = (state.config.denyScopes ?? []).find((s) => scopes.includes(s.toLowerCase()));
+      if (denied) {
+        back.searchParams.set("error", "access_denied");
+        back.searchParams.set("error_description", `AADSTS90094: Admin approval required for ${denied}.`);
+        back.searchParams.set("state", q.get("state") ?? "");
+        return reply(302, "", { Location: back.toString() });
+      }
+      state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri, scopes });
       back.searchParams.set("code", code);
       back.searchParams.set("state", q.get("state") ?? "");
       return reply(302, "", { Location: back.toString() });
@@ -210,23 +227,32 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         if (entry.redirectUri !== f.redirect_uri) return reply(400, { error: "invalid_grant", error_description: "redirect_uri mismatch" });
         const expected = b64url(createHash("sha256").update(f.code_verifier ?? "").digest());
         if (expected !== entry.challenge) return reply(400, { error: "invalid_grant", error_description: "PKCE verification failed" });
-        return reply(200, issueTokens());
+        return reply(200, issueTokens(entry.scopes));
       }
       if (f.grant_type === "refresh_token") {
         if (!state.refreshTokens.has(f.refresh_token)) return reply(400, { error: "invalid_grant", error_description: "refresh token revoked" });
+        // Like Entra: a refresh may not ask for anything the user never consented to.
+        const granted = state.tokenScopes.get(f.refresh_token) ?? [];
+        const asked = (f.scope ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+        const missing = asked.filter((s: string) => !granted.includes(s));
+        if (granted.length && missing.length) {
+          return reply(400, { error: "invalid_grant", error_description: `AADSTS65001: The user or administrator has not consented to use the application (${missing.join(" ")}).` });
+        }
         state.refreshTokens.delete(f.refresh_token); // rotate, like Entra
-        return reply(200, issueTokens());
+        return reply(200, issueTokens(granted));
       }
       return reply(400, { error: "unsupported_grant_type" });
     }
     reply(404, { error: "not_found" });
   }
 
-  function issueTokens() {
+  function issueTokens(scopes: string[]) {
     const access = `${prefix}at-${b64url(randomBytes(12))}`;
     const refresh = `${prefix}rt-${b64url(randomBytes(12))}`;
     state.accessTokens.set(access, Date.now() + state.config.tokenTtl * 1000);
     state.refreshTokens.add(refresh);
+    state.tokenScopes.set(access, scopes);
+    state.tokenScopes.set(refresh, scopes);
     return { token_type: "Bearer", access_token: access, refresh_token: refresh, expires_in: state.config.tokenTtl, scope: "Mail.ReadWrite" };
   }
 
@@ -245,12 +271,20 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (t) return graphError(reply, t.status, "TooManyRequests", "Throttled by test", { "Retry-After": String(t.retryAfter) });
 
     // Beta is served only where the app uses it (findRooms).
+    const granted = state.tokenScopes.get(token) ?? [];
     if (url.pathname.startsWith("/beta/")) {
-      if (url.pathname === "/beta/me/findRooms") return reply(200, { value: ROOMS.map((r) => ({ name: r.name, address: r.address })) });
+      if (url.pathname === "/beta/me/findRooms") {
+        const need = state.config.roomsNeedScope?.toLowerCase();
+        if (need && !granted.includes(need)) return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
+        return reply(200, { value: ROOMS.map((r) => ({ name: r.name, address: r.address })) });
+      }
       return graphError(reply, 400, "BadRequest", `Not in beta: ${url.pathname}`);
     }
-    // The Places API needs admin consent: like most tenants, this one hasn't granted it.
-    if (url.pathname === "/v1.0/places/microsoft.graph.room") return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
+    // The Places API needs Place.Read.All (admin consent).
+    if (url.pathname === "/v1.0/places/microsoft.graph.room") {
+      if (!granted.includes("place.read.all")) return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
+      return reply(200, { value: ROOMS.map((r) => ({ displayName: r.name, emailAddress: r.address })) });
+    }
     const p = url.pathname.replace(/^\/v1\.0/, "");
     const method = req.method ?? "GET";
     const isWrite = method !== "GET";

@@ -7,7 +7,7 @@
   // when there are unsaved changes).
   import { onMount } from "svelte";
   import { DoorOpen, Repeat, Users } from "@lucide/svelte";
-  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes, type Room } from "$lib/api";
+  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes, type Room, type RoomList } from "$lib/api";
   import { calendar, localDate } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
@@ -171,18 +171,56 @@
   // ----- rooms (Microsoft 365: suggested for the location, booked by inviting them) -----
   let locationEmail = $state<string | null>(null);
   let rooms = $state<Room[]>([]);
+  let roomsNeed = $state<RoomList["needs"]>(null);
   let roomOpen = $state(false);
   let roomActive = $state(0);
-  $effect(() => {
-    const id = accountId;
+  let granting = $state(false);
+  let grantError = $state<string | null>(null);
+  const NOT_NOW = "peetmail.roomsNotNow";
+  let notNow = $state<number[]>(JSON.parse(localStorage.getItem(NOT_NOW) ?? "[]"));
+
+  function loadRooms(id: number) {
     rooms = [];
+    roomsNeed = null;
     if (mail.accountOf(id)?.provider !== "microsoft") return;
     api.listRooms(id).then((r) => {
-      if (accountId === id) rooms = r;
+      if (accountId !== id) return;
+      rooms = r.rooms;
+      roomsNeed = r.needs;
     }, () => {});
-  });
+  }
+  $effect(() => loadRooms(accountId));
+
+  /** Reconnect the account with the permission rooms need (a browser sign-in), then look again. */
+  async function grantRooms() {
+    if (!roomsNeed) return;
+    granting = true;
+    grantError = null;
+    try {
+      await api.reconnectAccount(accountId, [roomsNeed.scope]);
+      loadRooms(accountId);
+      roomOpen = true;
+      queueMicrotask(() => locationInput?.focus());
+    } catch (e) {
+      const msg = String(e);
+      if (!msg.endsWith("cancelled")) grantError = /AADSTS90094|AADSTS65001|admin|access_denied/i.test(msg) ? "Your organisation needs an admin to approve this." : msg;
+    } finally {
+      granting = false;
+    }
+  }
+
+  function roomsNotNow() {
+    notNow = [...notNow, accountId];
+    localStorage.setItem(NOT_NOW, JSON.stringify(notNow));
+    roomOpen = false;
+  }
+  let locationInput = $state<HTMLInputElement>();
+  const showRoomPermission = $derived(!guestMode && !rooms.length && !!roomsNeed && !notNow.includes(accountId) && (roomOpen || granting || !!grantError));
+  /** Focusing shows every room; only what's typed since narrows them (not an existing location). */
+  let typedSinceFocus = $state(false);
+  let roomArrowed = $state(false);
   const roomMatches = $derived.by(() => {
-    const q = location.trim().toLowerCase();
+    const q = typedSinceFocus ? location.trim().toLowerCase() : "";
     // The room already chosen isn't suggested again.
     const list = rooms.filter((r) => r.address.toLowerCase() !== locationEmail?.toLowerCase());
     if (!q) return list.slice(0, 8);
@@ -205,6 +243,7 @@
   function onLocationInput() {
     armedDiscard = false;
     roomOpen = true;
+    typedSinceFocus = true;
     roomActive = 0;
     const room = attendees.find((a) => a.resource && a.address.toLowerCase() === locationEmail?.toLowerCase());
     if (locationEmail && location !== room?.name) {
@@ -224,10 +263,13 @@
 
   function locationKeys(e: KeyboardEvent) {
     if (!roomList.length) return;
+    // Enter/Tab pick only once you've typed or arrowed: tabbing past a location keeps it.
+    const engaged = typedSinceFocus || roomArrowed;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      roomActive = (roomActive + (e.key === "ArrowDown" ? 1 : roomList.length - 1)) % roomList.length;
-    } else if ((e.key === "Enter" && !e.ctrlKey) || (e.key === "Tab" && location.trim())) {
+      if (roomArrowed) roomActive = (roomActive + (e.key === "ArrowDown" ? 1 : roomList.length - 1)) % roomList.length;
+      roomArrowed = true;
+    } else if (engaged && ((e.key === "Enter" && !e.ctrlKey) || (e.key === "Tab" && location.trim()))) {
       e.preventDefault();
       pickRoom(roomList[roomActive] ?? roomList[0]);
     } else if (e.key === "Escape") {
@@ -487,9 +529,14 @@
             <div class="flex items-center gap-2">
               <input
                 data-testid="editor-location"
+                bind:this={locationInput}
                 bind:value={location}
                 oninput={onLocationInput}
-                onfocus={() => (roomOpen = true)}
+                onfocus={() => {
+                  roomOpen = true;
+                  typedSinceFocus = false;
+                  roomArrowed = false;
+                }}
                 onblur={() => setTimeout(() => (roomOpen = false), 150)}
                 onkeydown={locationKeys}
                 disabled={guestMode}
@@ -501,7 +548,30 @@
                 <span data-testid="editor-location-room" class="flex shrink-0 items-center gap-1 text-xs text-ink-500"><DoorOpen size={13} /> Room booked</span>
               {/if}
             </div>
-            {#if roomList.length}
+            {#if showRoomPermission && roomsNeed}
+              <!-- Some tenants only list rooms once the account grants a directory permission. -->
+              <div data-testid="editor-rooms-permission" role="presentation" onmousedown={(e) => e.preventDefault()} class="absolute top-full left-0 z-20 mt-1 w-[26rem] space-y-2 rounded-md border border-ink-700 bg-ink-900 p-3 text-sm shadow-xl">
+                <p class="flex items-center gap-2 text-ink-100"><DoorOpen size={14} class="shrink-0 text-ink-500" /> Room suggestions</p>
+                {#if grantError}
+                  <p data-testid="editor-rooms-error" class="text-xs text-red-300">{grantError}</p>
+                {:else if roomsNeed.admin}
+                  <p class="text-xs text-ink-300">Your organisation only shares its room list with apps an admin has approved. You can ask for approval from the sign-in page.</p>
+                {:else}
+                  <p class="text-xs text-ink-300">To list your organisation's rooms, PeetMail needs permission to read basic directory info. You'll sign in again in your browser; your mail stays as it is.</p>
+                {/if}
+                <div class="flex items-center gap-3">
+                  {#if granting}
+                    <span data-testid="editor-rooms-granting" class="text-xs text-ink-300">Finish in your browser…</span>
+                    <button type="button" onclick={() => api.cancelSignIn()} class="text-xs text-ink-500 hover:text-ink-100">Cancel</button>
+                  {:else}
+                    <button type="button" data-testid="editor-rooms-grant" onclick={grantRooms} class="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:brightness-110">
+                      {roomsNeed.admin ? "Request admin approval" : "Allow room suggestions"}
+                    </button>
+                    <button type="button" data-testid="editor-rooms-not-now" onclick={roomsNotNow} class="text-xs text-ink-500 hover:text-ink-100">Not now</button>
+                  {/if}
+                </div>
+              </div>
+            {:else if roomList.length}
               <ul data-testid="editor-room-suggestions" class="absolute top-full left-0 z-20 mt-1 max-h-72 w-96 overflow-y-auto rounded-md border border-ink-700 bg-ink-900 shadow-xl">
                 <li class="px-3 pt-1.5 pb-1 text-[11px] tracking-wide text-ink-500 uppercase">Rooms</li>
                 {#each roomList as r, i (r.address)}
@@ -514,7 +584,7 @@
                         e.preventDefault();
                         pickRoom(r);
                       }}
-                      class={["flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm", i === roomActive ? "bg-ink-800 text-ink-100" : "text-ink-300"]}
+                      class={["flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm", i === roomActive && (typedSinceFocus || roomArrowed) ? "bg-ink-800 text-ink-100" : "text-ink-300 hover:bg-ink-800/60"]}
                     >
                       <DoorOpen size={14} class="shrink-0 text-ink-500" />
                       <span class="min-w-0 flex-1 truncate">{r.name}</span>

@@ -278,3 +278,79 @@ test("an event with a booked room reopens showing it as a room", async ({ inbox:
   await expect(page.getByTestId("editor-location-room")).toBeVisible();
   await expect(page.locator("[data-testid=editor-attendee][data-room=true]")).toHaveAttribute("data-address", "boardroom@contoso.com");
 });
+
+test("a tenant that refuses the room list: allowing it reconnects the account in place and the rooms appear", async ({ inbox: page, fake }, testInfo) => {
+  fake.state.config.roomsNeedScope = "User.ReadBasic.All";
+  await openEditor(page, "evt-lunch");
+  await page.getByTestId("editor-location").click();
+  const prompt = page.getByTestId("editor-rooms-permission");
+  await expect(prompt).toContainText("permission to read basic directory info");
+  await snap(page, testInfo, "editor-rooms-permission");
+  const signIns = fake.state.authorizations.length;
+  await page.getByTestId("editor-rooms-grant").click();
+  // A sign-in for the same account, asking for the defaults plus the directory permission.
+  await expect(page.getByTestId("editor-room").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("editor-room")).toHaveCount(3);
+  const auth = fake.state.authorizations[signIns];
+  expect(auth.login_hint).toBe("boris@peetmail.test");
+  expect(auth.scope.split(" ")).toEqual(expect.arrayContaining(["Mail.ReadWrite", "Calendars.ReadWrite", "User.ReadBasic.All"]));
+  await expect(prompt).toHaveCount(0);
+
+  // The editor is still there with the event; the account still syncs after a refresh
+  // (which may only ask for scopes it was granted).
+  await expect(page.getByTestId("editor-title")).toHaveValue("Lunch with Sam");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  for (const k of fake.state.accessTokens.keys()) fake.state.accessTokens.set(k, 0);
+  const before = fake.state.requests.length;
+  await page.keyboard.press("Control+r");
+  await expect.poll(() => fake.state.requests.slice(before).some((r: any) => r.path === "/oauth/token" && r.status === 200), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => fake.state.requests.slice(before).some((r: any) => r.status === 200 && String(r.path).includes("/delta")), { timeout: 15_000 }).toBe(true);
+  await expect(page.getByTestId("sync-status")).not.toHaveAttribute("data-state", "error");
+});
+
+test("when even that isn't enough, it asks for admin approval; a refusal says so and changes nothing", async ({ inbox: page, fake }) => {
+  fake.state.config.roomsNeedScope = "Something.Else";
+  fake.state.config.denyScopes = ["Place.Read.All"];
+  await openEditor(page, "evt-lunch");
+  await page.getByTestId("editor-location").click();
+  await page.getByTestId("editor-rooms-grant").click();
+  // Directory permission granted, still refused: next is the admin-approved Places API.
+  await expect(page.getByTestId("editor-rooms-grant")).toHaveText("Request admin approval", { timeout: 15_000 });
+  await page.getByTestId("editor-rooms-grant").click();
+  await expect(page.getByTestId("editor-rooms-error")).toHaveText("Your organisation needs an admin to approve this.", { timeout: 15_000 });
+  await expect(page.getByTestId("editor-room")).toHaveCount(0);
+
+  // With approval granted, the Places API lists them.
+  fake.state.config.denyScopes = [];
+  await page.getByTestId("editor-location").click();
+  await page.getByTestId("editor-rooms-grant").click();
+  await expect(page.getByTestId("editor-room")).toHaveCount(3, { timeout: 15_000 });
+});
+
+test("Not now hides the room prompt for that account", async ({ inbox: page, fake }) => {
+  fake.state.config.roomsNeedScope = "User.ReadBasic.All";
+  await openEditor(page, "evt-lunch");
+  await page.getByTestId("editor-location").click();
+  await page.getByTestId("editor-rooms-not-now").click();
+  await expect(page.getByTestId("editor-rooms-permission")).toHaveCount(0);
+  await page.getByTestId("editor-title").click();
+  await page.getByTestId("editor-location").click();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId("editor-rooms-permission")).toHaveCount(0);
+});
+
+test("focusing a location that's already set lists every room, and Tab moves on without replacing it", async ({ inbox: page }) => {
+  await openEditor(page, "evt-lunch");
+  const loc = page.getByTestId("editor-location");
+  await loc.click();
+  await expect(page.getByTestId("editor-room")).toHaveCount(3);
+  await loc.press("Tab");
+  await expect(loc).toHaveValue("Café Beetroot");
+  await expect(page.locator("[data-testid=editor-attendee][data-room=true]")).toHaveCount(0);
+  // Arrowing in, then Enter, picks.
+  await loc.click();
+  await loc.press("ArrowDown");
+  await loc.press("Enter");
+  await expect(loc).toHaveValue("Boardroom");
+});
