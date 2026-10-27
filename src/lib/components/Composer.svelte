@@ -193,6 +193,13 @@
 
   function fieldKeys(which: "to" | "cc", e: KeyboardEvent) {
     if (!suggestions.length || field !== which) return;
+    // Ctrl+Enter sends, even while suggestions are up (they arrive a moment after typing,
+    // so taking it as a pick made a quick Ctrl+Enter silently not send).
+    if (e.key === "Enter" && e.ctrlKey) {
+      lookup.cancel();
+      suggestions = [];
+      return;
+    }
     if (e.key === "ArrowDown") active = (active + 1) % suggestions.length;
     else if (e.key === "ArrowUp") active = (active - 1 + suggestions.length) % suggestions.length;
     else if (e.key === "Enter" || e.key === "Tab") accept(which, suggestions[active]);
