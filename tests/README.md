@@ -38,6 +38,7 @@ Import from `tests/e2e/fixtures.ts`:
 - The default list is the built-in Inbox tab (mail the default `Other` split doesn't claim); `DEFAULT_CONVERSATIONS` is its expected size.
 - Writes the app makes (sends, replies, moves, patches) land in `fake.state.sent`; `fake.control("message?id=...")` returns the server's copy of a message. Triage ops leave after a 2s grace period, so poll with `expect.poll(..., { timeout: 10_000 })`.
 - Attachments download to `<dataDir>/downloads` in tests (`PEETMAIL_DOWNLOAD_DIR`).
+- Built-in sign-in apps: tests run like a local build (no apps built in, so setup asks for a client ID). `test.use({ builtinApps: true })` makes the fakes' client IDs the built-in ones (`PEETMAIL_BUILTIN_*`), like a release build.
 - Updates: `test.use({ withUpdates: true })` gives `updates` (the fake update server). `updates.publish("stable", { version: SIGNED_VERSION })` puts a release on a feed; `updateFeed: { stable: {...} }` does it before the app starts, and `updateFirstCheckSecs` sets when the app first checks by itself (default an hour, so tests use Settings → Check now). `updates.installedPath` is where an install lands.
 
 ```ts

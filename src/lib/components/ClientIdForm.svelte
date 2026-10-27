@@ -15,7 +15,8 @@
   let input: HTMLInputElement | undefined = $state();
 
   const changed = $derived(value.trim().toLowerCase() !== current);
-  const signsOut = $derived(changed && !!current && !!mail.boot?.accounts.some((a) => a.signedIn));
+  // Only accounts that signed in with this (the user's own) app are affected.
+  const signsOut = $derived(changed && !!current && !!mail.boot?.accounts.some((a) => a.signedIn && a.provider === "microsoft" && a.oauthApp === "custom"));
 
   $effect(() => {
     if (autofocus && input) {

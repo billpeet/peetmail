@@ -55,6 +55,7 @@
         <span class="w-14 shrink-0 text-xs text-ink-500">{a.provider === "google" ? "Gmail" : "Microsoft"}</span>
         <span class="min-w-0 flex-1 truncate text-ink-100">
           {a.email}
+          {#if a.oauthApp === "custom" && mail.boot?.builtin[a.provider as "microsoft" | "google"]}<span data-testid="account-own-app" class="text-ink-500"> · your app</span>{/if}
           {#if a.displayName}<span class="text-ink-500"> · {a.displayName}</span>{/if}
           {#if !a.signedIn}<span class="text-amber-300"> · signed out</span>{/if}
         </span>
@@ -90,8 +91,8 @@
       <button
         data-testid="account-add-google"
         onclick={() => add("google")}
-        disabled={!mail.boot?.googleClientId}
-        title={mail.boot?.googleClientId ? "" : "Set the Google client ID below first"}
+        disabled={!mail.boot?.builtin.google && !mail.boot?.googleClientId}
+        title={mail.boot?.builtin.google || mail.boot?.googleClientId ? "" : "Set up a Google app under Advanced first"}
         class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100 disabled:opacity-40"
       >
         + Add Google account

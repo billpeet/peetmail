@@ -26,6 +26,8 @@
 //! | PEETMAIL_OTLP_HEADERS         | Headers for it, `key=value,key=value`                     |
 //! | PEETMAIL_OTLP_METRIC_INTERVAL_MS | Metric export interval (default 30s)                   |
 //! | PEETMAIL_WEBVIEW2_ARGS        | WebView2 browser arguments, replacing Tauri's (DevTools port) |
+//! | PEETMAIL_BUILTIN_MS_CLIENT_ID | Act as if this Microsoft app were built in                |
+//! | PEETMAIL_BUILTIN_GOOGLE_CLIENT_ID / _SECRET | Act as if this Google client were built in  |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

@@ -9,7 +9,7 @@ Plan, architecture and roadmap are in [docs/PLAN.md](docs/PLAN.md).
 - Node 22+ and pnpm
 - Rust (stable, MSVC toolchain) and the Visual Studio C++ build tools
 - WebView2 runtime (preinstalled on Windows 11)
-- An Entra app registration, see [docs/PLAN.md#entra-app-registration](docs/PLAN.md#entra-app-registration)
+- For local builds, an Entra app registration (release builds have PeetMail's own built in), see [docs/PLAN.md#entra-app-registration](docs/PLAN.md#entra-app-registration). To build with one built in, set `PEETMAIL_MS_CLIENT_ID` (and `PEETMAIL_GOOGLE_CLIENT_ID`/`_SECRET`) before building.
 
 ## Develop
 

@@ -12,7 +12,8 @@ import { test as base, expect, type Page, type TestInfo } from "@playwright/test
 import { readFile } from "node:fs/promises";
 import { startFakeGraph } from "../harness/fake-graph.ts";
 import { startFakePair } from "../harness/fake-pair.ts";
-import { startFakeGmail } from "../harness/fake-gmail.ts";
+import { startFakeGmail, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from "../harness/fake-gmail.ts";
+import { CLIENT_ID } from "../harness/fake-graph.ts";
 import { startFakeUpdates, type FakeUpdates, type Release } from "../harness/fake-update.ts";
 import { startFakeSentry, type FakeSentry } from "../harness/fake-sentry.ts";
 import { startFakeOtlp, type FakeOtlp } from "../harness/fake-otlp.ts";
@@ -29,7 +30,9 @@ type App = Awaited<ReturnType<typeof launchApp>>;
 /** The fake update server, plus the file the app writes instead of running an installer. */
 type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp; builtinApps: boolean }>({
+  /** Act as a release build with PeetMail's own apps built in (the fakes' client IDs). */
+  builtinApps: [false, { option: true }],
   /** Send usage telemetry to a fake OTLP collector (`test.use({ withTelemetry: true })`), as `telemetry`. */
   withTelemetry: [false, { option: true }],
   telemetry: async ({ withTelemetry }, use) => {
@@ -89,7 +92,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry }, use, testInfo) => {
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry, builtinApps }, use, testInfo) => {
     const extraEnv: Record<string, string> = {
       ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
       ...(updates
@@ -100,6 +103,13 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
           }
         : {}),
       ...(sentry ? { PEETMAIL_SENTRY_DSN: sentry.dsn } : {}),
+      ...(builtinApps
+        ? {
+            PEETMAIL_BUILTIN_MS_CLIENT_ID: CLIENT_ID,
+            PEETMAIL_BUILTIN_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
+            PEETMAIL_BUILTIN_GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET,
+          }
+        : {}),
       ...(telemetry
         ? {
             PEETMAIL_OTLP_ENDPOINT: telemetry.url,

@@ -12,7 +12,12 @@ export type Account = {
   displayName: string | null;
   /** False after the client ID changes; the cached mail is kept until the same mailbox signs in again. */
   signedIn: boolean;
+  /** The OAuth app it signed in with: the one built into this build, or the user's own. */
+  oauthApp: OAuthApp;
 };
+
+/** "builtin": the app compiled into this build. "custom": the user's own (Settings → Advanced). */
+export type OAuthApp = "builtin" | "custom";
 
 export type Folder = {
   id: number;
@@ -175,9 +180,12 @@ export type EventDetail = {
 };
 
 export type Bootstrap = {
+  /** The user's own Microsoft app (Settings → Advanced), if set. */
   clientId: string | null;
-  /** Google OAuth client ID, if configured. */
+  /** The user's own Google OAuth client ID, if set. */
   googleClientId: string | null;
+  /** Providers with an app built into this build: signing in needs no setup. */
+  builtin: { microsoft: boolean; google: boolean };
   accounts: Account[];
   cacheLimits: CacheLimits;
   preferences: Preferences;
@@ -194,7 +202,8 @@ export type SyncStatus = { state: "syncing" | "idle" | "error"; message: string 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   setClientId: (clientId: string) => invoke<void>("set_client_id", { clientId }),
-  signIn: (provider: Provider = "microsoft") => invoke<Account>("sign_in", { provider }),
+  /** `oauthApp` unset: the built-in app when the build has one, else the user's own. */
+  signIn: (provider: Provider = "microsoft", oauthApp?: OAuthApp) => invoke<Account>("sign_in", { provider, oauthApp: oauthApp ?? null }),
   setGoogleClient: (clientId: string, clientSecret: string | null) => invoke<void>("set_google_client", { clientId, clientSecret }),
   cancelSignIn: () => invoke<void>("cancel_sign_in"),
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),

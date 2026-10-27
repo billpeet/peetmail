@@ -15,19 +15,32 @@ use crate::{auth, mail, query};
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    /// The user's own Microsoft app (Settings → Advanced), if set.
     client_id: Option<String>,
-    /// Google OAuth client ID, if set (the secret stays in Rust).
+    /// The user's own Google OAuth client ID, if set (the secret stays in Rust).
     google_client_id: Option<String>,
+    /// Which providers have an app built into this build, so nobody has to set one up.
+    builtin: BuiltinApps,
     accounts: Vec<Account>,
     cache_limits: CacheLimits,
     preferences: Preferences,
 }
 
+#[derive(Serialize)]
+pub struct BuiltinApps {
+    microsoft: bool,
+    google: bool,
+}
+
 #[tauri::command]
 pub fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap> {
     Ok(Bootstrap {
-        client_id: state.client_id()?,
-        google_client_id: state.google_client()?.map(|g| g.0),
+        client_id: state.custom_client("microsoft")?.map(|c| c.0),
+        google_client_id: state.custom_client("google")?.map(|c| c.0),
+        builtin: BuiltinApps {
+            microsoft: crate::state::builtin_client("microsoft").is_some(),
+            google: crate::state::builtin_client("google").is_some(),
+        },
         accounts: state.db.with(|c| db::list_accounts(c))?,
         cache_limits: state.cache_limits()?,
         preferences: state.preferences()?,
@@ -39,8 +52,9 @@ pub fn set_preferences(state: State<'_, AppState>, preferences: Preferences) -> 
     state.set_preferences(&preferences)
 }
 
-/// Saves the Entra client ID. Changing it signs every account out, because refresh
-/// tokens only work with the client ID that issued them. Cached mail is kept.
+/// Saves the user's own Entra app (Settings → Advanced). Changing it signs out the accounts
+/// that signed in with it (refresh tokens only work with the app that issued them);
+/// accounts on the built-in app are unaffected. Cached mail is kept.
 #[tauri::command]
 pub async fn set_client_id(state: State<'_, AppState>, client_id: String) -> Result<()> {
     let id = client_id.trim().to_lowercase();
@@ -49,20 +63,20 @@ pub async fn set_client_id(state: State<'_, AppState>, client_id: String) -> Res
             "That doesn't look like an Application (client) ID. It should look like 00000000-0000-0000-0000-000000000000.".into(),
         ));
     }
-    if state.client_id()?.as_deref() == Some(id.as_str()) {
+    if state.custom_client("microsoft")?.map(|c| c.0).as_deref() == Some(id.as_str()) {
         return Ok(());
     }
     cancel_pending_sign_in(&state);
     state.db.with(|c| {
         db::set_setting(c, KEY_CLIENT_ID, &id)?;
-        db::clear_provider_tokens(c, "microsoft")
+        db::clear_app_tokens(c, "microsoft", crate::state::APP_CUSTOM)
     })?;
     state.forget_all_tokens().await;
     Ok(())
 }
 
-/// Saves the Google OAuth client (from a "Desktop app" client in Google Cloud). Changing
-/// the ID signs Google accounts out; their cached mail is kept.
+/// Saves the user's own Google OAuth client (a "Desktop app" client in Google Cloud).
+/// Changing the ID signs out the Google accounts that used it; their cached mail is kept.
 #[tauri::command]
 pub async fn set_google_client(state: State<'_, AppState>, client_id: String, client_secret: Option<String>) -> Result<()> {
     let id = client_id.trim().to_string();
@@ -70,13 +84,13 @@ pub async fn set_google_client(state: State<'_, AppState>, client_id: String, cl
         return Err(AppError::Other("That doesn't look like a Google client ID. It ends in .apps.googleusercontent.com.".into()));
     }
     let secret = client_secret.map(|s| s.trim().to_string()).unwrap_or_default();
-    let changed = state.google_client()?.map(|g| g.0).as_deref() != Some(id.as_str());
+    let changed = state.custom_client("google")?.map(|c| c.0).as_deref() != Some(id.as_str());
     cancel_pending_sign_in(&state);
     state.db.with(|c| {
         db::set_setting(c, crate::state::KEY_GOOGLE_CLIENT_ID, &id)?;
         db::set_setting(c, crate::state::KEY_GOOGLE_CLIENT_SECRET, &secret)?;
         if changed {
-            db::clear_provider_tokens(c, "google")?;
+            db::clear_app_tokens(c, "google", crate::state::APP_CUSTOM)?;
         }
         Ok(())
     })?;
@@ -103,10 +117,17 @@ pub fn cancel_sign_in(state: State<'_, AppState>) {
     cancel_pending_sign_in(&state);
 }
 
+/// Signs in a new (or returning) account. `oauth_app` picks the app: "builtin", "custom",
+/// or (unset) the build's built-in one when it has one.
 #[tauri::command]
-pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Option<String>) -> Result<Account> {
+pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Option<String>, oauth_app: Option<String>) -> Result<Account> {
     let provider = if provider.as_deref() == Some("google") { "google" } else { "microsoft" };
-    let cfg = state.oauth_for(provider)?;
+    let oauth_app = match oauth_app.as_deref() {
+        Some("custom") => crate::state::APP_CUSTOM,
+        Some("builtin") => crate::state::APP_BUILTIN,
+        _ => state.default_app(provider),
+    };
+    let cfg = state.oauth_for_app(provider, oauth_app)?;
     // Starting a new sign-in abandons any earlier one still waiting on the browser.
     cancel_pending_sign_in(&state);
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -121,7 +142,11 @@ pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Optio
     let blob = AppState::store_tokens_blob(&tokens)?;
     let account = state
         .db
-        .with(|c| db::upsert_account(c, provider, &email, display_name.as_deref(), &blob))?;
+        .with(|c| {
+            let account = db::upsert_account(c, provider, &email, display_name.as_deref(), &blob)?;
+            db::set_account_app(c, account.id, oauth_app)?;
+            Ok(Account { oauth_app: oauth_app.to_string(), ..account })
+        })?;
     state.remember_tokens(account.id, tokens).await;
     crate::crash::refresh_known(&state.db);
 
@@ -143,7 +168,7 @@ pub async fn reconnect_account(app: AppHandle, state: State<'_, AppState>, accou
         .into_iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| AppError::Other("no such account".into()))?;
-    let base = state.oauth_for(&account.provider)?;
+    let base = state.oauth_for_account(account_id)?;
     // Keep what the account already granted; a stale or missing token just means the defaults.
     let had = state.granted_scopes(account_id).await.unwrap_or_else(|_| base.scopes().to_string());
     let extra: Vec<&str> = add_scopes.iter().flatten().map(String::as_str).collect();

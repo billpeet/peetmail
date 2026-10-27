@@ -6,8 +6,32 @@ use crate::auth::{self, TokenSet};
 use crate::db::{self, Db};
 use crate::error::{AppError, Result};
 use crate::secure;
+use crate::testenv;
 
 pub const KEY_CLIENT_ID: &str = "ms_client_id";
+
+/// The OAuth app compiled into this build (CI sets these from repo secrets).
+pub const APP_BUILTIN: &str = "builtin";
+/// The user's own app, set under Settings → Advanced.
+pub const APP_CUSTOM: &str = "custom";
+
+fn present(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The built-in app for a provider: (client ID, secret). Debug builds can stand one in
+/// (PEETMAIL_BUILTIN_*) so tests cover the built-in sign-in path.
+pub fn builtin_client(provider: &str) -> Option<(String, Option<String>)> {
+    let (id, secret) = if provider == "google" {
+        (
+            testenv::get("PEETMAIL_BUILTIN_GOOGLE_CLIENT_ID").or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_ID").map(String::from)),
+            testenv::get("PEETMAIL_BUILTIN_GOOGLE_CLIENT_SECRET").or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_SECRET").map(String::from)),
+        )
+    } else {
+        (testenv::get("PEETMAIL_BUILTIN_MS_CLIENT_ID").or_else(|| option_env!("PEETMAIL_MS_CLIENT_ID").map(String::from)), None)
+    };
+    present(id).map(|id| (id, present(secret)))
+}
 pub const KEY_GOOGLE_CLIENT_ID: &str = "google_client_id";
 pub const KEY_GOOGLE_CLIENT_SECRET: &str = "google_client_secret";
 pub const KEY_CACHE_DAYS: &str = "cache_days";
@@ -100,35 +124,45 @@ impl AppState {
         }
     }
 
-    pub fn client_id(&self) -> Result<Option<String>> {
-        let stored = self.db.with(|c| db::get_setting(c, KEY_CLIENT_ID))?;
-        Ok(stored
-            .or_else(|| option_env!("PEETMAIL_MS_CLIENT_ID").map(String::from))
-            .filter(|s| !s.trim().is_empty()))
+    /// The user's own OAuth app for a provider (Settings → Advanced): (client ID, secret).
+    /// The secret of a Google Desktop-app client isn't confidential (Google says so), but
+    /// Google may still require it on token requests.
+    pub fn custom_client(&self, provider: &str) -> Result<Option<(String, Option<String>)>> {
+        let (id, secret) = self.db.with(|c| {
+            Ok(if provider == "google" {
+                (db::get_setting(c, KEY_GOOGLE_CLIENT_ID)?, db::get_setting(c, KEY_GOOGLE_CLIENT_SECRET)?)
+            } else {
+                (db::get_setting(c, KEY_CLIENT_ID)?, None)
+            })
+        })?;
+        Ok(present(id).map(|id| (id, present(secret))))
     }
 
-    /// Google OAuth client (ID, secret). The secret of a Desktop-app client isn't
-    /// confidential (Google says so), but Google may still require it on token requests.
-    pub fn google_client(&self) -> Result<Option<(String, Option<String>)>> {
-        let (id, secret) = self.db.with(|c| Ok((db::get_setting(c, KEY_GOOGLE_CLIENT_ID)?, db::get_setting(c, KEY_GOOGLE_CLIENT_SECRET)?)))?;
-        let id = id.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_ID").map(String::from)).filter(|s| !s.trim().is_empty());
-        let secret = secret.or_else(|| option_env!("PEETMAIL_GOOGLE_CLIENT_SECRET").map(String::from)).filter(|s| !s.trim().is_empty());
-        Ok(id.map(|id| (id, secret)))
+    /// The app a new sign-in uses unless one is chosen: the built-in one when this build
+    /// has it, otherwise the user's own.
+    pub fn default_app(&self, provider: &str) -> &'static str {
+        if builtin_client(provider).is_some() { APP_BUILTIN } else { APP_CUSTOM }
     }
 
-    /// How an account's provider signs in and refreshes.
-    pub fn oauth_for(&self, provider: &str) -> Result<auth::OAuthConfig> {
-        if provider == "google" {
-            let (id, secret) = self.google_client()?.ok_or_else(|| AppError::Other("no Google client ID configured".into()))?;
-            Ok(auth::OAuthConfig::google(&id, secret.as_deref()))
+    /// How a provider signs in with a given app.
+    pub fn oauth_for_app(&self, provider: &str, app: &str) -> Result<auth::OAuthConfig> {
+        let name = if provider == "google" { "Google" } else { "Microsoft" };
+        let client = if app == APP_CUSTOM {
+            self.custom_client(provider)?.ok_or_else(|| AppError::Other(format!("Set up your own {name} app first (Settings → Advanced).")))?
         } else {
-            Ok(auth::OAuthConfig::microsoft(&self.require_client_id()?))
-        }
+            builtin_client(provider).ok_or_else(|| AppError::Other(format!("This build has no built-in {name} app. Set up your own under Settings → Advanced.")))?
+        };
+        Ok(if provider == "google" {
+            auth::OAuthConfig::google(&client.0, client.1.as_deref())
+        } else {
+            auth::OAuthConfig::microsoft(&client.0)
+        })
     }
 
-    pub fn require_client_id(&self) -> Result<String> {
-        self.client_id()?
-            .ok_or_else(|| AppError::Other("no Microsoft client ID configured".into()))
+    /// How an existing account refreshes and reconnects: with the app it signed in with.
+    pub fn oauth_for_account(&self, account_id: i64) -> Result<auth::OAuthConfig> {
+        let (provider, app) = self.db.with(|c| db::account_app(c, account_id))?;
+        self.oauth_for_app(&provider, &app)
     }
 
     pub fn cache_limits(&self) -> Result<CacheLimits> {
@@ -228,11 +262,10 @@ impl AppState {
     /// The scopes an account's tokens were granted (the provider's defaults for older sign-ins).
     pub async fn granted_scopes(&self, account_id: i64) -> Result<String> {
         self.access_token(account_id).await?;
-        let provider = self.db.with(|c| db::account_provider(c, account_id))?;
         let cached = self.tokens.lock().await.get(&account_id).and_then(|t| t.scopes.clone());
         Ok(match cached {
             Some(s) => s,
-            None => self.oauth_for(&provider)?.scopes().to_string(),
+            None => self.oauth_for_account(account_id)?.scopes().to_string(),
         })
     }
 
@@ -256,7 +289,7 @@ impl AppState {
         let provider = self.db.with(|c| db::account_provider(c, account_id))?;
         let p = if provider == "google" { "google" } else { "microsoft" };
         let attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Provider, p)];
-        let fresh = crate::telemetry::traced("auth.refresh", attrs, auth::refresh(&self.http, &self.oauth_for(&provider)?, &current)).await?;
+        let fresh = crate::telemetry::traced("auth.refresh", attrs, auth::refresh(&self.http, &self.oauth_for_account(account_id)?, &current)).await?;
         let blob = Self::store_tokens_blob(&fresh)?;
         self.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
         let token = fresh.access_token.clone();

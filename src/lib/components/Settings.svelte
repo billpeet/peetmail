@@ -12,6 +12,20 @@
   let cacheDays = $state(mail.boot?.cacheLimits.cacheDays ?? 90);
   let bodyCacheMb = $state(mail.boot?.cacheLimits.bodyCacheMb ?? 500);
   let error = $state<string | null>(null);
+  /** The build has PeetMail's own app for at least one provider; the user's own go under Advanced. */
+  const builtinAny = $derived(!!mail.boot?.builtin.microsoft || !!mail.boot?.builtin.google);
+
+  async function addWithOwnApp(provider: "microsoft" | "google") {
+    error = null;
+    try {
+      await api.signIn(provider, "custom");
+      await mail.init();
+    } catch (err) {
+      const msg = String(err);
+      if (!msg.endsWith("cancelled")) error = msg;
+    }
+  }
+
   let autostart = $state(false);
   api.getAutostart().then((v) => (autostart = v)).catch(() => {});
   let privacy = $state<Privacy | null>(null);
@@ -77,16 +91,32 @@
       <AccountsSection />
     </section>
 
-    <section class="space-y-2">
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Microsoft app (client ID)</h3>
-      <!-- A changed ID signs out, and the page falls back to the sign-in screen. -->
-      <ClientIdForm onsaved={() => (mail.overlay = null)} />
-    </section>
+    {#snippet ownApps()}
+      <section class="space-y-2">
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">{builtinAny ? "Your own Microsoft app" : "Microsoft app (client ID)"}</h3>
+        <!-- A changed ID signs out the accounts on it; with none left the page falls back to sign-in. -->
+        <ClientIdForm onsaved={() => (mail.boot?.accounts.some((a) => a.signedIn) ? null : (mail.overlay = null))} />
+        {#if builtinAny && mail.boot?.clientId}
+          <button data-testid="account-add-custom" onclick={() => addWithOwnApp("microsoft")} class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100">
+            + Add Microsoft account with this app
+          </button>
+        {/if}
+      </section>
 
-    <section class="space-y-2">
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Google app (client ID)</h3>
-      <GoogleClientForm />
-    </section>
+      <section class="space-y-2">
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">{builtinAny ? "Your own Google app" : "Google app (client ID)"}</h3>
+        <GoogleClientForm />
+        {#if builtinAny && mail.boot?.googleClientId}
+          <button data-testid="account-add-google-custom" onclick={() => addWithOwnApp("google")} class="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 hover:text-ink-100">
+            + Add Google account with this app
+          </button>
+        {/if}
+      </section>
+    {/snippet}
+
+    {#if !builtinAny}
+      {@render ownApps()}
+    {/if}
 
     <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Split inboxes</h3>
@@ -225,6 +255,18 @@
         </select>
       </label>
     </section>
+
+    {#if builtinAny}
+      <details data-testid="advanced-apps" class="space-y-4 rounded-md border border-ink-800 px-3 py-2">
+        <summary class="cursor-pointer text-xs tracking-wide text-ink-500 uppercase">Advanced: your own sign-in apps</summary>
+        <p class="pt-2 text-xs text-ink-500">
+          PeetMail signs in with its own Microsoft and Google apps. If your organisation blocks them, register your own app
+          (steps in docs/PLAN.md) and add accounts with it here. Accounts keep the app they signed in with, so changing this only
+          signs out the accounts that use it.
+        </p>
+        {@render ownApps()}
+      </details>
+    {/if}
 
     <form onsubmit={save} class="space-y-5">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Offline cache</h3>

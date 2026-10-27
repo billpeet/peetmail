@@ -11,7 +11,8 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 2 Auto-update, canary and stable channels | Done (same caveat) |
 | 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
 | 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
-| 5–6 | Not started |
+| 5 Built-in sign-in apps | Microsoft done (app registered, secret set); Google waits for its client ID and secret |
+| 6 | Not started |
 
 ## Decisions
 
@@ -156,28 +157,22 @@ Planned items still open: per-account correlation (`account.ref`) isn't needed, 
 - Vitest: the webview timing batcher.
 - E2E against a fake OTLP collector (`tests/harness/fake-otlp.ts`). A session (sign-in, sync, open, search, send, archive) produces the expected spans, nested correctly (`http.request` inside `sync.folder` inside `sync.account`), with templated routes, the search's shape, binding ids, the resource and install ID, the auth header on every request, metrics, and logs carrying trace IDs. **PII canaries:** none of the account address or name, correspondents' names and addresses, subjects, body text, the search word, provider message IDs, the sent message's recipient, subject and body, the ingest token, the PC name or the Windows user name appears anywhere the collector received. Opting out stops spans straight away.
 
-## Stage 5: embedded OAuth apps, with custom apps as an advanced option
+## Stage 5: built-in sign-in apps, with your own as an advanced option (done)
 
-### Built-in apps
+### The built-in apps
 
-- **Microsoft:** one Entra app registration in the main tenant, "any organizational directory and personal Microsoft accounts" (`common`), public client, `http://localhost` redirect, the delegated scopes in PLAN.md. A tenant admin grants consent once for the main tenant, so those users see no consent prompt. Personal Outlook.com accounts consent for themselves. Users in other tenants may hit "needs admin approval" if their tenant blocks user consent; that's where the custom-app option below helps. Publisher verification (needs an MPN ID) can come later.
-- **Google:** one Google Cloud project, user type *External*, published *In production* and left unverified. Any Google account can sign in, behind the "Google hasn't verified this app" screen, capped at 100 users lifetime, which is fine for this group. (`gmail.modify` is a restricted scope; verification would need a CASA assessment, which isn't worth it here. *Internal* would hide the warning but block personal Gmail.)
-- The client IDs (and Google's non-confidential desktop secret) are injected by `release.yml` from secrets, via the existing `option_env!` path. Dev builds keep working with no IDs (setup screen) or a local `.env`.
+- **Microsoft:** the existing `PeetMail` registration in the `metroid.net.au` tenant (client ID `04e0699b-c2f4-46f4-aa06-918aff940115`): any organisational directory plus personal Microsoft accounts, public client, `http://localhost` redirect. Tenant-wide admin consent covers `offline_access openid profile email User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite User.ReadBasic.All`, so nobody in the tenant sees a consent prompt; personal accounts consent for themselves. Its declared API permissions now list those nine scopes too, so admins elsewhere see what it asks for. `Place.Read.All` (room list via Places) stays optional and admin-approved, as the app already handles. Users in tenants that block user consent need their admin to approve the app, or their own app (below). Publisher verification (needs an MPN ID) can come later.
+- **Google:** a Google Cloud OAuth client of type *Desktop app*, in a project with user type *External*, published *In production* and left unverified. Any Google account can sign in, behind the "Google hasn't verified this app" screen, capped at 100 users lifetime. (`gmail.modify` is a restricted scope; verification would need a CASA assessment. *Internal* would hide the warning but block personal Gmail.) Google has no CLI for desktop OAuth clients, so this one is made in the Cloud console.
+- `release.yml` compiles the IDs in from the `PEETMAIL_MS_CLIENT_ID`, `PEETMAIL_GOOGLE_CLIENT_ID` and `PEETMAIL_GOOGLE_CLIENT_SECRET` secrets. Local builds have none and work as before (setup asks for a client ID); export the same variables before `pnpm tauri build` to get built-in apps locally.
 
-### Custom apps (advanced)
+### Accounts keep their app
 
-The current model (one stored client per provider, changing it signs everyone out) gets awkward once there's a default. Change it to:
+- `accounts.oauth_app` is `builtin` or `custom` (migration 0009). Existing accounts are labelled by what they actually used: `custom` where a client ID had been saved (it took precedence over a built-in one), else `builtin`. Nobody is signed out by the upgrade.
+- Token refresh and reconnect use the account's own app (`AppState::oauth_for_account`). Saving your own app signs out only the accounts that use it.
+- New sign-ins use the built-in app when the build has one. Your own app is a choice: "Sign in with your own app" on the setup screen, or "Add … account with this app" under Settings → **Advanced: your own sign-in apps**. In builds without built-in apps, the client ID forms stay where they were.
+- Planned but not done: a tenant lock for single-tenant custom apps (authority set to the tenant instead of `common`), several custom apps per provider, and registry policy overrides (`HKCU\Software\Policies\PeetMail`) for Intune/GPO.
 
-- Each account records the client it signed in with: `accounts.client_ref` = `builtin` or the ID of a row in a new `oauth_clients` table (provider, client ID, optional secret DPAPI-encrypted, label, optional tenant/authority).
-- Refresh uses the account's own client, so a custom-app account and built-in-app accounts can coexist, and changing the default no longer signs anyone out.
-- Migration: existing accounts point at a client row created from today's stored `ms_client_id`/`google_client_id` settings, so nobody is signed out by the upgrade.
-- UI: the setup screen and "Add account" show just "Sign in with Microsoft / Google". Settings > Accounts > **Advanced** lists custom apps, lets you add one, and "Add account with…" picks which app. The existing `ClientIdForm`/`GoogleClientForm` move there.
-- Optional tenant lock: a custom Microsoft app can set the authority to a tenant ID instead of `common`, for single-tenant registrations.
-- Org-managed override: read `HKCU\Software\Policies\PeetMail` (and HKLM) for `MicrosoftClientId`, `GoogleClientId`, `TelemetryEnabled`, `UpdateChannel`, so an admin can preconfigure installs through Intune/GPO without a custom build. Policy beats settings, which beat built-in.
-
-Tests: Rust unit tests for client resolution order (policy > account's client > built-in) and the migration; E2E for adding a second Microsoft account through a custom app with the fake server checking which client ID each refresh uses; E2E that the built-in path needs no setup screen.
-
-The "register your own app" sections of PLAN.md become the docs for the Advanced path; the default user never sees them.
+Tests: Rust for the migration and for signing out only one app's accounts; E2E with a debug-only stand-in for the built-in IDs (`PEETMAIL_BUILTIN_*`): local builds still ask for a client ID; with built-in apps, Microsoft and Gmail sign in with no setup; your own app lives under Advanced and saving it signs nobody out; and with short-lived tokens, a refresh after setting a different own-app ID still uses the account's built-in app (the fake rejects any other ID, so the old global client would fail it).
 
 ## Stage 6: the rest of what a distributed app needs
 

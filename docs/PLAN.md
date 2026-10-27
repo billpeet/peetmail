@@ -173,7 +173,7 @@ Deferred from Phase 1:
 
 ## Entra app registration
 
-Because PeetMail is for personal use, you register your own Entra app. It takes about five minutes.
+Release builds sign in with PeetMail's own app, so most people never need this. It's for local builds (which have no app built in) and for organisations that block PeetMail's app: register your own and use it from the setup screen ("Use your own app") or Settings → Advanced. It takes about five minutes.
 
 1. Open the [Entra admin center](https://entra.microsoft.com) and go to **App registrations → New registration**.
    - Name: `PeetMail`
@@ -191,7 +191,7 @@ Things that can trip you up:
 
 ## Google Cloud setup (Gmail)
 
-As with Entra, you register your own Google OAuth client. PeetMail asks for `gmail.modify` (read, label and send; no permanent delete), `calendar.events` (read and write events) and your name and address. A Google account added before calendar support needs signing in again (Settings → Accounts → Add Google account) to grant calendar access.
+As with Entra, release builds have PeetMail's own Google client built in; this is for local builds and for using your own. PeetMail asks for `gmail.modify` (read, label and send; no permanent delete), `calendar.events` (read and write events) and your name and address. A Google account added before calendar support needs signing in again (Settings → Accounts → Add Google account) to grant calendar access.
 
 1. In the [Google Cloud console](https://console.cloud.google.com), create a project (e.g. `PeetMail`).
 2. **APIs & Services → Library**: enable the **Gmail API** and the **Google Calendar API**.

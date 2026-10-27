@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_meeting_messages.sql"),
     include_str!("../migrations/0007_snooze.sql"),
     include_str!("../migrations/0008_message_invites.sql"),
+    include_str!("../migrations/0009_account_app.sql"),
 ];
 
 pub struct Db {
@@ -154,6 +155,8 @@ pub struct Account {
     pub display_name: Option<String>,
     /// False when the account has no usable tokens, e.g. after the client ID changed.
     pub signed_in: bool,
+    /// The OAuth app it signed in with: "builtin" or "custom".
+    pub oauth_app: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -237,7 +240,7 @@ pub struct MessageUpsert {
 
 pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider, email, display_name, token_blob IS NOT NULL FROM accounts ORDER BY id",
+        "SELECT id, provider, email, display_name, token_blob IS NOT NULL, oauth_app FROM accounts ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(Account {
@@ -246,6 +249,7 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>> {
             email: r.get(2)?,
             display_name: r.get(3)?,
             signed_in: r.get(4)?,
+            oauth_app: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -258,12 +262,12 @@ pub fn upsert_account(
     display_name: Option<&str>,
     token_blob: &[u8],
 ) -> Result<Account> {
-    let id: i64 = conn.query_row(
+    let (id, oauth_app): (i64, String) = conn.query_row(
         "INSERT INTO accounts (provider, email, display_name, token_blob) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (email) DO UPDATE SET display_name = excluded.display_name, token_blob = excluded.token_blob
-         RETURNING id",
+         RETURNING id, oauth_app",
         params![provider, email, display_name, token_blob],
-        |r| r.get(0),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
     )?;
     Ok(Account {
         id,
@@ -271,7 +275,19 @@ pub fn upsert_account(
         email: email.into(),
         display_name: display_name.map(Into::into),
         signed_in: true,
+        oauth_app,
     })
+}
+
+/// Records which OAuth app an account signed in with ("builtin" or "custom").
+pub fn set_account_app(conn: &Connection, account_id: i64, app: &str) -> Result<()> {
+    conn.execute("UPDATE accounts SET oauth_app = ?2 WHERE id = ?1", params![account_id, app])?;
+    Ok(())
+}
+
+/// An account's provider and OAuth app.
+pub fn account_app(conn: &Connection, account_id: i64) -> Result<(String, String)> {
+    Ok(conn.query_row("SELECT provider, oauth_app FROM accounts WHERE id = ?1", [account_id], |r| Ok((r.get(0)?, r.get(1)?)))?)
 }
 
 pub fn get_token_blob(conn: &Connection, account_id: i64) -> Result<Option<Vec<u8>>> {
@@ -286,11 +302,11 @@ pub fn set_token_blob(conn: &Connection, account_id: i64, blob: &[u8]) -> Result
     Ok(())
 }
 
-/// Tokens are bound to the client ID that issued them, so changing a provider's ID
-/// invalidates its accounts' tokens. Cached mail is kept and reattached when the same
-/// mailbox signs in again.
-pub fn clear_provider_tokens(conn: &Connection, provider: &str) -> Result<()> {
-    conn.execute("UPDATE accounts SET token_blob = NULL WHERE provider = ?1", [provider])?;
+/// Tokens are bound to the client ID that issued them, so changing an app's ID invalidates
+/// the tokens of the accounts that signed in with it (and only those). Cached mail is kept
+/// and reattached when the same mailbox signs in again.
+pub fn clear_app_tokens(conn: &Connection, provider: &str, app: &str) -> Result<()> {
+    conn.execute("UPDATE accounts SET token_blob = NULL WHERE provider = ?1 AND oauth_app = ?2", [provider, app])?;
     Ok(())
 }
 
@@ -858,6 +874,42 @@ mod tests {
     }
 
     #[test]
+    fn existing_accounts_keep_the_app_they_signed_in_with() {
+        let mut c = Connection::open_in_memory().unwrap();
+        migrate_to(&mut c, 8).unwrap();
+        // A typed-in Microsoft client ID took precedence over the built-in one; Google had none.
+        set_setting(&c, "ms_client_id", "aaaaaaaa-0000-0000-0000-000000000000").unwrap();
+        set_setting(&c, "google_client_id", "  ").unwrap();
+        for (provider, email) in [("microsoft", "a@work.example"), ("google", "b@gmail.com")] {
+            c.execute("INSERT INTO accounts (provider, email) VALUES (?1, ?2)", [provider, email]).unwrap();
+        }
+        migrate(&mut c).unwrap();
+        let apps: Vec<(String, String)> = list_accounts(&c).unwrap().into_iter().map(|a| (a.provider, a.oauth_app)).collect();
+        assert_eq!(apps, [("microsoft".into(), "custom".into()), ("google".into(), "builtin".into())]);
+    }
+
+    #[test]
+    fn changing_an_app_signs_out_only_its_accounts() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let builtin = upsert_account(c, "microsoft", "a@work.example", None, b"t")?.id;
+            let custom = upsert_account(c, "microsoft", "b@work.example", None, b"t")?.id;
+            set_account_app(c, custom, "custom")?;
+            assert_eq!(account_app(c, custom)?, ("microsoft".into(), "custom".into()));
+
+            clear_app_tokens(c, "microsoft", "custom")?;
+            let signed_in: Vec<(i64, bool)> = list_accounts(c)?.into_iter().map(|a| (a.id, a.signed_in)).collect();
+            assert_eq!(signed_in, [(builtin, true), (custom, false)]);
+
+            // Signing in again keeps the row; the caller records the app it used this time.
+            let again = upsert_account(c, "microsoft", "b@work.example", None, b"u")?;
+            assert_eq!((again.id, again.oauth_app.as_str()), (custom, "custom"));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn a_database_from_a_newer_build_is_refused_untouched() {
         let tmp = TempDir::new("newer");
         let path = tmp.0.join("peetmail.db");
@@ -1027,7 +1079,7 @@ mod tests {
         let (db, a, f) = seed();
         db.with(|c| {
             upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
-            clear_provider_tokens(c, "microsoft")?;
+            clear_app_tokens(c, "microsoft", "builtin")?;
             let accounts = list_accounts(c)?;
             assert!(!accounts[0].signed_in);
             assert!(get_token_blob(c, a)?.is_none());

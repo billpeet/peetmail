@@ -20,7 +20,7 @@ Canary versions sort between stable releases: after `0.2.0` comes `0.2.1-canary.
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | Contents of the updater private key file (see below) | Yes. Every build signs its installer |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password | Yes |
-| `PEETMAIL_MS_CLIENT_ID` | Application (client) ID of the built-in Entra app | No. Without it the app asks for a client ID |
+| `PEETMAIL_MS_CLIENT_ID` | Application (client) ID of the built-in Entra app (`04e0699b-…`, the `PeetMail` registration in `metroid.net.au`) | No. Without it the app asks for a client ID |
 | `PEETMAIL_GOOGLE_CLIENT_ID` | Client ID of the built-in Google "Desktop app" OAuth client | No |
 | `PEETMAIL_GOOGLE_CLIENT_SECRET` | Its client secret (not confidential for desktop clients, but keep it out of the repo) | No |
 
