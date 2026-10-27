@@ -107,6 +107,13 @@ export function ensureBuilt({ force = false, log = console.log }: { force?: bool
   writeFileSync(STAMP, new Date().toISOString());
 }
 
+/**
+ * The page size tests see: the app window's own size (1280x820 less the frame), just wide
+ * enough for the right pane (shown from 1280px). Fixed rather than taken from the window,
+ * which Windows shrinks to fit a small screen (CI runners have 1024x768).
+ */
+export const TEST_VIEWPORT = { width: 1280, height: 792 };
+
 /** Headless unless PEETMAIL_HEADED=1 (or `headed: true`), so test windows never interrupt you. */
 export const DEFAULT_HEADED = process.env.PEETMAIL_HEADED === "1";
 
@@ -327,6 +334,8 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undo
     throw new Error(`${e instanceof Error ? e.message : String(e)}${why}`);
   }
   const { browser, page } = await connect(cdpPort);
+  // A hidden test window: same layout on any screen. A visible one keeps its real size.
+  if (!(headed ?? DEFAULT_HEADED)) await page.setViewportSize(TEST_VIEWPORT);
   await page.waitForLoadState("domcontentloaded");
   await page.locator("body").waitFor();
   await waitForKeyboard(page);

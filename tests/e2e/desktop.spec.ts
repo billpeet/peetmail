@@ -99,3 +99,13 @@ test("a panic is written to the log file, with where it happened", async ({ inbo
   // A panicking background thread doesn't take the app down.
   await expect(page.getByTestId("sync-status")).toBeAttached();
 });
+
+test("tests see the same layout on any screen: a squeezed window keeps the calendar pane", async ({ inbox: page }) => {
+  // CI runners have a 1024x768 screen, and Windows shrinks the 1280px window to fit it.
+  const cdp = await page.context().newCDPSession(page);
+  const { windowId } = await cdp.send("Browser.getWindowForTarget");
+  await cdp.send("Browser.setWindowBounds", { windowId, bounds: { width: 900, height: 600 } });
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => innerWidth)).toBe(1280);
+  await expect(page.getByTestId("right-pane")).toBeVisible();
+});
