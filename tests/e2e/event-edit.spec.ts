@@ -408,3 +408,114 @@ test("quick add without a time understood: Tab starts the editor at the title", 
   await expect(page.getByTestId("editor-title")).toBeFocused();
   await expect(page.getByTestId("editor-title")).toHaveValue("Planning");
 });
+
+// ---------- repeat ----------
+
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const WEEKDAY = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+test("a new series: a preset, then custom (every 2 weeks on two days, 6 times), sent in local time", async ({ inbox: page, fake }, testInfo) => {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayAfter = new Date(tomorrow);
+  dayAfter.setDate(dayAfter.getDate() + 1);
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Team sync tomorrow 9am");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("event-editor")).toBeVisible();
+  const select = page.getByTestId("editor-repeat-select");
+  await expect(select).toHaveValue("none");
+  await select.selectOption("weekly");
+  await expect(page.getByTestId("repeat-summary")).toHaveText(`Every week on ${WEEKDAY[tomorrow.getDay()].replace(/^./, (c) => c.toUpperCase())}`);
+
+  await select.selectOption("custom");
+  await page.getByTestId("repeat-interval").fill("2");
+  const second = WEEKDAY[dayAfter.getDay()].slice(0, 3);
+  await page.locator(`[data-testid=repeat-day][data-day=${second}]`).click();
+  await page.getByTestId("repeat-end").selectOption("count");
+  await page.getByTestId("repeat-count").fill("6");
+  await expect(page.getByTestId("repeat-summary")).toContainText("Every 2 weeks on");
+  await expect(page.getByTestId("repeat-summary")).toContainText("6 times");
+  await snap(page, testInfo, "editor-repeat-custom");
+  await page.keyboard.press("Control+Enter");
+
+  await expect.poll(() => sentOf(fake, "create-event").length, { timeout: 10_000 }).toBe(1);
+  const b = sentOf(fake, "create-event")[0].body;
+  expect(b.start).toEqual({ dateTime: `${ymd(tomorrow)}T09:00:00`, timeZone: zone });
+  expect(b.end).toEqual({ dateTime: `${ymd(tomorrow)}T09:30:00`, timeZone: zone });
+  expect(b.recurrence.pattern).toMatchObject({ type: "weekly", interval: 2, firstDayOfWeek: "monday" });
+  expect([...b.recurrence.pattern.daysOfWeek].sort()).toEqual([WEEKDAY[tomorrow.getDay()], WEEKDAY[dayAfter.getDay()]].sort());
+  expect(b.recurrence.range).toEqual({ type: "numbered", startDate: ymd(tomorrow), numberOfOccurrences: 6, recurrenceTimeZone: zone });
+});
+
+test("a preset follows the start date; a pattern that can't be saved says why", async ({ inbox: page, fake }) => {
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Gym tomorrow 7am");
+  await page.keyboard.press("Tab");
+  await page.getByTestId("editor-repeat-select").selectOption("weekly");
+  const start = page.getByTestId("editor-start-date");
+  const d = new Date();
+  d.setDate(d.getDate() + 2);
+  await start.fill(ymd(d));
+  await start.dispatchEvent("change");
+  await expect(page.getByTestId("repeat-summary")).toHaveText(`Every week on ${WEEKDAY[d.getDay()].replace(/^./, (c) => c.toUpperCase())}`);
+
+  // Custom weekly with no days: not saved.
+  await page.getByTestId("editor-repeat-select").selectOption("custom");
+  await page.locator(`[data-testid=repeat-day][aria-pressed=true]`).click();
+  await expect(page.getByTestId("repeat-problem")).toHaveText("Pick at least one day to repeat on");
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByTestId("editor-error")).toHaveText("Pick at least one day to repeat on");
+  await page.waitForTimeout(300);
+  expect(sentOf(fake, "create-event")).toEqual([]);
+});
+
+test("editing a series' pattern: the end date; one occurrence can't change it", async ({ inbox: page, fake }) => {
+  // One occurrence: the pattern is shown, not editable.
+  await openEditor(page, "evt-review-1", "o");
+  await expect(page.getByTestId("editor-repeat-select")).toHaveCount(0);
+  await expect(page.getByTestId("editor-repeat")).toHaveText("Part of a series");
+  await page.keyboard.press("Escape");
+
+  await openEditor(page, "evt-review-1", "s");
+  await expect(page.getByTestId("editor-repeat-select")).toHaveValue("weekly"); // recognised as the preset
+  await page.getByTestId("repeat-end").selectOption("until");
+  const until = new Date();
+  until.setDate(until.getDate() + 30);
+  await page.getByTestId("repeat-until").fill(ymd(until));
+  await page.getByTestId("repeat-until").dispatchEvent("change");
+  await expect(page.getByTestId("repeat-change-note")).toBeVisible();
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "update-event").length, { timeout: 10_000 }).toBe(1);
+  const { id, body } = sentOf(fake, "update-event")[0];
+  expect(id).toBe("evt-review-series");
+  expect(body.recurrence.range).toMatchObject({ type: "endDate", endDate: ymd(until) });
+  expect(body.start.timeZone).toBe(zone); // with its local time
+  expect(body.start.dateTime).toMatch(/T10:00:00$/);
+});
+
+test("stopping a series warns first, then sends no pattern", async ({ inbox: page, fake }) => {
+  await openEditor(page, "evt-review-1", "s");
+  await page.getByTestId("editor-repeat-select").selectOption("none");
+  await expect(page.getByTestId("repeat-stop-warning")).toContainText("the other occurrences are removed and guests are told");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "update-event").length, { timeout: 10_000 }).toBe(1);
+  expect(sentOf(fake, "update-event")[0].body).toEqual({ recurrence: null });
+});
+
+test("a single event can be made to repeat", async ({ inbox: page, fake }) => {
+  await openEditor(page, "evt-lunch");
+  await page.getByTestId("editor-repeat-select").selectOption("weekdays");
+  await expect(page.getByTestId("repeat-summary")).toHaveText("Every weekday");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "update-event").length, { timeout: 10_000 }).toBe(1);
+  const b = sentOf(fake, "update-event")[0].body;
+  expect(b.recurrence.pattern.daysOfWeek).toEqual(["monday", "tuesday", "wednesday", "thursday", "friday"]);
+  expect(b.start).toEqual({ dateTime: expect.stringMatching(/T13:00:00$/), timeZone: zone });
+  // Reopened, it's the series it now is.
+  await expect(page.getByTestId("event-editor")).toHaveCount(0);
+  await page.waitForTimeout(1500);
+  await openEditor(page, "evt-lunch");
+  await expect(page.getByTestId("editor-repeat-select")).toHaveValue("weekdays");
+});

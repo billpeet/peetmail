@@ -20,6 +20,23 @@ pub struct Times {
     pub all_day: bool,
     /// IANA zone the dates of all-day events (and a series' range) are in.
     pub time_zone: String,
+    /// The same start and end as wall-clock times in `time_zone` (YYYY-MM-DDTHH:MM:SS), sent
+    /// for a series: it repeats at that local time, across daylight-saving changes. (Pinned
+    /// to UTC, a 9am meeting would move to 8 or 10 when the clocks change.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_end: Option<String>,
+}
+
+impl Times {
+    /// The wall-clock pair, when given for a timed event.
+    fn local(&self) -> Option<(&str, &str)> {
+        match (&self.local_start, &self.local_end) {
+            (Some(s), Some(e)) if !self.all_day => Some((s, e)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +138,8 @@ fn graph_times(t: &Times) -> (Value, Value) {
             json!({ "dateTime": format!("{}T00:00:00", t.start), "timeZone": t.time_zone }),
             json!({ "dateTime": format!("{}T00:00:00", t.end), "timeZone": t.time_zone }),
         )
+    } else if let Some((s, e)) = t.local() {
+        (json!({ "dateTime": s, "timeZone": t.time_zone }), json!({ "dateTime": e, "timeZone": t.time_zone }))
     } else {
         let bare = |s: &str| s.trim_end_matches('Z').to_string();
         (json!({ "dateTime": bare(&t.start), "timeZone": "UTC" }), json!({ "dateTime": bare(&t.end), "timeZone": "UTC" }))
@@ -188,9 +207,9 @@ pub fn from_graph(v: &Value, series: bool, local_zone: &str) -> Option<EditableE
     let all_day = v["isAllDay"].as_bool().unwrap_or(false);
     let date = |p: &str| v.pointer(p).and_then(Value::as_str).and_then(|d| d.get(..10)).map(String::from);
     let times = if all_day {
-        Times { start: date("/start/dateTime")?, end: date("/end/dateTime")?, all_day, time_zone: local_zone.into() }
+        Times { start: date("/start/dateTime")?, end: date("/end/dateTime")?, all_day, time_zone: local_zone.into(), local_start: None, local_end: None }
     } else {
-        Times { start: graph_instant(&v["start"])?, end: graph_instant(&v["end"])?, all_day, time_zone: local_zone.into() }
+        Times { start: graph_instant(&v["start"])?, end: graph_instant(&v["end"])?, all_day, time_zone: local_zone.into(), local_start: None, local_end: None }
     };
     let body = v.pointer("/body/content").and_then(Value::as_str).unwrap_or_default();
     Some(EditableEvent {
@@ -248,6 +267,10 @@ pub fn google_body(c: &EventChanges) -> Value {
         if t.all_day {
             b.insert("start".into(), json!({ "date": t.start }));
             b.insert("end".into(), json!({ "date": t.end }));
+        } else if let Some((s, e)) = t.local() {
+            // Google needs the zone for a recurring event's times anyway.
+            b.insert("start".into(), json!({ "dateTime": s, "timeZone": t.time_zone }));
+            b.insert("end".into(), json!({ "dateTime": e, "timeZone": t.time_zone }));
         } else {
             b.insert("start".into(), json!({ "dateTime": t.start, "timeZone": "UTC" }));
             b.insert("end".into(), json!({ "dateTime": t.end, "timeZone": "UTC" }));
@@ -295,8 +318,8 @@ pub fn from_google(v: &Value, series: bool, local_zone: &str) -> Option<Editable
     let s = |p: &str| v.pointer(p).and_then(Value::as_str).map(String::from);
     let utc = |x: &str| chrono::DateTime::parse_from_rfc3339(x).ok().map(|d| d.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string());
     let times = match (s("/start/dateTime"), s("/start/date")) {
-        (Some(st), _) => Times { start: utc(&st)?, end: utc(&s("/end/dateTime")?)?, all_day: false, time_zone: local_zone.into() },
-        (None, Some(d)) => Times { start: d, end: s("/end/date")?, all_day: true, time_zone: local_zone.into() },
+        (Some(st), _) => Times { start: utc(&st)?, end: utc(&s("/end/dateTime")?)?, all_day: false, time_zone: local_zone.into(), local_start: None, local_end: None },
+        (None, Some(d)) => Times { start: d, end: s("/end/date")?, all_day: true, time_zone: local_zone.into(), local_start: None, local_end: None },
         _ => return None,
     };
     let description = s("/description").unwrap_or_default();
@@ -433,7 +456,7 @@ mod tests {
     fn changes() -> EventChanges {
         EventChanges {
             subject: Some("Planning".into()),
-            times: Some(Times { start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T03:00:00Z".into(), all_day: false, time_zone: "Australia/Sydney".into() }),
+            times: Some(Times { start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T03:00:00Z".into(), all_day: false, time_zone: "Australia/Sydney".into(), local_start: None, local_end: None }),
             location: Some("Room 2".into()),
             location_email: None,
             description_html: Some("<p>Bring <b>numbers</b></p><script>x()</script>".into()),
@@ -464,6 +487,38 @@ mod tests {
     }
 
     #[test]
+    fn a_series_is_sent_in_local_time_so_it_survives_daylight_saving() {
+        let c = EventChanges {
+            times: Some(Times {
+                start: "2026-10-27T22:00:00Z".into(),
+                end: "2026-10-27T22:30:00Z".into(),
+                all_day: false,
+                time_zone: "Australia/Sydney".into(),
+                local_start: Some("2026-10-28T09:00:00".into()),
+                local_end: Some("2026-10-28T09:30:00".into()),
+            }),
+            recurrence: Some(Some(crate::recurrence::Recurrence {
+                freq: crate::recurrence::Freq::Weekly,
+                interval: 1,
+                days: vec!["wed".into()],
+                ordinal: None,
+                day_of_month: None,
+                month: None,
+                end: crate::recurrence::End::Count { count: 5 },
+                start: "2026-10-28".into(),
+            })),
+            ..Default::default()
+        };
+        let g = graph_body(&c, "Australia/Sydney");
+        assert_eq!(g["start"], json!({ "dateTime": "2026-10-28T09:00:00", "timeZone": "Australia/Sydney" }));
+        assert_eq!(g["recurrence"]["pattern"]["daysOfWeek"], json!(["wednesday"]));
+        assert_eq!(g["recurrence"]["range"]["numberOfOccurrences"], 5);
+        let gg = google_body(&c);
+        assert_eq!(gg["end"], json!({ "dateTime": "2026-10-28T09:30:00", "timeZone": "Australia/Sydney" }));
+        assert_eq!(gg["recurrence"], json!(["RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=5"]));
+    }
+
+    #[test]
     fn a_room_goes_in_as_the_location_and_a_resource_attendee() {
         let c = EventChanges {
             location: Some("Boardroom".into()),
@@ -485,7 +540,7 @@ mod tests {
         assert_eq!(b["attendees"][1]["responseStatus"], "needsAction");
         assert_eq!((b["transparency"].clone(), b["visibility"].clone()), (json!("transparent"), json!("private")));
         assert_eq!(b["reminders"], json!({ "useDefault": false, "overrides": [{ "method": "popup", "minutes": 30 }] }));
-        let all_day = google_body(&EventChanges { times: Some(Times { start: "2026-11-06".into(), end: "2026-11-07".into(), all_day: true, time_zone: "UTC".into() }), ..Default::default() });
+        let all_day = google_body(&EventChanges { times: Some(Times { start: "2026-11-06".into(), end: "2026-11-07".into(), all_day: true, time_zone: "UTC".into(), local_start: None, local_end: None }), ..Default::default() });
         assert_eq!(all_day, json!({ "start": { "date": "2026-11-06" }, "end": { "date": "2026-11-07" } }));
         assert_eq!(google_body(&EventChanges { recurrence: Some(None), ..Default::default() }), json!({ "recurrence": [] }));
     }

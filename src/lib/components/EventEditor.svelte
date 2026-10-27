@@ -11,11 +11,12 @@
   import { calendar, localDate } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
-  import { describeRecurrence, type Recurrence } from "$lib/recurrence";
+  import { describeRecurrence, recurrenceProblem, sameRecurrence, type Recurrence } from "$lib/recurrence";
   import { senderName } from "$lib/format";
   import { narrow } from "$lib/contacts";
   import { latestOnly, STALE } from "$lib/latest";
   import RichText from "./RichText.svelte";
+  import RepeatEditor from "./RepeatEditor.svelte";
 
   const req = calendar.editing!;
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -26,7 +27,7 @@
 
   let loading = $state(!creating);
   let loadError = $state<string | null>(null);
-  let original: EditableEvent | null = null;
+  let original = $state.raw<EditableEvent | null>(null);
 
   // ----- fields -----
   const REMEMBER = "peetmail.quickAddAccount";
@@ -58,6 +59,8 @@
   let titleInput: HTMLInputElement | undefined = $state();
 
   const guestMode = $derived(!isOrganizer);
+  /** The pattern can change when creating, or for your own event or whole series (not one occurrence). */
+  const canEditRepeat = $derived(creating || (!guestMode && (seriesScope || !inSeries)));
   const account = $derived(mail.accountOf(accountId));
 
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -96,7 +99,10 @@
     if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return "Check the start and end";
     if (e <= s) return "The end is before the start";
     const iso = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
-    return { start: iso(s), end: iso(e), allDay: false, timeZone: zone };
+    const t: EventTimes = { start: iso(s), end: iso(e), allDay: false, timeZone: zone };
+    // A series repeats at its local time (see Times.local_start in event_edit.rs).
+    if (recurrence) Object.assign(t, { localStart: `${startDate}T${startTime}:00`, localEnd: `${endDate}T${endTime}:00` });
+    return t;
   }
 
   // Moving the start keeps the length.
@@ -347,7 +353,12 @@
     const minutes = reminder === "none" ? null : reminder === "default" ? undefined : Number(reminder);
     if (!original) return c;
     if (subject !== original.subject) c.subject = subject.trim();
-    if (JSON.stringify(times) !== JSON.stringify({ ...original.times, timeZone: zone })) c.times = times;
+    const repeatChanged = canEditRepeat && !sameRecurrence(recurrence, original.recurrence);
+    const plain = { start: times.start, end: times.end, allDay: times.allDay, timeZone: times.timeZone };
+    const o = original.times;
+    // A new or changed pattern goes with its times, so it repeats at the local time.
+    if (JSON.stringify(plain) !== JSON.stringify({ start: o.start, end: o.end, allDay: o.allDay, timeZone: zone }) || (repeatChanged && recurrence)) c.times = times;
+    if (repeatChanged) c.recurrence = recurrence;
     if (location !== original.location || locationEmail !== original.locationEmail) {
       c.location = location.trim();
       if (locationEmail) c.locationEmail = locationEmail;
@@ -379,6 +390,11 @@
       error = times;
       return;
     }
+    const repeatProblem = canEditRepeat && recurrence ? recurrenceProblem(recurrence) : null;
+    if (repeatProblem) {
+      error = repeatProblem;
+      return;
+    }
     saving = true;
     try {
       if (creating) {
@@ -393,6 +409,7 @@
           details: {
             ...(descriptionHtml ? { descriptionHtml } : {}),
             ...(locationEmail && location.trim() ? { locationEmail } : {}),
+            ...(recurrence ? { recurrence, times } : {}),
             ...(attendees.length ? { attendees } : {}),
             showAs,
             reminder: { minutes },
@@ -527,10 +544,21 @@
             <span class="text-xs text-ink-500">{zone}</span>
           </span>
 
-          <span>Repeat</span>
-          <span data-testid="editor-repeat" class="text-ink-300">
-            {#if recurrence}{describeRecurrence(recurrence)}{:else if inSeries && !seriesScope}Part of a series{:else}Doesn't repeat{/if}
-          </span>
+          <span class={canEditRepeat ? "self-start pt-1.5" : ""}>Repeat</span>
+          {#if canEditRepeat}
+            <div>
+              <RepeatEditor bind:value={recurrence} start={startDate} />
+              {#if seriesScope && original?.recurrence && !recurrence}
+                <p data-testid="repeat-stop-warning" class="mt-1 text-xs text-amber-300">Saving keeps only the first meeting; the other occurrences are removed{attendees.length ? " and guests are told" : ""}.</p>
+              {:else if seriesScope && original?.recurrence && recurrence && !sameRecurrence(recurrence, original.recurrence)}
+                <p data-testid="repeat-change-note" class="mt-1 text-xs text-ink-500">Changing the pattern resets occurrences you changed one at a time.</p>
+              {/if}
+            </div>
+          {:else}
+            <span data-testid="editor-repeat" class="text-ink-300">
+              {#if recurrence}{describeRecurrence(recurrence)}{:else if inSeries && !seriesScope}Part of a series{:else}Doesn't repeat{/if}
+            </span>
+          {/if}
 
           <span>Location</span>
           <div class="relative">

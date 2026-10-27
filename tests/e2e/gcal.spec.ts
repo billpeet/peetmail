@@ -250,3 +250,23 @@ test("editing and deleting Google events: PATCH with only the changes; a guest r
     { kind: "delete-event", id: "gcal-lunch", sendUpdates: "none" },
   ]);
 });
+
+test("a repeating Google event goes as an RRULE, in local time", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Book club tomorrow 7pm");
+  // To the Google calendar.
+  await page.keyboard.press("Control+Tab");
+  await expect(page.getByTestId("quick-add-account")).toContainText("Google Calendar");
+  await page.keyboard.press("Tab");
+  await page.getByTestId("editor-repeat-select").selectOption("monthlyDay");
+  await page.getByTestId("repeat-end").selectOption("count");
+  await page.getByTestId("repeat-count").fill("3");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "create-event").length, { timeout: 10_000 }).toBe(1);
+  const b = gmail.state.sent.find((s) => s.kind === "create-event")!.body;
+  const t = new Date();
+  t.setDate(t.getDate() + 1);
+  expect(b.recurrence).toEqual([`RRULE:FREQ=MONTHLY;BYMONTHDAY=${t.getDate()};COUNT=3`]);
+  expect(b.start).toEqual({ dateTime: expect.stringMatching(/T19:00:00$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+});

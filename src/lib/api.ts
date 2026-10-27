@@ -288,6 +288,9 @@ export type EventTimes = {
   end: string;
   allDay: boolean;
   timeZone: string;
+  /** Wall-clock start/end in timeZone (YYYY-MM-DDTHH:MM:SS), sent for a series so it keeps its local time. */
+  localStart?: string;
+  localEnd?: string;
 };
 export type EditAttendee = { name: string | null; address: string; optional: boolean; response?: string | null; /** A room being booked. */ resource?: boolean };
 /** A meeting room of a Microsoft 365 tenant. */

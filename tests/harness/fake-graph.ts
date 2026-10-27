@@ -404,8 +404,15 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const e = state.events.get(decodeURIComponent(eventGet[1]));
       if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
       const b = await readBody(req);
+      // UTC as is; all-day as its date; a local time in a zone (a series) converted, taking the
+      // zone as this machine's (the app under test runs in the same one).
+      const allDay = b.isAllDay ?? e.isAllDay;
       const utc = (t: { dateTime: string; timeZone: string }) =>
-        t.timeZone === "UTC" ? { dateTime: `${t.dateTime}.0000000`, timeZone: "UTC" } : { dateTime: `${t.dateTime.slice(0, 10)}T00:00:00.0000000`, timeZone: "UTC" };
+        t.timeZone === "UTC"
+          ? { dateTime: `${t.dateTime}.0000000`, timeZone: "UTC" }
+          : allDay
+            ? { dateTime: `${t.dateTime.slice(0, 10)}T00:00:00.0000000`, timeZone: "UTC" }
+            : { dateTime: `${new Date(t.dateTime).toISOString().slice(0, 19)}.0000000`, timeZone: "UTC" };
       const { start, end, attendees, ...rest } = b;
       Object.assign(e, rest);
       if (start) e.start = utc(start);
