@@ -31,7 +31,7 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed" | "editevent";
 
 export type ComposerState = {
   /** The account it's sent from. */

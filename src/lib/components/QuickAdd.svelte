@@ -67,8 +67,28 @@
     }
   }
 
+  /** More than a title and a time: the full editor, prefilled with what's typed so far. */
+  function moreOptions() {
+    const ev = parsed?.ok ? parsed.event : null;
+    calendar.editing = {
+      mode: "create",
+      accountId: target?.id ?? null,
+      prefill: ev ? { subject: ev.title, start: ev.start, end: ev.end, allDay: ev.allDay, location: ev.location } : text.trim() ? { subject: text.trim(), ...nextSlot(), allDay: false, location: null } : undefined,
+    };
+    mail.overlay = "editevent";
+  }
+
+  function nextSlot() {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() < 30 ? 30 : 60);
+    return { start, end: new Date(start.getTime() + 30 * 60_000) };
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && e.ctrlKey) {
+      e.preventDefault();
+      moreOptions();
+    } else if (e.key === "Enter") {
       e.preventDefault();
       create();
     } else if (e.key === "Tab" && mail.accounts.length > 1) {
@@ -125,7 +145,7 @@
       </button>
     {/if}
     <div class="flex items-center justify-between border-t border-ink-800 px-4 py-2 text-xs text-ink-500">
-      <span><kbd>Enter</kbd> create · <kbd>Esc</kbd> cancel</span>
+      <span><kbd>Enter</kbd> create · <button data-testid="quick-add-more" onclick={moreOptions} class="hover:text-ink-100"><kbd>Ctrl</kbd> <kbd>Enter</kbd> more options</button> · <kbd>Esc</kbd> cancel</span>
       <span>Adds to your calendar; no invitations are sent.</span>
     </div>
   </div>

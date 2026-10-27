@@ -155,6 +155,18 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
       seriesMasterId: "evt-sync-series", bare: true,
     }));
   }
+  // A weekly series you organise, with guests: today's occurrence and one either side.
+  events.push(makeEvent({
+    id: "evt-review-series", type: "seriesMaster", subject: "Weekly review", start: localAt(-7, 10, 0, now), end: localAt(-7, 10, 30, now),
+    location: "Room 5", attendees: [PRIYA, SAM],
+    recurrence: {
+      pattern: { type: "weekly", interval: 1, daysOfWeek: [["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][now.getDay()]], firstDayOfWeek: "monday" },
+      range: { type: "noEnd", startDate: ymd(localAt(-7, 10, 0, now)) },
+    },
+  }));
+  for (const w of [-1, 0, 1]) {
+    events.push(makeEvent({ id: `evt-review-${w + 1}`, subject: "", start: localAt(7 * w, 10, 0, now), end: localAt(7 * w, 10, 30, now), seriesMasterId: "evt-review-series", bare: true }));
+  }
   // Moved after you accepted (see msg-update-*): new time, and Graph resets your response.
   events.push(makeEvent({
     id: "evt-update", subject: "Team health: conflict & commitment", start: localAt(3, 10, 0, now), end: localAt(3, 10, 45, now),

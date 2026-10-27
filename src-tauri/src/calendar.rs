@@ -598,11 +598,19 @@ pub fn create(conn: &mut Connection, account_id: i64, e: &crate::outbox::NewEven
             location: e.location.clone(),
             organizer_name: organizer.1.map(String::from),
             organizer_address: Some(organizer.0.to_string()),
-            attendees_json: "[]".into(),
+            attendees_json: e
+                .details
+                .attendees
+                .as_ref()
+                .map(|list| {
+                    Value::Array(list.iter().map(|a| json!({ "name": a.name, "address": a.address, "response": "notResponded", "type": if a.optional { "optional" } else { "required" } })).collect())
+                        .to_string()
+                })
+                .unwrap_or_else(|| "[]".into()),
             response: Some("organizer".into()),
             is_organizer: true,
             is_cancelled: false,
-            show_as: Some(if e.all_day { "free" } else { "busy" }.into()),
+            show_as: Some(e.details.show_as.clone().unwrap_or_else(|| if e.all_day { "free" } else { "busy" }.into())),
             join_url: None,
             web_link: None,
             preview: String::new(),
@@ -803,7 +811,7 @@ mod tests {
             let a = db::upsert_account(c, "microsoft", "b@x.com", Some("Boris"), b"t")?.id;
             let new = crate::outbox::NewEvent {
                 subject: "Lunch with Sam".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(),
-                all_day: false, location: None, time_zone: "UTC".into(),
+                all_day: false, location: None, time_zone: "UTC".into(), details: Default::default(),
             };
             let local = create(c, a, &new, ("b@x.com", Some("Boris")))?;
             assert!(local.remote_id.starts_with("local:"));

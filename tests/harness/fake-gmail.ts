@@ -495,8 +495,20 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
       const b = await readBody(req);
       Object.assign(ev!, b);
       touchEvent(ev!.id);
-      state.sent.push({ kind: "rsvp", id: ev!.id, sendUpdates: q.get("sendUpdates"), attendees: b.attendees });
+      // Only your answer changed: an RSVP. Anything else: an edit.
+      const rsvp = Object.keys(b).length === 1 && "attendees" in b;
+      state.sent.push(rsvp ? { kind: "rsvp", id: ev!.id, sendUpdates: q.get("sendUpdates"), attendees: b.attendees } : { kind: "update-event", id: ev!.id, sendUpdates: q.get("sendUpdates"), body: b });
       return reply(200, ev);
+    }
+    if (one && method === "DELETE") {
+      for (const x of [...state.events.values()]) {
+        if (x.id === ev!.id || x.recurringEventId === ev!.id) {
+          state.events.delete(x.id);
+          touchEvent(x.id);
+        }
+      }
+      state.sent.push({ kind: "delete-event", id: ev!.id, sendUpdates: q.get("sendUpdates") });
+      return reply(204, "");
     }
     reply(404, err(404, `No fake calendar route for ${method} ${rest}`));
   }

@@ -103,6 +103,8 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
 | `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
 | `Ctrl+Q` | Quit (closing the window keeps PeetMail in the tray) | ✓ |
+| `e` / `#` | In an event's details: edit / delete (a recurring event asks: this occurrence `o` or the series `s`) | ✓ |
+| `Ctrl+Enter` | In quick add: open the full event editor | ✓ |
 | `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
@@ -204,3 +206,10 @@ When you sign in, Google shows "Google hasn't verified this app": choose Advance
 - **WebView2 memory.** Expect roughly 100 to 150 MB. Watch it as features land, and keep the DOM small (the virtual list, collapsed messages).
 - **Single DB mutex.** Fine while queries take microseconds. If sync writes ever cause visible UI stalls, split into a writer connection and a read pool.
 - **Calendar scope.** Outlook-style calendars get feature-heavy fast. Hold the line on minimal.
+
+## Event details and editing (after Phase 3)
+
+- [x] Details popup: description (sanitized, in a sandboxed frame that never scrolls itself), repeat pattern in words, a banner on occurrences, calendar, location, join link (also found in the location or description: Teams, Zoom, Meet, Webex...), show-as, reminder, private, categories, organiser and guests grouped by answer (collapsed past 5), RSVP with this-occurrence/series scope. Join buttons on calendar blocks.
+- [x] Editor (create and edit): title, calendar, all day, start/end (length kept when the start moves), location, guests with suggestions, show-as, reminder, private, rich-text description (Tiptap). Only changed fields are sent (Graph PATCH / Google PATCH with sendUpdates=all). Recurring events: edit this occurrence or the whole series (the master), shown in a banner. Guests can change only their show-as and reminder. Delete: your own event, cancel a meeting you organise (guests told, optional message), or remove an invitation from your calendar; occurrence or series.
+- [ ] Repeat editor (pattern, interval, weekdays, nth weekday, end) for creating and editing series.
+

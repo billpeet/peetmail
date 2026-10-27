@@ -329,6 +329,16 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         location: b.location?.displayName,
         showAs: b.showAs,
       });
+      // A full event from the editor: guests, description, reminder, privacy, repeat.
+      if (b.attendees) e.attendees = b.attendees.map((a: any) => ({ emailAddress: a.emailAddress, status: { response: "none" }, type: a.type ?? "required" }));
+      if (b.body) e.body = b.body;
+      if ("isReminderOn" in b) e.isReminderOn = b.isReminderOn;
+      if (b.reminderMinutesBeforeStart !== undefined) e.reminderMinutesBeforeStart = b.reminderMinutesBeforeStart;
+      if (b.sensitivity) e.sensitivity = b.sensitivity;
+      if (b.recurrence) {
+        e.recurrence = b.recurrence;
+        e.type = "seriesMaster";
+      }
       state.events.set(e.id, e);
       eventChange(e.id);
       state.sent.push({ kind: "create-event", id: e.id, body: b });
@@ -340,6 +350,52 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const e = state.events.get(decodeURIComponent(eventGet[1]));
       if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
       return reply(200, fullForm(e));
+    }
+    if (eventGet && method === "PATCH") {
+      const e = state.events.get(decodeURIComponent(eventGet[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      const b = await readBody(req);
+      const utc = (t: { dateTime: string; timeZone: string }) =>
+        t.timeZone === "UTC" ? { dateTime: `${t.dateTime}.0000000`, timeZone: "UTC" } : { dateTime: `${t.dateTime.slice(0, 10)}T00:00:00.0000000`, timeZone: "UTC" };
+      const { start, end, attendees, ...rest } = b;
+      Object.assign(e, rest);
+      if (start) e.start = utc(start);
+      if (end) e.end = utc(end);
+      if (attendees) e.attendees = attendees.map((a: any) => ({ emailAddress: a.emailAddress, status: { response: "none" }, type: a.type ?? "required" }));
+      if (b.recurrence === null) delete e.recurrence;
+      if (e.type === "occurrence" && (start || end || b.subject)) e.type = "exception";
+      e.bare = false;
+      eventChange(e.id);
+      state.sent.push({ kind: "update-event", id: e.id, body: b });
+      return reply(200, fullForm(e));
+    }
+    if (eventGet && method === "DELETE") {
+      const id = decodeURIComponent(eventGet[1]);
+      if (!state.events.has(id)) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      for (const ev of [...state.events.values()]) {
+        if (ev.id === id || ev.seriesMasterId === id) {
+          state.events.delete(ev.id);
+          eventChange(ev.id, true);
+        }
+      }
+      state.sent.push({ kind: "delete-event", id });
+      return reply(204, "");
+    }
+    const cancel = p.match(/^\/me\/events\/([^/]+)\/cancel$/);
+    if (cancel && method === "POST") {
+      const id = decodeURIComponent(cancel[1]);
+      const e = state.events.get(id);
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      if (!e.isOrganizer) return graphError(reply, 400, "ErrorAccessDenied", "Your request can't be completed. You need to be an organizer to cancel a meeting.");
+      const b = await readBody(req);
+      for (const ev of [...state.events.values()]) {
+        if (ev.id === id || ev.seriesMasterId === id) {
+          state.events.delete(ev.id);
+          eventChange(ev.id, true);
+        }
+      }
+      state.sent.push({ kind: "cancel-event", id, comment: b.Comment ?? b.comment ?? "" });
+      return reply(202, "");
     }
 
     const rsvp = p.match(/^\/me\/events\/([^/]+)\/(accept|tentativelyAccept|decline)$/);

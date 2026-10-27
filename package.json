@@ -25,7 +25,10 @@
   "dependencies": {
     "@lucide/svelte": "^1.61.0",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tiptap/core": "^3.32.0",
+    "@tiptap/extension-placeholder": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

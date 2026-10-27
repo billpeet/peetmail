@@ -35,6 +35,11 @@ pub enum Op {
     /// Create an event; the outbox row's remote_id is the local placeholder ("local:...")
     /// that's swapped for the real event once Graph returns it.
     CreateEvent(NewEvent),
+    /// Edit an event (remote_id: the occurrence, or the series master).
+    UpdateEvent { changes: crate::event_edit::EventChanges },
+    /// Delete an event. `cancel`: you organise it and it has guests, so tell them
+    /// (Graph's cancel with an optional message; Google sendUpdates=all).
+    DeleteEvent { cancel: bool, comment: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,6 +53,9 @@ pub struct NewEvent {
     pub location: Option<String>,
     /// IANA zone for all-day events (their dates are local to it).
     pub time_zone: String,
+    /// The rest of a full event (description, guests, show-as, reminder, privacy, repeat).
+    #[serde(default, skip_serializing_if = "crate::event_edit::EventChanges::is_empty")]
+    pub details: crate::event_edit::EventChanges,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -287,7 +295,8 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
 
         let result = execute(state, &row).await;
         // Either way a creation changes the calendar: the real event, or the placeholder removed.
-        let calendar_touched = matches!(row.op, Op::CreateEvent(_)) && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
+        let calendar_op = matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. } | Op::DeleteEvent { .. });
+        let calendar_touched = calendar_op && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
         state.db.with(|c| {
             match &result {
                 Ok(response) => {
@@ -306,6 +315,11 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
                     // A rejected creation mustn't leave its placeholder in the calendar.
                     if let (Op::CreateEvent(_), Some(local)) = (&row.op, row.remote_id.as_deref()) {
                         crate::calendar::delete_event(c, row.account_id, local)?;
+                    }
+                    // A rejected edit or delete already shows locally: a full calendar resync
+                    // puts the server's version back.
+                    if matches!(row.op, Op::UpdateEvent { .. } | Op::DeleteEvent { .. }) {
+                        c.execute("UPDATE calendar_sync SET delta_link = NULL WHERE account_id = ?1", [row.account_id])?;
                     }
                     c.execute(
                         "UPDATE outbox SET status = 'failed', attempts = attempts + 1, last_error = ?2 WHERE id = ?1",
@@ -388,13 +402,20 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
             json!({ "sendResponse": true }),
         ),
         Op::CreateEvent(e) => (Method::POST, format!("{base}/me/events"), create_body(e)),
+        Op::UpdateEvent { changes } => (Method::PATCH, format!("{base}/me/events/{}", rid()?), crate::event_edit::graph_body(changes, "UTC")),
+        Op::DeleteEvent { cancel: true, comment } => (
+            Method::POST,
+            format!("{base}/me/events/{}/cancel", rid()?),
+            json!({ "Comment": comment.clone().unwrap_or_default() }),
+        ),
+        Op::DeleteEvent { cancel: false, .. } => (Method::DELETE, format!("{base}/me/events/{}", rid()?), Value::Null),
     };
-    let prefer: &[&str] = if matches!(row.op, Op::CreateEvent(_)) {
+    let prefer: &[&str] = if matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. }) {
         &[PREFER_IMMUTABLE, r#"outlook.timezone="UTC""#]
     } else {
         &[PREFER_IMMUTABLE]
     };
-    mail::graph_call(state, row.account_id, method, &url, Some(&body), prefer).await
+    mail::graph_call(state, row.account_id, method, &url, (!body.is_null()).then_some(&body), prefer).await
 }
 
 const SNOOZE_FOLDER_NAME: &str = "PeetMail Snoozed";
@@ -448,6 +469,12 @@ fn create_body(e: &NewEvent) -> Value {
     let mut body = json!({ "subject": e.subject, "start": start, "end": end, "isAllDay": e.all_day, "showAs": if e.all_day { "free" } else { "busy" } });
     if let Some(l) = &e.location {
         body["location"] = json!({ "displayName": l });
+    }
+    // A full event's extra fields (the editor), in Graph's terms.
+    if let Value::Object(extra) = crate::event_edit::graph_body(&e.details, &e.time_zone) {
+        for (k, v) in extra {
+            body[k] = v;
+        }
     }
     body
 }
@@ -565,7 +592,7 @@ mod tests {
     fn create_event_bodies() {
         let timed = NewEvent {
             subject: "Lunch".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(),
-            all_day: false, location: Some("Café".into()), time_zone: "Australia/Sydney".into(),
+            all_day: false, location: Some("Café".into()), time_zone: "Australia/Sydney".into(), details: Default::default(),
         };
         let b = create_body(&timed);
         assert_eq!(b["start"], json!({ "dateTime": "2026-10-30T02:00:00", "timeZone": "UTC" }));

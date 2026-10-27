@@ -46,6 +46,11 @@ export function startOfWeek(d: Date, weekStartsOn = 1): Date {
   return addDays(day, -offset);
 }
 
+/** Open the editor: a new event (optionally prefilled from quick add) or an existing one. */
+export type EditRequest =
+  | { mode: "create"; accountId: number | null; prefill?: { subject: string; start: Date; end: Date; allDay: boolean; location: string | null } }
+  | { mode: "edit"; event: CalendarEvent; series: boolean };
+
 class CalendarStore {
   /** Day shown in the day view (local midnight). */
   day = $state(startOfDay(new Date()));
@@ -57,6 +62,8 @@ class CalendarStore {
   weekEvents = $state.raw<CalendarEvent[]>([]);
   /** Event whose details are open. */
   selected = $state.raw<CalendarEvent | null>(null);
+  /** What the event editor is doing (overlay "editevent"). */
+  editing = $state.raw<EditRequest | null>(null);
   /**
    * While an invite is open: the event to show in context. The day view jumps to its day
    * and highlights it; the right pane shows the calendar. Cleared when the invite closes.

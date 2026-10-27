@@ -661,6 +661,78 @@ pub async fn invite_event(state: State<'_, AppState>, message_id: i64) -> Result
     crate::calendar::invite_for_message(&state, message_id).await
 }
 
+/// The event the editor works on, fresh from the server: the occurrence, or with
+/// `series` its series master. `time_zone`: the user's IANA zone (for all-day dates).
+#[tauri::command]
+pub async fn event_for_edit(
+    state: State<'_, AppState>,
+    account_id: i64,
+    remote_id: String,
+    series: bool,
+    time_zone: String,
+) -> Result<crate::event_edit::EditableEvent> {
+    crate::event_edit::load(&state, account_id, &remote_id, series, &time_zone).await
+}
+
+/// Saves an edit: shown at once, sent through the outbox (guests get an update).
+/// `remote_id` is what the editor loaded (an occurrence or a series master).
+#[tauri::command]
+pub fn update_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    remote_id: String,
+    changes: crate::event_edit::EventChanges,
+) -> Result<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    if changes.subject.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err(AppError::Other("an event needs a title".into()));
+    }
+    state.db.with(|c| {
+        let tx = c.transaction()?;
+        crate::event_edit::apply_locally(&tx, account_id, &remote_id, &changes)?;
+        outbox::enqueue(&tx, account_id, Some(&remote_id), &Op::UpdateEvent { changes }, std::time::Duration::ZERO)?;
+        tx.commit()?;
+        Ok(())
+    })?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(())
+}
+
+/// Deletes an event (an occurrence, or a whole series via its master). `cancel`: you
+/// organise it and it has guests: they get a cancellation (with `comment`).
+#[tauri::command]
+pub fn delete_calendar_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+    remote_id: String,
+    cancel: bool,
+    comment: Option<String>,
+) -> Result<()> {
+    state.db.with(|c| {
+        let tx = c.transaction()?;
+        crate::event_edit::delete_locally(&tx, account_id, &remote_id)?;
+        // A placeholder that never reached the server just goes.
+        if remote_id.starts_with("local:") {
+            tx.execute("DELETE FROM outbox WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'", rusqlite::params![account_id, remote_id])?;
+        } else {
+            let comment = comment.filter(|c| !c.trim().is_empty());
+            outbox::enqueue(&tx, account_id, Some(&remote_id), &Op::DeleteEvent { cancel, comment }, std::time::Duration::ZERO)?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    outbox::emit_status(&app, &state);
+    outbox::kick(&app);
+    let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, serde_json::json!({ "accountId": account_id }));
+    Ok(())
+}
+
 /// Everything the event popup shows beyond the cached row (description, repeat pattern...).
 #[tauri::command]
 pub async fn event_detail(state: State<'_, AppState>, account_id: i64, remote_id: String) -> Result<crate::calendar::EventDetail> {

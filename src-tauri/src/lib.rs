@@ -4,6 +4,7 @@ mod calendar;
 mod commands;
 mod db;
 mod error;
+mod event_edit;
 mod gcal;
 mod gmail;
 mod gmail_send;
@@ -232,6 +233,9 @@ pub fn run() {
             commands::invite_event,
             commands::respond_to_event,
             commands::event_detail,
+            commands::event_for_edit,
+            commands::update_event,
+            commands::delete_calendar_event,
             commands::create_event,
             commands::snooze_thread,
             commands::unsnooze_thread,

@@ -220,6 +220,11 @@ export const api = {
   inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   eventDetail: (accountId: number, remoteId: string) => invoke<EventDetail>("event_detail", { accountId, remoteId }),
+  eventForEdit: (accountId: number, remoteId: string, series: boolean) =>
+    invoke<EditableEvent>("event_for_edit", { accountId, remoteId, series, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  updateEvent: (accountId: number, remoteId: string, changes: EventChanges) => invoke<void>("update_event", { accountId, remoteId, changes }),
+  deleteCalendarEvent: (accountId: number, remoteId: string, cancel: boolean, comment: string | null) =>
+    invoke<void>("delete_calendar_event", { accountId, remoteId, cancel, comment }),
   respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp, series = false) =>
     invoke<void>("respond_to_event", { accountId, eventRemoteId, response, series }),
   snoozeThread: (accountId: number, conversationId: string, until: string) =>
@@ -266,6 +271,47 @@ export type NewEvent = {
   location: string | null;
   /** IANA zone the all-day dates belong to. */
   timeZone: string;
+  /** A full event's other fields (the editor). */
+  details?: EventChanges;
+};
+
+export type EventTimes = {
+  /** Timed: UTC ISO instants. All-day: YYYY-MM-DD (end exclusive). */
+  start: string;
+  end: string;
+  allDay: boolean;
+  timeZone: string;
+};
+export type EditAttendee = { name: string | null; address: string; optional: boolean; response?: string | null };
+/** What an edit changes; missing fields stay as they are. */
+export type EventChanges = {
+  subject?: string;
+  times?: EventTimes;
+  /** "" clears it. */
+  location?: string;
+  descriptionHtml?: string;
+  attendees?: EditAttendee[];
+  showAs?: string;
+  reminder?: { minutes: number | null };
+  sensitivity?: "normal" | "private";
+  /** null stops it repeating. */
+  recurrence?: Recurrence | null;
+};
+/** The event the editor works on (fresh from the server). */
+export type EditableEvent = {
+  remoteId: string;
+  subject: string;
+  times: EventTimes;
+  location: string;
+  descriptionHtml: string;
+  attendees: EditAttendee[];
+  showAs: string;
+  reminderMinutes: number | null;
+  reminderDefault: boolean;
+  sensitivity: "normal" | "private";
+  recurrence: Recurrence | null;
+  isOrganizer: boolean;
+  series: boolean;
 };
 /** The calendar event behind a meeting-invite message. */
 export type Invite = {
