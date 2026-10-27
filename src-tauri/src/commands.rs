@@ -111,7 +111,8 @@ pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Optio
     cancel_pending_sign_in(&state);
     let (tx, rx) = tokio::sync::oneshot::channel();
     *state.sign_in_cancel.lock().expect("cancel mutex") = Some(tx);
-    let (tokens, id_token) = auth::sign_in(&app, &state.http, &cfg, rx).await?;
+    let auth_attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Provider, provider)];
+    let (tokens, id_token) = crate::telemetry::traced("auth.sign_in", auth_attrs, auth::sign_in(&app, &state.http, &cfg, rx)).await?;
     let (email, display_name) = if provider == "google" {
         (crate::gmail::fetch_profile(&state.http, &tokens.access_token).await?, id_token.as_deref().and_then(auth::id_token_name))
     } else {
@@ -197,6 +198,9 @@ pub fn list_threads(
     hidden: Option<Vec<i64>>,
 ) -> Result<Vec<ThreadRow>> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
+    let started = std::time::Instant::now();
+    let searching = split.is_none() && query.as_deref().is_some_and(|q| !q.trim().is_empty());
+    let shape = query.as_deref().map(query::shape).unwrap_or_default();
     let filter = match split {
         Some(tab) => query::split_filter(&split_queries(&state)?, tab),
         None => query::compile(query.as_deref().unwrap_or("")),
@@ -209,7 +213,15 @@ pub fn list_threads(
         (None, Some(_)) => Scope::Inboxes,
         (None, None) => Scope::AllMail,
     };
-    state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))
+    let rows = state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))?;
+    // Searches only (not every list load), and only their shape: never the words.
+    if searching && cursor.is_none() {
+        use crate::telemetry::{attr, record_ms, span_done, Key};
+        let attrs = [attr(Key::Terms, shape.0), attr(Key::Operators, shape.1), attr(Key::Results, rows.len())];
+        span_done("search.query", started.elapsed(), &attrs);
+        record_ms("search.query", started.elapsed().as_secs_f64() * 1000.0, &attrs[..2]);
+    }
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -393,6 +405,10 @@ pub struct Privacy {
     /// False for builds without a Sentry DSN (local builds): nothing is ever sent.
     configured: bool,
     crash_reports: bool,
+    /// False for builds without a telemetry endpoint.
+    usage_configured: bool,
+    /// The saved choice (on unless turned off); takes effect at the next start when turned on.
+    usage_data: bool,
     install_id: String,
     notice_seen: bool,
 }
@@ -406,6 +422,8 @@ pub fn privacy(state: State<'_, AppState>) -> Result<Privacy> {
         Ok(Privacy {
             configured: crate::crash::configured(),
             crash_reports: crate::crash::enabled(),
+            usage_configured: crate::telemetry::configured(),
+            usage_data: db::get_setting(c, crate::telemetry::KEY_USAGE_DATA)?.as_deref() != Some("off"),
             install_id: crate::crash::install_id(c)?,
             notice_seen: db::get_setting(c, KEY_PRIVACY_NOTICE)?.is_some(),
         })
@@ -415,6 +433,30 @@ pub fn privacy(state: State<'_, AppState>) -> Result<Privacy> {
 #[tauri::command]
 pub fn set_crash_reports(state: State<'_, AppState>, enabled: bool) -> Result<()> {
     crate::crash::set_enabled(&state.db, enabled)
+}
+
+/// Usage and performance data: off at once; back on from the next start.
+#[tauri::command]
+pub fn set_usage_data(state: State<'_, AppState>, enabled: bool) -> Result<()> {
+    state.db.with(|c| db::set_setting(c, crate::telemetry::KEY_USAGE_DATA, if enabled { "on" } else { "off" }))?;
+    crate::telemetry::set_opted_in(enabled);
+    Ok(())
+}
+
+/// Timings from the webview (keyboard actions to next paint, long tasks, first paint).
+#[tauri::command]
+pub fn ui_events(events: Vec<crate::telemetry::UiEvent>) {
+    crate::telemetry::record_ui(&events);
+}
+
+/// Test hook (debug builds only): export buffered telemetry now.
+#[tauri::command]
+pub fn debug_flush_telemetry() -> Result<()> {
+    if !cfg!(debug_assertions) {
+        return Err(AppError::Other("not available".into()));
+    }
+    crate::telemetry::flush();
+    Ok(())
 }
 
 #[tauri::command]

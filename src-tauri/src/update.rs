@@ -163,6 +163,18 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
             log::info!("update channel changed during the check; checking again");
             continue;
         }
+        crate::telemetry::count(
+            "peetmail.update.checks",
+            1,
+            &[
+                crate::telemetry::attr(crate::telemetry::Key::Channel, if channel == "canary" { "canary" } else { "stable" }),
+                crate::telemetry::attr(crate::telemetry::Key::Outcome, match &result {
+                    Ok(None) => "up_to_date",
+                    Ok(Some(_)) => "downloaded",
+                    Err(_) => "error",
+                }),
+            ],
+        );
         return match result {
             Ok(None) => {
                 log::info!("update check ({channel}): up to date");
@@ -203,6 +215,7 @@ async fn find_and_download(app: &AppHandle, url: Url) -> std::result::Result<Opt
         .on_before_exit(|| {
             log::info!("closing for the update installer");
             log::logger().flush();
+            crate::telemetry::shutdown();
             crate::crash::flush();
         })
         .build()?;

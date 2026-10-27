@@ -10,7 +10,8 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 1 CI + releases | Done (workflows written and linted; first real run happens when the repo is pushed) |
 | 2 Auto-update, canary and stable channels | Done (same caveat) |
 | 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
-| 4–6 | Not started |
+| 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
+| 5–6 | Not started |
 
 ## Decisions
 
@@ -24,7 +25,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | Identity | Identifier `com.peetsoftware.peetmail`, publisher "Peet Software". |
 | Release channels | Canary (a build of every push to `master`) and Stable (tagged releases only). |
 | Sentry | Project `peetmail` in the `metroid` org. DSN in the repo variable `PEETMAIL_SENTRY_DSN`; uploads use the `SENTRY_AUTH_TOKEN` secret. |
-| OTLP token | A PeetMail-specific gateway token, arranged when Stage 4 starts. |
+| OTLP token | A PeetMail-specific, write-only gateway token: the `PEETMAIL_OTLP_HEADERS` secret, with the gateway URL in the `PEETMAIL_OTLP_ENDPOINT` variable. |
 
 ## Where we started
 
@@ -98,15 +99,14 @@ Stage 2 reworked `release.yml` into the two channels described there. Not done y
 
 **Tests:** Rust unit tests for the scrubber, event scrubbing, JS stack parsing, the breadcrumb trail and the install ID; Vitest for the webview hooks and rate limit. E2E against a fake Sentry (`tests/harness/fake-sentry.ts`, parses envelopes including binary attachments): a webview error arrives scrubbed with release, environment, install ID and breadcrumbs; a panic arrives with its message and trail; opting out stops reports at once and opting back in resumes them; the notice shows once; a deliberate native crash produces a real minidump (`MDMP`) from the crash reporter; and no report contains the account's address or name, a correspondent's address, the PC's name or the Windows user name.
 
-## Stage 4: telemetry to the LGTM stack
+## Stage 4: telemetry to the LGTM stack (done)
 
-### Pipeline
+### Pipeline (`src-tauri/src/telemetry.rs`)
 
-- Move from `log` to `tracing`. The `tracing-log` bridge keeps the existing 35 `log::` calls working while we convert modules as we instrument them.
-- `tracing-subscriber` layers: file (replaces `tauri-plugin-log`'s file target, with size-based rotation), Sentry (Stage 3), and OpenTelemetry.
-- `opentelemetry` + `opentelemetry-otlp` (HTTP/protobuf over reqwest, batch processors) for traces, logs (`opentelemetry-appender-tracing`) and metrics.
-- Export over OTLP/HTTP to the self-hosted gateway PolyCode already ships to. The endpoint and auth headers are compiled in from CI secrets (`PEETMAIL_OTLP_ENDPOINT`, `PEETMAIL_OTLP_HEADERS`, `key=value,key=value` like PolyCode's `POLYCODE_OTLP_HEADERS`). The token is extractable from the binary, and the repo is public, so it must be write-only and only for this app. Give PeetMail its own token so it can be rotated without touching PolyCode, and rate-limit it at the gateway.
-- Resource attributes: `service.name=peetmail`, `service.namespace=peetsoftware`, `service.version`, `deployment.environment.name`, `service.instance.id` (per process, see below), `peetmail.install.id`, `peetmail.machine.id`, `os.version`, WebView2 version. No hostname, no username.
+- OpenTelemetry SDK 0.33 with the OTLP exporter over **HTTP/JSON** to the gateway (`/v1/traces`, `/v1/metrics`, `/v1/logs`). JSON is what PolyCode's exporters already send to it, and what the harness's fake collector reads without a protobuf library. Batch processors for spans and logs (bounded queues; when the gateway is unreachable they drop rather than block), metrics every 30 s, 5 s export timeouts, shutdown on exit and before an update installs.
+- Endpoint and headers are compiled in: `PEETMAIL_OTLP_ENDPOINT` (repo variable) and `PEETMAIL_OTLP_HEADERS` (secret, `key=value,key=value`). The token is extractable from the binary of a public repo, so it must be write-only, PeetMail's own, and rate-limited at the gateway.
+- **Deviation from the plan:** no move from `log` to `tracing`. Spans use the OpenTelemetry API directly through `telemetry::traced(name, attrs, future)`, which carries the span's context through the future so child spans (HTTP inside a folder sync inside an account sync) nest. Logs keep going through `log`: the logger wrapper from Stage 3 also exports info-and-above lines, scrubbed, and the SDK attaches the active trace, so Loki lines link to Tempo traces. This avoided rewriting every log call and a second subscriber stack next to Sentry.
+- Resource: `service.name=peetmail`, `service.namespace=peetsoftware`, `service.version`, `deployment.environment.name` (stable, canary or dev), `service.instance.id` (per process), `peetmail.install.id`, `peetmail.machine.id`, `os.type`.
 
 #### What to reuse from PolyCode
 
@@ -122,54 +122,39 @@ PolyCode's `apps/desktop/src/main/observability.ts` (Node/Electron) solved sever
 - **Crash incidents share an ID** between the local log, the OTLP log and the Sentry event (`docs/crash-diagnostics.md` in PolyCode). Worth copying in Stage 3 for WebView2 process failures, which are the Tauri equivalent of Electron renderer crashes.
 
 PolyCode's own PII handling is per-call-site discipline (hashes for IDs, allowlisted categories). PeetMail handles mail, so it adds the enforced allowlist, the scrubber and the canary test described below.
-- Offline behaviour: bounded in-memory queue, drop oldest when full, never block the UI or sync. Export failures are counted, never logged in a loop.
-- Sampling: 100% of traces for an internal group is fine at first; add a head sampler (setting-controlled) if volume grows. Errors are always kept.
 
-### What gets instrumented
+### What's instrumented
 
-Spans (Tempo), with the same names reused as histogram metrics (Mimir):
-
-| Area | Spans | Key attributes |
+| Area | Telemetry | Attributes |
 |---|---|---|
-| Startup | `app.start` → `db.open`, `db.migrate`, `window.first_paint` (reported from the UI) | cold/warm, migration count |
-| Auth | `auth.sign_in`, `auth.refresh` | provider, outcome, error code (`AADSTS…`, `invalid_grant`) |
-| Sync | `sync.run` → `sync.folder` → `http.request`; `gmail.history`, `calendar.delta` | provider, folder role, pages, items added/removed, full resync y/n, 429/503 backoff count and wait |
-| HTTP | every Graph/Gmail/GCal call | method, **route template** (`/me/mailFolders/{id}/messages/delta`), status, retry count, bytes |
-| Outbox | `outbox.op` | op kind, attempt, outcome, queue depth |
-| Send | `send.message` | provider, size bucket, attachment count, undo window used / cancelled |
-| Bodies | `body.fetch`, `body.sanitize`, `body.prefetch`, cache eviction | size bucket, cache hit/miss, sanitize ms |
-| Search | `search.query` | term count, operators used (not values), result count, ms |
-| DB | slow-query span only when over a threshold | query name (static), ms |
-| UI | `ui.action` per keymap binding: key → handler → next paint | binding id, view, ms |
-| UI | `ui.open_thread`, `ui.list_render`, long tasks (> 50 ms) | message count bucket, ms |
-| Updater, notifications, snooze wake | one span each | outcome |
+| Startup | `app.startup.duration` (process start to window), `ui.first_paint.duration` | |
+| Auth | `auth.sign_in`, `auth.refresh` spans | provider, outcome, error kind, `AADSTS…`/OAuth error code only |
+| Sync | `sync.run` → `sync.account` → `sync.folder` / `sync.mail` / `sync.calendar` spans; a "sync finished" log line in each run | provider, folder role, pages, items, full resync |
+| HTTP | `http.request` span for every Graph, Gmail and Calendar call (one choke point, `graph::send`); `peetmail.http.throttled` counter | method, **URL template** (`/v1.0/me/mailFolders/{id}/messages/delta`), API, status, attempts |
+| Outbox | `outbox.op` span (sends included) | op kind, attempt, outcome |
+| Bodies | `body.fetch` span, `body.sanitize.duration`, `body.fetch.size` histogram, `peetmail.body.reads` (cache hit/miss) | size bucket |
+| Search | `search.query` span | number of free-text terms and of operators, result count |
+| UI | `ui.action` span per keymap binding, key press to next painted frame; `ui.long_task` (> 50 ms) | binding id, view |
+| Updater, snooze | `peetmail.update.checks`, `peetmail.snooze.woke` counters | channel, outcome |
+| Process (every minute) | `peetmail.outbox.depth`, `peetmail.body_cache.size`, `peetmail.db.size`, `peetmail.accounts`, `process.memory.usage` gauges | provider |
 
-UI spans are timed in the webview (`performance.now()`, `PerformanceObserver` for long tasks) and sent over IPC in small batches; Rust turns them into spans in the same trace when the action called a command (we pass a trace context through `invoke`). This gives "pressed `e` → archive → outbox → Graph" as one trace.
+Every span also feeds a `<name>.duration` histogram (ms buckets up to 2 minutes) with its low-cardinality attributes and outcome, so Mimir has latency and error rates without querying Tempo.
 
-Metrics (Mimir): sync duration and failures, outbox depth and failures, body cache size, DB size, process memory and WebView2 memory (sampled every few minutes; PLAN.md already flags WebView2 memory as a risk), update check outcomes, account count by provider.
+### Keeping personal data out
 
-Logs (Loki): `info` and above from Rust via the OTLP log exporter, carrying trace and span IDs so Grafana links log lines to traces. Labels kept low-cardinality (service, version, env, level); the install ID is a structured field, not a label.
+1. **By type, not by care.** Attributes are `(Key, Val)`. `Key` is a closed enum. A `Val` is a `&'static str`, a number, a bool, or `Safe`, which only `route_template` and `code` can make. A subject, address or search term can't become an attribute without editing `telemetry.rs`, and a unit test fails if any other file builds OpenTelemetry attributes itself.
+2. **URL templates, not URLs:** the path only, with every segment that isn't a fixed route word replaced by `{id}`. Hosts and query strings are dropped.
+3. **Shapes, not content:** search sends counts of terms and operators; sizes are buckets; errors are a kind (`server` plus status, `timeout`, `auth` plus code), never text.
+4. **Logs are scrubbed** by the same `scrub.rs` as crash reports, and only info and above leave the PC.
+5. **Consent:** Settings → Privacy → "Send usage and performance data", on by default, covered by the first-run notice. Off stops recording at once; without an endpoint, or when off at start, the exporters are never created.
 
-### PII and sensitive data
+Planned items still open: per-account correlation (`account.ref`) isn't needed, since nothing is per account; the trace context isn't yet passed through `invoke`, so a UI action and the command it triggers are separate traces; there's no WebView2 memory gauge, `os.version` or WebView2 version, slow-query DB spans or head sampler. Grafana dashboards (`ops/grafana/`) are still to do.
 
-Sensitive here: email addresses and display names, subjects, previews, bodies, attachment names, calendar titles/locations/attendees, search terms, snippets, OAuth tokens and auth codes, provider message/thread/event IDs, Graph/Gmail URLs (their query strings carry IDs, `$filter` values and sometimes addresses), local paths (`C:\Users\<name>`), machine name.
+### Tests
 
-Rules:
-1. **Typed attributes only.** A `telemetry` module defines the allowed attribute keys and value types. Instrumentation uses those helpers; a lint test (grep in CI) rejects raw `tracing` field names that aren't on the list in instrumented modules.
-2. **Route templating.** The HTTP client records the route template it was called with, never the URL. Query strings are dropped.
-3. **Buckets, not values,** for sizes and counts where the exact value could fingerprint a message.
-4. **Account correlation** uses `account.ref` = HMAC(install secret, account email), so we can tell "same account across events" on one install without knowing who.
-5. **Error strings from servers** go through the scrubber: regexes for email addresses, bearer/JWT/refresh tokens, `code=`/`state=` parameters, GUID-like and base64-ish provider IDs, Windows user paths, plus the current accounts' own addresses and display names (exact match). The same scrubber runs in Sentry `before_send` and as a final OTel processor before export.
-6. **Log levels.** `debug`/`trace` stay local (file only), so we can keep verbose local logs without shipping them.
-7. **Consent.** Settings > Privacy: "Send usage and performance data" (separate from crash reports), on by default with the first-run notice. Off means the OTel layers aren't installed at all.
-
-Tests:
-- Rust unit tests for the scrubber and route templating, with real-world error bodies from Graph and Google.
-- A fake OTLP collector in the harness that decodes the protobuf and records spans, logs and metrics.
-- **PII canary E2E:** the fake Graph/Gmail fixtures get canary values (an address, subject, body phrase, attachment name, event title, search term, display name). The test signs in, syncs, opens, searches, sends, triggers an error, then asserts none of the canaries appear anywhere in what the fake collector or fake Sentry received. This is the test that keeps the guarantee from rotting.
-- E2E asserts the expected spans exist for sync, open thread and archive, linked into one trace.
-
-Grafana side (outside this repo, but part of the stage): dashboards for startup time, sync health per provider, UI action latency p50/p95 per binding, error rate per version, memory; alerts on sync failure rate and on a new version's error rate. Store dashboard JSON in `ops/grafana/` so it's reviewed like code.
+- Rust: URL templates (Graph, Gmail, Calendar, the fakes), codes, auth-error attributes, size buckets, header parsing, per-process instance IDs, search shape, and the no-raw-attributes check.
+- Vitest: the webview timing batcher.
+- E2E against a fake OTLP collector (`tests/harness/fake-otlp.ts`). A session (sign-in, sync, open, search, send, archive) produces the expected spans, nested correctly (`http.request` inside `sync.folder` inside `sync.account`), with templated routes, the search's shape, binding ids, the resource and install ID, the auth header on every request, metrics, and logs carrying trace IDs. **PII canaries:** none of the account address or name, correspondents' names and addresses, subjects, body text, the search word, provider message IDs, the sent message's recipient, subject and body, the ingest token, the PC name or the Windows user name appears anywhere the collector received. Opting out stops spans straight away.
 
 ## Stage 5: embedded OAuth apps, with custom apps as an advanced option
 

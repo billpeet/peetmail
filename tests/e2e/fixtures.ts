@@ -15,6 +15,7 @@ import { startFakePair } from "../harness/fake-pair.ts";
 import { startFakeGmail } from "../harness/fake-gmail.ts";
 import { startFakeUpdates, type FakeUpdates, type Release } from "../harness/fake-update.ts";
 import { startFakeSentry, type FakeSentry } from "../harness/fake-sentry.ts";
+import { startFakeOtlp, type FakeOtlp } from "../harness/fake-otlp.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -28,7 +29,15 @@ type App = Awaited<ReturnType<typeof launchApp>>;
 /** The fake update server, plus the file the app writes instead of running an installer. */
 type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp }>({
+  /** Send usage telemetry to a fake OTLP collector (`test.use({ withTelemetry: true })`), as `telemetry`. */
+  withTelemetry: [false, { option: true }],
+  telemetry: async ({ withTelemetry }, use) => {
+    if (!withTelemetry) return use(null as unknown as FakeOtlp);
+    const fake = await startFakeOtlp();
+    await use(fake);
+    await fake.close();
+  },
   /** Send crash reports to a fake Sentry (`test.use({ withSentry: true })`), as `sentry`. */
   withSentry: [false, { option: true }],
   sentry: async ({ withSentry }, use) => {
@@ -80,7 +89,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry }, use, testInfo) => {
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry }, use, testInfo) => {
     const extraEnv: Record<string, string> = {
       ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
       ...(updates
@@ -91,6 +100,16 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
           }
         : {}),
       ...(sentry ? { PEETMAIL_SENTRY_DSN: sentry.dsn } : {}),
+      ...(telemetry
+        ? {
+            PEETMAIL_OTLP_ENDPOINT: telemetry.url,
+            PEETMAIL_OTLP_HEADERS: "authorization=Bearer test-ingest-token",
+            PEETMAIL_OTLP_METRIC_INTERVAL_MS: "500",
+            // The SDK's own knobs: export batches quickly so tests don't wait 5s.
+            OTEL_BSP_SCHEDULE_DELAY: "200",
+            OTEL_BLRP_SCHEDULE_DELAY: "200",
+          }
+        : {}),
     };
     const app = await launchApp({ fake, undoSendSecs, extraEnv });
     const consoleLines: string[] = [];

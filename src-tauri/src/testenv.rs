@@ -22,6 +22,9 @@
 //! | PEETMAIL_UPDATE_FIRST_CHECK_SECS | First background update check after this (default 60) |
 //! | PEETMAIL_FAKE_UPDATE_INSTALL  | Installing an update writes {version, bytes} to this file |
 //! | PEETMAIL_SENTRY_DSN           | Crash reports go here (e.g. the fake Sentry server)       |
+//! | PEETMAIL_OTLP_ENDPOINT        | Telemetry goes here (OTLP/HTTP JSON, e.g. the fake collector) |
+//! | PEETMAIL_OTLP_HEADERS         | Headers for it, `key=value,key=value`                     |
+//! | PEETMAIL_OTLP_METRIC_INTERVAL_MS | Metric export interval (default 30s)                   |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

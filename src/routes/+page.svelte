@@ -47,7 +47,11 @@
 
   // Crash reports are on by default; say so once, with the way to turn them off.
   let privacyNotice = $state(false);
-  api.privacy().then((p) => (privacyNotice = p.configured && !p.noticeSeen)).catch(() => {});
+  api.privacy().then((p) => (privacyNotice = (p.configured || p.usageConfigured) && !p.noticeSeen)).catch(() => {});
+  // Which view an action happened in, for its timing (read by the keymap hook in +layout).
+  $effect(() => {
+    document.body.dataset.view = mail.overlay ?? mail.view;
+  });
   function dismissPrivacyNotice(openSettings: boolean) {
     privacyNotice = false;
     api.dismissPrivacyNotice().catch(() => {});
@@ -354,7 +358,7 @@
 
   {#if mail.account && privacyNotice}
     <div data-testid="privacy-notice" role="status" class="fixed bottom-10 left-4 z-30 max-w-sm space-y-2 rounded-lg border border-ink-700 bg-ink-900 p-4 text-sm text-ink-300 shadow-xl">
-      <p>PeetMail sends crash reports so problems get fixed. Mail, addresses, names and sign-in details are removed first.</p>
+      <p>PeetMail sends crash reports and usage and performance data so problems get found and fixed. Mail, addresses, names and sign-in details are never included.</p>
       <div class="flex justify-end gap-2">
         <button data-testid="privacy-notice-settings" onclick={() => dismissPrivacyNotice(true)} class="rounded-md px-3 py-1 text-ink-300 hover:text-ink-100">Settings</button>
         <button data-testid="privacy-notice-ok" onclick={() => dismissPrivacyNotice(false)} class="rounded-md bg-accent px-3 py-1 font-medium text-ink-950">Got it</button>

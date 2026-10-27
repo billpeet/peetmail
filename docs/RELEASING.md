@@ -32,8 +32,9 @@ And these **variables** (Settings → Secrets and variables → Actions → Vari
 |---|---|
 | `PEETMAIL_SENTRY_DSN` | The Sentry project's DSN, compiled into release builds. Unset: no crash reports |
 | `SENTRY_ORG` / `SENTRY_PROJECT` | Where uploads go. Default `metroid` / `peetmail` |
+| `PEETMAIL_OTLP_ENDPOINT` | The OTLP/HTTP gateway's base URL (the app adds `/v1/traces` etc.). Unset: no usage telemetry |
 
-Stage 4 adds the OTLP endpoint; see `docs/DISTRIBUTION.md`.
+And for telemetry, one more secret: `PEETMAIL_OTLP_HEADERS`, the gateway's auth header(s) as `key=value,key=value` (e.g. `Authorization=Basic …`). It's compiled into the app, so use a write-only token that's PeetMail's own.
 
 ### The updater signing key
 

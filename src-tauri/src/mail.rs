@@ -88,6 +88,10 @@ async fn graph_bytes(state: &AppState, account_id: i64, url: &str) -> Result<Vec
 
 /// Syncs every account. Errors are reported per account and don't stop the others.
 pub async fn sync_all(app: &AppHandle) -> Result<()> {
+    crate::telemetry::traced("sync.run", vec![], sync_all_accounts(app)).await
+}
+
+async fn sync_all_accounts(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
     let _guard = state.sync_lock.lock().await;
     let accounts = state.db.with(|c| db::list_accounts(c))?;
@@ -95,12 +99,17 @@ pub async fn sync_all(app: &AppHandle) -> Result<()> {
 
     let mut last_error = None;
     for account in accounts.iter().filter(|a| a.signed_in) {
-        if let Err(e) = sync_account(app, &state, account).await {
+        let provider = if account.provider == "google" { "google" } else { "microsoft" };
+        let attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Provider, provider)];
+        if let Err(e) = crate::telemetry::traced("sync.account", attrs, sync_account(app, &state, account)).await {
             log::error!("sync failed for {}: {e}", account.email);
             last_error = Some(format!("{}: {e}", account.email));
         }
     }
 
+    // Inside the sync.run span, so this line links to the sync's trace.
+    let synced = accounts.iter().filter(|a| a.signed_in).count();
+    log::info!("sync finished: {synced} account(s), {}", if last_error.is_some() { "with errors" } else { "ok" });
     let status = match last_error {
         Some(msg) => SyncStatus { state: "error", message: Some(msg) },
         None => SyncStatus { state: "idle", message: None },
@@ -151,20 +160,23 @@ pub async fn prefetch_bodies(app: AppHandle) {
 const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sent Items")];
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
+    use crate::telemetry::{attr, traced, Key};
     if account.provider == "google" {
-        crate::gmail::background(crate::gmail::sync_account(app, state, account.id)).await?;
+        traced("sync.mail", vec![attr(Key::Provider, "google")], crate::gmail::background(crate::gmail::sync_account(app, state, account.id))).await?;
         // Calendar problems (e.g. no calendar permission yet) mustn't stop mail.
-        if let Err(e) = crate::gmail::background(crate::gcal::sync_account(app, state, account.id)).await {
+        let cal = traced("sync.calendar", vec![attr(Key::Provider, "google")], crate::gmail::background(crate::gcal::sync_account(app, state, account.id)));
+        if let Err(e) = cal.await {
             log::warn!("google calendar sync failed for {}: {e}", account.email);
         }
         return Ok(());
     }
     for (role, name) in SYNCED_FOLDERS {
         let folder = ensure_folder(state, account.id, role, name).await?;
-        sync_folder(app, state, account.id, &folder).await?;
+        let attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Folder, *role)];
+        crate::telemetry::traced("sync.folder", attrs, sync_folder(app, state, account.id, &folder)).await?;
     }
     // Calendar problems (e.g. a tenant that blocks calendar access) mustn't stop mail.
-    if let Err(e) = crate::calendar::sync_account(app, state, account.id).await {
+    if let Err(e) = traced("sync.calendar", vec![attr(Key::Provider, "microsoft")], crate::calendar::sync_account(app, state, account.id)).await {
         log::warn!("calendar sync failed for {}: {e}", account.email);
     }
     Ok(())
@@ -209,6 +221,7 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
     let mut filter_locally = false;
     let mut restarted = false;
     let mut first_page = true;
+    let (mut pages, mut changes) = (0usize, 0usize);
 
     loop {
         let page = match graph_get(state, account_id, &url, &[PREFER_IMMUTABLE, PAGE_SIZE]).await {
@@ -237,6 +250,8 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
         first_page = false;
 
         let items = page["value"].as_array().cloned().unwrap_or_default();
+        pages += 1;
+        changes += items.len();
         if !items.is_empty() {
             state.db.with(|c| {
                 // Messages with unsent local changes keep their local state until the outbox
@@ -273,6 +288,10 @@ async fn sync_folder(app: &AppHandle, state: &AppState, account_id: i64, folder:
         break;
     }
 
+    {
+        use crate::telemetry::{annotate, attr, Key};
+        annotate(&[attr(Key::Pages, pages), attr(Key::Items, changes), attr(Key::FullResync, full_sync || restarted)]);
+    }
     let pruned = state.db.with(|c| db::prune_older_than(c, folder.id, &cutoff))?;
     if pruned > 0 {
         let _ = app.emit(EVENT_MAIL_CHANGED, MailChanged { account_id, folder_id: folder.id });
@@ -325,9 +344,16 @@ pub fn parse_message(v: &Value) -> MessageUpsert {
 
 /// Returns sanitized HTML for a message, from cache or Graph.
 pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
+    use crate::telemetry::{attr, count, traced, Key};
     if let Some(html) = state.db.with(|c| db::get_body(c, message_id))? {
+        count("peetmail.body.reads", 1, &[attr(Key::Cached, true)]);
         return Ok(html);
     }
+    count("peetmail.body.reads", 1, &[attr(Key::Cached, false)]);
+    traced("body.fetch", vec![], fetch_body(state, message_id)).await
+}
+
+async fn fetch_body(state: &AppState, message_id: i64) -> Result<String> {
     let (account_id, remote_id) = state
         .db
         .with(|c| db::message_remote(c, message_id))?
@@ -346,10 +372,18 @@ pub async fn message_body(state: &AppState, message_id: i64) -> Result<String> {
     )
     .await?;
     let content = v.pointer("/body/content").and_then(Value::as_str).unwrap_or_default();
+    let started = std::time::Instant::now();
     let mut html = match v.pointer("/body/contentType").and_then(Value::as_str) {
         Some("text") => sanitize::text_to_html(content),
         _ => sanitize::clean_html(content),
     };
+    {
+        use crate::telemetry::{annotate, attr, record_ms, size_bucket, Key};
+        let bucket = attr(Key::SizeBucket, size_bucket(content.len() as u64));
+        record_ms("body.sanitize", started.elapsed().as_secs_f64() * 1000.0, std::slice::from_ref(&bucket));
+        crate::telemetry::record_bytes("body.fetch", content.len() as u64, &[]);
+        annotate(&[bucket, attr(Key::Provider, "microsoft")]);
+    }
     if html.contains("src=\"cid:") {
         match inline_cid_images(state, account_id, &remote_id, &html).await {
             Ok(h) => html = h,

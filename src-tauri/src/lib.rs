@@ -22,6 +22,7 @@ mod sanitize;
 mod scrub;
 mod secure;
 mod state;
+mod telemetry;
 mod testenv;
 mod update;
 
@@ -148,6 +149,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let started = std::time::Instant::now();
     let data_dir_override = testenv::get("PEETMAIL_DATA_DIR").map(std::path::PathBuf::from);
     // First, before Tauri: crash reporting covers startup, and the crash reporter process
     // (this binary run again) stops inside here.
@@ -218,9 +220,15 @@ pub fn run() {
             };
             db.with(|c| outbox::reset_inflight(c))?;
             crash::after_db(&db);
+            match db.with(|c| Ok((crash::install_id(c)?, db::get_setting(c, telemetry::KEY_USAGE_DATA)?))) {
+                Ok((install_id, usage)) => telemetry::init(&install_id, usage.as_deref() != Some("off")),
+                Err(e) => log::error!("telemetry: reading settings: {e}"),
+            }
             app.manage(state::AppState::new(db));
             update::init(app.handle());
             create_main_window(app)?;
+            telemetry::record_ms("app.startup", started.elapsed().as_secs_f64() * 1000.0, &[]);
+            telemetry::start_sampling(app.handle().clone());
             // Headless test runs mustn't put icons in the user's taskbar.
             if !testenv::flag("PEETMAIL_HEADLESS") {
                 create_tray(app)?;
@@ -233,6 +241,7 @@ pub fn run() {
                     let state = snoozer.state::<state::AppState>();
                     match state.db.with(|c| actions::wake(c, None)) {
                         Ok(woke) if !woke.is_empty() => {
+                            telemetry::count("peetmail.snooze.woke", woke.len() as u64, &[]);
                             outbox::emit_status(&snoozer, &state);
                             outbox::kick(&snoozer);
                             let mut accounts: Vec<i64> = woke.iter().map(|w| w.0).collect();
@@ -320,6 +329,9 @@ pub fn run() {
             commands::set_crash_reports,
             commands::dismiss_privacy_notice,
             commands::report_error,
+            commands::set_usage_data,
+            commands::ui_events,
+            commands::debug_flush_telemetry,
             commands::debug_crash,
             commands::check_for_updates,
             commands::install_update,
@@ -329,6 +341,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
+                telemetry::shutdown();
                 crash::flush();
             }
         });

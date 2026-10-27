@@ -7,6 +7,7 @@ use reqwest::{header, Method, StatusCode};
 use serde_json::Value;
 
 use crate::error::{AppError, Result};
+use crate::telemetry::{self, attr, Key};
 
 const DEFAULT_BASE: &str = "https://graph.microsoft.com/v1.0";
 
@@ -62,7 +63,41 @@ pub async fn get_bytes(http: &reqwest::Client, token: &str, url: &str) -> Result
     Ok(res.bytes().await?.to_vec())
 }
 
+/// Which API a URL belongs to, for telemetry. Goes by path as well as host, so the test
+/// harness's fake servers are classified like the real ones.
+pub fn api_of(url: &str) -> &'static str {
+    if url.contains("/gmail/") {
+        "gmail"
+    } else if url.contains("/calendar/v3") {
+        "google_calendar"
+    } else if url.contains("graph.microsoft.com") || url.contains("/v1.0/") || url.contains("/beta/") {
+        "microsoft_graph"
+    } else {
+        "other"
+    }
+}
+
 async fn send(
+    http: &reqwest::Client,
+    token: &str,
+    method: Method,
+    url: &str,
+    body: Option<&Value>,
+    prefer: &[&str],
+) -> Result<reqwest::Response> {
+    let method_name: &'static str = match method {
+        Method::GET => "GET",
+        Method::POST => "POST",
+        Method::PATCH => "PATCH",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        _ => "OTHER",
+    };
+    let attrs = vec![attr(Key::Method, method_name), attr(Key::Route, telemetry::route_template(url)), attr(Key::Provider, api_of(url))];
+    telemetry::traced("http.request", attrs, send_with_retries(http, token, method, url, body, prefer)).await
+}
+
+async fn send_with_retries(
     http: &reqwest::Client,
     token: &str,
     method: Method,
@@ -84,6 +119,7 @@ async fn send(
         }
         let res = req.send().await?;
         let status = res.status();
+        telemetry::annotate(&[attr(Key::Status, status.as_u16()), attr(Key::Attempts, attempt + 1)]);
 
         if status.is_success() {
             return Ok(res);
@@ -97,6 +133,7 @@ async fn send(
         let throttled = status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE;
         if throttled && attempt < MAX_RETRIES {
             let wait = retry_after.unwrap_or(2u64.pow(attempt));
+            telemetry::count("peetmail.http.throttled", 1, &[attr(Key::Provider, api_of(url)), attr(Key::Status, status.as_u16())]);
             log::warn!("throttled ({status}), retrying in {wait}s");
             tokio::time::sleep(Duration::from_secs(wait)).await;
             attempt += 1;

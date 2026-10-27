@@ -254,7 +254,9 @@ impl AppState {
             return Ok(current.access_token);
         }
         let provider = self.db.with(|c| db::account_provider(c, account_id))?;
-        let fresh = auth::refresh(&self.http, &self.oauth_for(&provider)?, &current).await?;
+        let p = if provider == "google" { "google" } else { "microsoft" };
+        let attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Provider, p)];
+        let fresh = crate::telemetry::traced("auth.refresh", attrs, auth::refresh(&self.http, &self.oauth_for(&provider)?, &current)).await?;
         let blob = Self::store_tokens_blob(&fresh)?;
         self.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
         let token = fresh.access_token.clone();

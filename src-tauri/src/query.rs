@@ -116,6 +116,14 @@ fn like(v: &str) -> SqlValue {
 }
 
 /// Compiles a query into a SQL condition (always valid, `1` when empty).
+/// How many free-text terms and how many operators (`from:`, `is:`…) a query has: its
+/// shape for telemetry, without any of its words.
+pub fn shape(input: &str) -> (usize, usize) {
+    let clauses = parse(input);
+    let text = clauses.iter().filter(|c| matches!(c.term, Term::Text(_) | Term::Phrase(_))).count();
+    (text, clauses.len() - text)
+}
+
 pub fn compile(input: &str) -> Filter {
     let mut parts = Vec::new();
     let mut params = Vec::new();
@@ -195,6 +203,12 @@ pub fn split_filter(queries: &[String], tab: usize) -> Filter {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn shape_counts_terms_and_operators() {
+        assert_eq!(super::shape(r#"from:sam is:unread budget "q4 plan" -has:attachment"#), (2, 3));
+        assert_eq!(super::shape(""), (0, 0));
+    }
     use super::*;
 
     #[test]

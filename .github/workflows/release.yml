@@ -125,6 +125,11 @@ jobs:
           PEETMAIL_CHANNEL: ${{ env.CHANNEL }}
           PEETMAIL_UPDATE_REPO: ${{ github.repository }}
           PEETMAIL_SENTRY_DSN: ${{ vars.PEETMAIL_SENTRY_DSN }}
+          # Usage telemetry (src-tauri/src/telemetry.rs): the OTLP gateway, and its auth
+          # header(s) as key=value,key=value. The token ends up in the binary, so it must be
+          # write-only and PeetMail's own. Unset: no telemetry.
+          PEETMAIL_OTLP_ENDPOINT: ${{ vars.PEETMAIL_OTLP_ENDPOINT }}
+          PEETMAIL_OTLP_HEADERS: ${{ secrets.PEETMAIL_OTLP_HEADERS }}
           # Built-in OAuth apps. Unset secrets leave them empty and the app asks for a
           # client ID on first run, as a dev build does.
           PEETMAIL_MS_CLIENT_ID: ${{ secrets.PEETMAIL_MS_CLIENT_ID }}

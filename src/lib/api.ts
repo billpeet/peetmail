@@ -257,6 +257,8 @@ export const api = {
   privacy: () => invoke<Privacy>("privacy"),
   setCrashReports: (enabled: boolean) => invoke<void>("set_crash_reports", { enabled }),
   dismissPrivacyNotice: () => invoke<void>("dismiss_privacy_notice"),
+  setUsageData: (enabled: boolean) => invoke<void>("set_usage_data", { enabled }),
+  uiEvents: (events: import("./perf").UiEvent[]) => invoke<void>("ui_events", { events }),
   reportError: (name: string, message: string, stack: string | null, mechanism: string) =>
     invoke<void>("report_error", { name, message, stack, mechanism }),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
@@ -352,7 +354,14 @@ export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => liste
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 
 /** Settings → Privacy (src-tauri/src/crash.rs). */
-export type Privacy = { configured: boolean; crashReports: boolean; installId: string; noticeSeen: boolean };
+export type Privacy = {
+  configured: boolean;
+  crashReports: boolean;
+  usageConfigured: boolean;
+  usageData: boolean;
+  installId: string;
+  noticeSeen: boolean;
+};
 
 /** Automatic updates (src-tauri/src/update.rs). */
 export type UpdateChannel = "stable" | "canary";

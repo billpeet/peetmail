@@ -383,8 +383,30 @@ pub fn emit_status(app: &AppHandle, state: &AppState) {
     }
 }
 
+impl Op {
+    /// The op's kind, for telemetry (never its content).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Op::SetRead { .. } => "set_read",
+            Op::SetFlag { .. } => "set_flag",
+            Op::Move { .. } => "move",
+            Op::Send(_) => "send",
+            Op::Respond { .. } => "respond",
+            Op::CreateEvent(_) => "create_event",
+            Op::UpdateEvent { .. } => "update_event",
+            Op::DeleteEvent { .. } => "delete_event",
+        }
+    }
+}
+
 /// Sends one op. Returns Graph's response body (the created event for CreateEvent).
 async fn execute(state: &AppState, row: &Row) -> Result<Value> {
+    use crate::telemetry::{attr, traced, Key};
+    let attrs = vec![attr(Key::Op, row.op.kind()), attr(Key::Attempts, row.attempts + 1)];
+    traced("outbox.op", attrs, execute_op(state, row)).await
+}
+
+async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
     if state.db.with(|c| crate::db::account_provider(c, row.account_id))? == "google" {
         return crate::gmail::execute(state, row.account_id, row.remote_id.as_deref(), &row.op).await;
     }

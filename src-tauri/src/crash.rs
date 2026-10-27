@@ -51,6 +51,7 @@ impl log::Log for TrailLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         self.0.log(record);
+        crate::telemetry::export_log(record);
         if record.level() <= log::Level::Info {
             let level = match record.level() {
                 log::Level::Error => Level::Error,

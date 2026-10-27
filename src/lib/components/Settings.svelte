@@ -27,6 +27,15 @@
     }
   }
 
+  async function setUsageData(on: boolean) {
+    try {
+      await api.setUsageData(on);
+      if (privacy) privacy.usageData = on;
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
   async function copyInstallId() {
     if (!privacy) return;
     await navigator.clipboard.writeText(privacy.installId);
@@ -146,9 +155,15 @@
           Send crash reports
           {#if !privacy.configured}<span data-testid="crash-reports-off" class="text-xs text-ink-500">(this build doesn't send any)</span>{/if}
         </label>
+        <label class="flex items-center gap-2 text-sm text-ink-300">
+          <input type="checkbox" data-testid="usage-data" checked={privacy.usageConfigured && privacy.usageData} disabled={!privacy.usageConfigured} onchange={(e) => setUsageData(e.currentTarget.checked)} class="accent-accent disabled:opacity-50" />
+          Send usage and performance data
+          {#if !privacy.usageConfigured}<span data-testid="usage-data-off" class="text-xs text-ink-500">(this build doesn't send any)</span>{/if}
+        </label>
         <p class="text-xs text-ink-500">
-          When PeetMail crashes or hits an error, it sends what went wrong and where in the code. Mail, addresses, names and
-          sign-in details are removed before anything leaves this PC.
+          Crash reports say what went wrong and where in the code. Usage data is timings and counts: how long syncs, searches
+          and shortcuts take, and which fail. Mail, addresses, names, search words and sign-in details are never included.
+          Turning usage data back on takes effect the next time PeetMail starts.
         </p>
         <div class="flex items-center justify-between gap-3 text-xs text-ink-500">
           <span>Install ID <span data-testid="install-id" class="font-mono text-ink-300 select-text">{privacy.installId}</span></span>

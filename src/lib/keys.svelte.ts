@@ -1,3 +1,5 @@
+import { afterNextPaint } from "./perf";
+
 // Single keymap registry. Every action is registered here once; the shortcut overlay
 // and (in Phase 1) the command palette read from the same list.
 
@@ -36,6 +38,8 @@ function isTypingTarget(t: EventTarget | null) {
 
 class Keymap {
   bindings = $state.raw<Binding[]>([]);
+  /** Told how long each action took, from the key press to the next painted frame (telemetry). */
+  onAction: ((id: string, ms: number) => void) | null = null;
   pending = $state<string[]>([]);
   #timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -71,7 +75,10 @@ class Keymap {
     if (exact && !isPrefix) {
       e.preventDefault();
       this.#reset();
+      const started = performance.now();
       exact.run(e);
+      const onAction = this.onAction;
+      if (onAction) afterNextPaint(() => onAction(exact.id, performance.now() - started));
       return;
     }
     if (isPrefix) {
