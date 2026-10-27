@@ -63,6 +63,14 @@ test.describe("with a telemetry collector", () => {
     const all = await page.getByTestId("thread-count").textContent();
     await page.getByTestId("search-input").fill("beetroot from:hannah");
     await expect(page.getByTestId("thread-count")).not.toHaveText(all!);
+    // Not just any change: entering search can first list all mail (an empty query) if a
+    // refresh lands then. Wait for the query's own results, all from Hannah.
+    await expect
+      .poll(async () => {
+        const rows = await page.getByTestId("thread-row").allInnerTexts();
+        return rows.length > 0 && rows.every((r) => r.includes("Hannah"));
+      })
+      .toBe(true);
     const found = Number((await page.getByTestId("thread-count").textContent())!.split(" ")[0]);
     await page.keyboard.press("Escape");
 
