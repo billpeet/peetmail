@@ -122,6 +122,7 @@ pub async fn sign_in(app: AppHandle, state: State<'_, AppState>, provider: Optio
         .db
         .with(|c| db::upsert_account(c, provider, &email, display_name.as_deref(), &blob))?;
     state.remember_tokens(account.id, tokens).await;
+    crate::crash::refresh_known(&state.db);
 
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -384,6 +385,61 @@ pub fn open_external(app: AppHandle, url: String) -> Result<()> {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Privacy {
+    /// False for builds without a Sentry DSN (local builds): nothing is ever sent.
+    configured: bool,
+    crash_reports: bool,
+    install_id: String,
+    notice_seen: bool,
+}
+
+const KEY_PRIVACY_NOTICE: &str = "privacy_notice_seen";
+
+/// Settings → Privacy, and whether the first-run notice has been dismissed.
+#[tauri::command]
+pub fn privacy(state: State<'_, AppState>) -> Result<Privacy> {
+    state.db.with(|c| {
+        Ok(Privacy {
+            configured: crate::crash::configured(),
+            crash_reports: crate::crash::enabled(),
+            install_id: crate::crash::install_id(c)?,
+            notice_seen: db::get_setting(c, KEY_PRIVACY_NOTICE)?.is_some(),
+        })
+    })
+}
+
+#[tauri::command]
+pub fn set_crash_reports(state: State<'_, AppState>, enabled: bool) -> Result<()> {
+    crate::crash::set_enabled(&state.db, enabled)
+}
+
+#[tauri::command]
+pub fn dismiss_privacy_notice(state: State<'_, AppState>) -> Result<()> {
+    state.db.with(|c| db::set_setting(c, KEY_PRIVACY_NOTICE, "1"))
+}
+
+/// An error the webview didn't handle. It goes to Sentry from here (scrubbed), so the
+/// webview's CSP never has to allow a network endpoint.
+#[tauri::command]
+pub fn report_error(name: String, message: String, stack: Option<String>, mechanism: String) {
+    crate::crash::capture_js_error(&name, &message, stack.as_deref(), &mechanism);
+}
+
+/// Test hook (debug builds only): a native crash (an access violation, not a panic), so
+/// tests can check that a minidump reaches the crash reporter.
+#[tauri::command]
+pub fn debug_crash() -> Result<()> {
+    if !cfg!(debug_assertions) {
+        return Err(AppError::Other("not available".into()));
+    }
+    log::error!("debug_crash: deliberate native crash");
+    // SAFETY: deliberately unsound; the process is meant to die here.
+    unsafe { std::ptr::null_mut::<u32>().write_volatile(1) };
+    Ok(())
 }
 
 /// Where automatic updates stand (see update.rs).

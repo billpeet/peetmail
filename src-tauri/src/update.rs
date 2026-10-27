@@ -203,6 +203,7 @@ async fn find_and_download(app: &AppHandle, url: Url) -> std::result::Result<Opt
         .on_before_exit(|| {
             log::info!("closing for the update installer");
             log::logger().flush();
+            crate::crash::flush();
         })
         .build()?;
     let Some(update) = updater.check().await? else { return Ok(None) };

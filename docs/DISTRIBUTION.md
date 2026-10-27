@@ -9,7 +9,8 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 0 Groundwork | Done |
 | 1 CI + releases | Done (workflows written and linted; first real run happens when the repo is pushed) |
 | 2 Auto-update, canary and stable channels | Done (same caveat) |
-| 3–6 | Not started |
+| 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
+| 4–6 | Not started |
 
 ## Decisions
 
@@ -22,7 +23,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | Consent | Crash reports and telemetry on by default, with a first-run notice and an opt-out in Settings. |
 | Identity | Identifier `com.peetsoftware.peetmail`, publisher "Peet Software". |
 | Release channels | Canary (a build of every push to `master`) and Stable (tagged releases only). |
-| Sentry | PeetMail gets its own Sentry project, set up when Stage 3 starts. |
+| Sentry | Project `peetmail` in the `metroid` org. DSN in the repo variable `PEETMAIL_SENTRY_DSN`; uploads use the `SENTRY_AUTH_TOKEN` secret. |
 | OTLP token | A PeetMail-specific gateway token, arranged when Stage 4 starts. |
 
 ## Where we started
@@ -81,27 +82,21 @@ Stage 2 reworked `release.yml` into the two channels described there. Not done y
 
 **Not done:** install-on-quit, and a `minimumVersion` field to force everyone off a bad build. Both are small additions to `update.rs` if they're needed.
 
-## Stage 3: Sentry
+## Stage 3: Sentry (done)
 
-Rust:
-- `sentry` crate (reqwest transport, rustls), initialised first thing in `run()`, before the panic hook. Release `peetmail@<version>`, environment `production`/`beta`/`dev`, DSN from build-time `option_env!` (absent DSN = Sentry off, as in dev and tests unless the fake is configured).
-- `sentry-tracing` (see Stage 4) so `error!` events become Sentry events and lower levels become breadcrumbs.
-- Panics: the `sentry-panic` integration captures and flushes before `panic = "abort"` kills the process. Keep our existing log-file hook too.
-- Native crashes (WebView2 or a stack overflow) don't go through the panic hook. Add minidump capture with `sentry-rust-minidump` (a crash-reporter child process), or start without it and add it if we see unexplained disappearances. Recommend starting with it, since "the app vanished" is exactly the report we'd otherwise get.
-- `send_default_pii: false`, plus a `before_send` that runs the Stage 4 scrubber over messages, exception values, breadcrumbs and extra data, and drops `server_name` (the PC name).
-- User context: a random install ID (generated once, stored in settings), never an email.
+**What's reported** (`src-tauri/src/crash.rs`):
+- Rust panics, from any thread (the SDK's panic integration; with `panic = "abort"` it captures and flushes before the process dies).
+- Native crashes (access violations, stack overflows) as minidumps. Sentry's minidump integration runs a small crash-reporter process (this exe, re-run; it stops inside `sentry::init`, which is why that's the first thing `run()` does) and uploads the dump when the app dies. Minidumps hold raw stack memory, which the scrubber can't reach; Sentry doesn't keep the raw dump after processing unless the project's "Store Native Crash Reports" setting is on, so leave it off.
+- Webview errors: `window.onerror` and unhandled rejections (`src/lib/errors.ts`) go to the `report_error` command, and Rust sends them as JavaScript events. The webview never talks to the network, so the CSP is unchanged. At most 20 reports a session, the same message once a minute.
+- Not reported: WebView2 process crashes (they're separate processes; a `ProcessFailed` handler could add them later), and log lines on their own. Info and above are kept as a 50-line breadcrumb trail on every report. The trail is process-wide rather than in the SDK's per-thread scope, which would have dropped lines logged on sync threads.
 
-Frontend:
-- `window.onerror`, `unhandledrejection` and a Svelte error boundary at the root call an IPC command `report_error {message, stack, context}`. Rust turns it into a Sentry event with the JS stack, which Sentry symbolicates with the uploaded source maps (`build.sourcemap: 'hidden'` in Vite so maps aren't shipped). No browser SDK, no CSP change.
-- Failed `invoke()` calls in `api.ts` add a breadcrumb (command name, error kind; not arguments).
+**What's removed** (`src-tauri/src/scrub.rs`, shared with Stage 4): the signed-in accounts' addresses and names (exact, case-insensitive), any email address, bearer tokens and JWTs, OAuth parameters (`code=`, `refresh_token=`…), URL query strings (routes are kept), Windows profile paths (`C:\Users\<name>` with spaces handled), and long opaque IDs. Every event also loses its host name, device name, request and user fields except a random install ID. `send_default_pii` is off.
 
-Consider `tauri-plugin-sentry`, which packages much of this (JS events over IPC, minidumps). Evaluate it at the start of the stage. If it fits our scrubber and test setup, use it; otherwise wire the crates directly.
+**Consent:** on by default; Settings → Privacy turns it off (immediately, and before the next start's crash reporter is spawned) and shows the install ID to quote. A first-run notice says reports are on, with a Settings button. Builds without a DSN (local, and tests without the fake) show neither and send nothing.
 
-Settings > Privacy: "Send crash reports" (on by default, with the first-run notice from Stage 6, and an opt-out) and "Copy install ID" so a user can point us at their events.
+**Release:** the DSN is compiled in from the repo variable. The release job builds the frontend with hidden source maps, uploads them for `peetmail@<version>`, deletes them before `tauri build` embeds `build/`, uploads `peetmail.pdb` and `peetmail.exe` as debug files, and finalizes the release. Without the `SENTRY_AUTH_TOKEN` secret those steps warn and skip, so builds still ship.
 
-Release pipeline: follow PolyCode's `release.yml`. A missing `SENTRY_AUTH_TOKEN` or a failed PDB or source-map upload fails the release, so no version ships that can't be symbolicated. Decide whether PeetMail gets its own Sentry project in the existing org.
-
-Tests: a fake Sentry endpoint in the harness (accepts envelopes, writes them to JSON lines like `PEETMAIL_NOTIFY_LOG`). E2E triggers a test panic and a JS error through a debug-only command and asserts both arrive, with the right release and no PII.
+**Tests:** Rust unit tests for the scrubber, event scrubbing, JS stack parsing, the breadcrumb trail and the install ID; Vitest for the webview hooks and rate limit. E2E against a fake Sentry (`tests/harness/fake-sentry.ts`, parses envelopes including binary attachments): a webview error arrives scrubbed with release, environment, install ID and breadcrumbs; a panic arrives with its message and trail; opting out stops reports at once and opting back in resumes them; the notice shows once; a deliberate native crash produces a real minidump (`MDMP`) from the crash reporter; and no report contains the account's address or name, a correspondent's address, the PC's name or the Windows user name.
 
 ## Stage 4: telemetry to the LGTM stack
 

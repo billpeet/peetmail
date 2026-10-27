@@ -21,6 +21,7 @@
 //! | PEETMAIL_UPDATE_URL           | Update feeds: <url>/<channel>/latest.json (else GitHub)   |
 //! | PEETMAIL_UPDATE_FIRST_CHECK_SECS | First background update check after this (default 60) |
 //! | PEETMAIL_FAKE_UPDATE_INSTALL  | Installing an update writes {version, bytes} to this file |
+//! | PEETMAIL_SENTRY_DSN           | Crash reports go here (e.g. the fake Sentry server)       |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

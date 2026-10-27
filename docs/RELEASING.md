@@ -24,7 +24,16 @@ Canary versions sort between stable releases: after `0.2.0` comes `0.2.1-canary.
 | `PEETMAIL_GOOGLE_CLIENT_ID` | Client ID of the built-in Google "Desktop app" OAuth client | No |
 | `PEETMAIL_GOOGLE_CLIENT_SECRET` | Its client secret (not confidential for desktop clients, but keep it out of the repo) | No |
 
-Later stages add the Sentry DSN and auth token and the OTLP endpoint; see `docs/DISTRIBUTION.md`.
+| `SENTRY_AUTH_TOKEN` | Sentry org auth token with release and project write access, for uploading symbols and source maps | No. Without it uploads are skipped with a warning, and stack traces in Sentry stay unreadable for that build |
+
+And these **variables** (Settings → Secrets and variables → Actions → Variables), which aren't secret:
+
+| Variable | What |
+|---|---|
+| `PEETMAIL_SENTRY_DSN` | The Sentry project's DSN, compiled into release builds. Unset: no crash reports |
+| `SENTRY_ORG` / `SENTRY_PROJECT` | Where uploads go. Default `metroid` / `peetmail` |
+
+Stage 4 adds the OTLP endpoint; see `docs/DISTRIBUTION.md`.
 
 ### The updater signing key
 

@@ -25,6 +25,12 @@ concurrency:
 
 env:
   CANARY_KEEP: 10
+  # Crash reports (src-tauri/src/crash.rs). The DSN is compiled in; it isn't secret.
+  # Uploads of symbols and source maps need the SENTRY_AUTH_TOKEN secret and are skipped,
+  # with a warning, until it's set.
+  SENTRY_ORG: ${{ vars.SENTRY_ORG || 'metroid' }}
+  SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || 'peetmail' }}
+  SENTRY_CLI: '@sentry/cli@3.6.0'
 
 jobs:
   ci:
@@ -83,8 +89,33 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "Building $env:CHANNEL $version" >> $env:GITHUB_STEP_SUMMARY
 
+      - name: Build the frontend with source maps
+        run: pnpm build
+        env:
+          PEETMAIL_SOURCEMAPS: '1'
+
+      - name: Upload source maps to Sentry, then drop them
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE: peetmail@${{ steps.version.outputs.version }}
+        run: |
+          if ($env:SENTRY_AUTH_TOKEN) {
+            pnpm dlx $env:SENTRY_CLI releases new $env:RELEASE
+            if ($LASTEXITCODE -ne 0) { throw "creating the Sentry release failed" }
+            # Webview stack frames look like http://tauri.localhost/_app/immutable/...; "~"
+            # matches any scheme and host.
+            pnpm dlx $env:SENTRY_CLI sourcemaps upload build/_app --url-prefix '~/_app' --release $env:RELEASE --validate --wait
+            if ($LASTEXITCODE -ne 0) { throw "source map upload failed" }
+          } else {
+            "::warning::SENTRY_AUTH_TOKEN isn't set: webview stack traces in Sentry won't be readable for this build."
+          }
+          # Not shipped: the exe embeds everything in build/.
+          Get-ChildItem build -Recurse -Filter *.map | Remove-Item
+
       - name: Build the installer
-        # tauri.release.conf.json turns on the signed updater artifacts (needs the key below).
+        # tauri.release.conf.json turns on the signed updater artifacts (needs the key below)
+        # and skips the frontend build: the step above did it.
         run: pnpm tauri build --config src-tauri/tauri.release.conf.json
         env:
           # Signs the installer for the updater (minisign; unrelated to Authenticode).
@@ -93,11 +124,27 @@ jobs:
           # Compiled in (option_env!): which channel this build is on and where to look for updates.
           PEETMAIL_CHANNEL: ${{ env.CHANNEL }}
           PEETMAIL_UPDATE_REPO: ${{ github.repository }}
+          PEETMAIL_SENTRY_DSN: ${{ vars.PEETMAIL_SENTRY_DSN }}
           # Built-in OAuth apps. Unset secrets leave them empty and the app asks for a
           # client ID on first run, as a dev build does.
           PEETMAIL_MS_CLIENT_ID: ${{ secrets.PEETMAIL_MS_CLIENT_ID }}
           PEETMAIL_GOOGLE_CLIENT_ID: ${{ secrets.PEETMAIL_GOOGLE_CLIENT_ID }}
           PEETMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.PEETMAIL_GOOGLE_CLIENT_SECRET }}
+
+      - name: Upload debug symbols and register the release with Sentry
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE: peetmail@${{ steps.version.outputs.version }}
+        run: |
+          if (-not $env:SENTRY_AUTH_TOKEN) {
+            "::warning::SENTRY_AUTH_TOKEN isn't set: native stack traces in Sentry won't be symbolicated for this build."
+            exit 0
+          }
+          pnpm dlx $env:SENTRY_CLI debug-files upload --wait src-tauri/target/release/peetmail.pdb src-tauri/target/release/peetmail.exe
+          if ($LASTEXITCODE -ne 0) { throw "debug file upload failed" }
+          pnpm dlx $env:SENTRY_CLI releases finalize $env:RELEASE
+          if ($LASTEXITCODE -ne 0) { throw "finalizing the Sentry release failed" }
 
       - name: Collect release assets
         id: assets

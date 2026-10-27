@@ -2,7 +2,7 @@
   import { api } from "$lib/api";
   import { mail } from "$lib/mail.svelte";
   import { updates, updateText } from "$lib/updates.svelte";
-  import type { UpdateChannel } from "$lib/api";
+  import type { Privacy, UpdateChannel } from "$lib/api";
   import ClientIdForm from "./ClientIdForm.svelte";
   import SplitEditor from "./SplitEditor.svelte";
   import SnippetEditor from "./SnippetEditor.svelte";
@@ -14,6 +14,25 @@
   let error = $state<string | null>(null);
   let autostart = $state(false);
   api.getAutostart().then((v) => (autostart = v)).catch(() => {});
+  let privacy = $state<Privacy | null>(null);
+  api.privacy().then((p) => (privacy = p)).catch(() => {});
+  let copied = $state(false);
+
+  async function setCrashReports(on: boolean) {
+    try {
+      await api.setCrashReports(on);
+      if (privacy) privacy.crashReports = on;
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  async function copyInstallId() {
+    if (!privacy) return;
+    await navigator.clipboard.writeText(privacy.installId);
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
+  }
 
   async function setAutostart(on: boolean) {
     try {
@@ -118,6 +137,27 @@
       </label>
       <p class="text-xs text-ink-500">Notifications only show while PeetMail isn't the window you're using. <kbd>Ctrl</kbd> <kbd>Q</kbd> quits.</p>
     </section>
+
+    {#if privacy}
+      <section class="space-y-2">
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Privacy</h3>
+        <label class="flex items-center gap-2 text-sm text-ink-300">
+          <input type="checkbox" data-testid="crash-reports" checked={privacy.configured && privacy.crashReports} disabled={!privacy.configured} onchange={(e) => setCrashReports(e.currentTarget.checked)} class="accent-accent disabled:opacity-50" />
+          Send crash reports
+          {#if !privacy.configured}<span data-testid="crash-reports-off" class="text-xs text-ink-500">(this build doesn't send any)</span>{/if}
+        </label>
+        <p class="text-xs text-ink-500">
+          When PeetMail crashes or hits an error, it sends what went wrong and where in the code. Mail, addresses, names and
+          sign-in details are removed before anything leaves this PC.
+        </p>
+        <div class="flex items-center justify-between gap-3 text-xs text-ink-500">
+          <span>Install ID <span data-testid="install-id" class="font-mono text-ink-300 select-text">{privacy.installId}</span></span>
+          <button data-testid="copy-install-id" type="button" onclick={copyInstallId} class="shrink-0 rounded-md border border-ink-700 px-2 py-1 text-ink-300 hover:text-ink-100">
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </section>
+    {/if}
 
     {#if updates.status}
       {@const u = updates.status}

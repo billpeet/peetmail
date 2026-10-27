@@ -14,6 +14,7 @@ import { startFakeGraph } from "../harness/fake-graph.ts";
 import { startFakePair } from "../harness/fake-pair.ts";
 import { startFakeGmail } from "../harness/fake-gmail.ts";
 import { startFakeUpdates, type FakeUpdates, type Release } from "../harness/fake-update.ts";
+import { startFakeSentry, type FakeSentry } from "../harness/fake-sentry.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -27,7 +28,15 @@ type App = Awaited<ReturnType<typeof launchApp>>;
 /** The fake update server, plus the file the app writes instead of running an installer. */
 type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry }>({
+  /** Send crash reports to a fake Sentry (`test.use({ withSentry: true })`), as `sentry`. */
+  withSentry: [false, { option: true }],
+  sentry: async ({ withSentry }, use) => {
+    if (!withSentry) return use(null as unknown as FakeSentry);
+    const fake = await startFakeSentry();
+    await use(fake);
+    await fake.close();
+  },
   /** Serve update feeds (`test.use({ withUpdates: true })`), as `updates`. */
   withUpdates: [false, { option: true }],
   /** Releases on the feeds before the app starts (the background check can run before the test body). */
@@ -71,7 +80,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs }, use, testInfo) => {
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry }, use, testInfo) => {
     const extraEnv: Record<string, string> = {
       ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
       ...(updates
@@ -81,6 +90,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
             PEETMAIL_FAKE_UPDATE_INSTALL: updates.installedPath,
           }
         : {}),
+      ...(sentry ? { PEETMAIL_SENTRY_DSN: sentry.dsn } : {}),
     };
     const app = await launchApp({ fake, undoSendSecs, extraEnv });
     const consoleLines: string[] = [];

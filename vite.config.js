@@ -14,6 +14,11 @@ export default defineConfig(() => ({
     environment: "node",
   },
 
+  // Release builds (PEETMAIL_SOURCEMAPS=1 in release.yml) write source maps for Sentry,
+  // "hidden" so the shipped JS doesn't point at them; CI uploads them, then deletes them
+  // before they'd be embedded in the exe.
+  build: { sourcemap: process.env.PEETMAIL_SOURCEMAPS === "1" ? /** @type {const} */ ("hidden") : false },
+
   // Don't hide Rust errors behind Vite's screen clearing.
   clearScreen: false,
   server: {

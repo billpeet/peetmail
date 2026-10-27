@@ -2,6 +2,7 @@ mod actions;
 mod auth;
 mod calendar;
 mod commands;
+mod crash;
 mod datadir;
 mod db;
 mod error;
@@ -18,6 +19,7 @@ mod query;
 mod recurrence;
 mod rooms;
 mod sanitize;
+mod scrub;
 mod secure;
 mod state;
 mod testenv;
@@ -147,6 +149,12 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir_override = testenv::get("PEETMAIL_DATA_DIR").map(std::path::PathBuf::from);
+    // First, before Tauri: crash reporting covers startup, and the crash reporter process
+    // (this binary run again) stops inside here.
+    let roaming_dir = data_dir_override.clone().or_else(|| std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join(datadir::IDENTIFIER)));
+    if let Some(dir) = &roaming_dir {
+        crash::init_early(&dir.join("peetmail.db"));
+    }
     let sync_interval = Duration::from_secs(
         testenv::get("PEETMAIL_SYNC_INTERVAL_SECS")
             .and_then(|v| v.parse().ok())
@@ -187,8 +195,13 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(log.build())
         .setup(move |app| {
+            // The log plugin is added here (not with the others) so its logger can be wrapped:
+            // recent lines ride along with crash reports as breadcrumbs (see crash.rs).
+            let (log_plugin, max_level, logger) = log.split(app.handle())?;
+            app.handle().plugin(log_plugin)?;
+            log::set_boxed_logger(Box::new(crash::TrailLogger(logger))).map_err(|e| tauri::Error::Anyhow(e.into()))?;
+            log::set_max_level(max_level);
             install_panic_logging();
             let dir = match data_dir_override {
                 Some(dir) => dir,
@@ -204,6 +217,7 @@ pub fn run() {
                 Err(e) => fatal_startup_error(&e.to_string()),
             };
             db.with(|c| outbox::reset_inflight(c))?;
+            crash::after_db(&db);
             app.manage(state::AppState::new(db));
             update::init(app.handle());
             create_main_window(app)?;
@@ -302,10 +316,20 @@ pub fn run() {
             commands::list_attachments,
             commands::download_attachment,
             commands::update_status,
+            commands::privacy,
+            commands::set_crash_reports,
+            commands::dismiss_privacy_notice,
+            commands::report_error,
+            commands::debug_crash,
             commands::check_for_updates,
             commands::install_update,
             commands::set_update_channel,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                crash::flush();
+            }
+        });
 }

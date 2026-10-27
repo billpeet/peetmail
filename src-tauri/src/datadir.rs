@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+/// tauri.conf.json `identifier`: names the data folders.
+pub const IDENTIFIER: &str = "com.peetsoftware.peetmail";
 pub const LEGACY_IDENTIFIER: &str = "com.boris.peetmail";
 
 /// The database and its WAL files, in the roaming app data dir.
