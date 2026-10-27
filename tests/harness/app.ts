@@ -82,16 +82,22 @@ export function needsBuild(): boolean {
   const built = statSync(STAMP).mtimeMs;
   if (statSync(EXE).mtimeMs > built + 1000) return true;
   const sources = ["src", "src-tauri/src", "src-tauri/migrations", "static"].map((d) => join(ROOT, d)).filter(existsSync);
-  const files = ["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "package.json", "vite.config.js", "svelte.config.js"].map((f) => join(ROOT, f));
+  const files = ["src-tauri/tauri.conf.json", HARNESS_CONFIG, "src-tauri/Cargo.toml", "package.json", "vite.config.js", "svelte.config.js"].map((f) => join(ROOT, f));
   return Math.max(...sources.map(newestMtime), ...files.filter(existsSync).map((f) => statSync(f).mtimeMs)) > built;
 }
+
+/**
+ * Merged over tauri.conf.json for every harness build: the updater trusts the test signing
+ * key (tests/harness/updater) and accepts the fake update server's plain http.
+ */
+const HARNESS_CONFIG = "src-tauri/tauri.harness.conf.json";
 
 /** Builds the debug binary (frontend embedded) if sources changed. Set PEETMAIL_SKIP_BUILD=1 to skip. */
 export function ensureBuilt({ force = false, log = console.log }: { force?: boolean; log?: (msg: string) => void } = {}) {
   if (process.env.PEETMAIL_SKIP_BUILD === "1" && existsSync(STAMP)) return;
   if (!force && !needsBuild()) return;
   log("building debug app (pnpm tauri build --debug --no-bundle)…");
-  const r = spawnSync("pnpm tauri build --debug --no-bundle", {
+  const r = spawnSync(`pnpm tauri build --debug --no-bundle --config ${HARNESS_CONFIG}`, {
     cwd: ROOT,
     stdio: "inherit",
     shell: true,
@@ -231,7 +237,7 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undo
 
   const out = detached ? "ignore" : createWriteStream(logPath);
   const proc = dev
-    ? spawn("pnpm tauri dev", { cwd: ROOT, env, shell: true, detached, stdio: detached ? "ignore" : ["ignore", "pipe", "pipe"] })
+    ? spawn(`pnpm tauri dev --config ${HARNESS_CONFIG}`, { cwd: ROOT, env, shell: true, detached, stdio: detached ? "ignore" : ["ignore", "pipe", "pipe"] })
     : spawn(EXE, [], { cwd: ROOT, env, detached, stdio: detached ? "ignore" : ["ignore", "pipe", "pipe"] });
   if (!detached && typeof out !== "string") {
     proc.stdout?.pipe(out);

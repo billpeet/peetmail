@@ -4,6 +4,7 @@
   import { calendar } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
+  import { updates } from "$lib/updates.svelte";
   import Setup from "$lib/components/Setup.svelte";
   import ThreadList from "$lib/components/ThreadList.svelte";
   import Reader from "$lib/components/Reader.svelte";
@@ -79,6 +80,7 @@
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
       onCalendarChanged(() => calendar.refresh()),
+      updates.init(),
       onScheduledChanged(() => mail.refreshScheduled()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
@@ -135,6 +137,8 @@
 
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
+      { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
+      { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
       { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
@@ -285,6 +289,11 @@
       {#if mail.scheduled.length}
         <button data-testid="footer-scheduled" onclick={() => (mail.overlay = "scheduled")} class="hover:text-ink-100" title="Scheduled messages (g s)">
           {count(mail.scheduled.length, "scheduled message")}
+        </button>
+      {/if}
+      {#if updates.ready}
+        <button data-testid="update-ready" onclick={() => updates.install()} class="text-accent hover:text-ink-100" title="Restart to update (Ctrl+Shift+U)">
+          {updates.status?.version} is ready · restart to update <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>U</kbd>
         </button>
       {/if}
       {#if keymap.pending.length}<span class="text-ink-300">{keymap.pending.join(" ")} …</span>{/if}

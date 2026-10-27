@@ -4,7 +4,8 @@
 
   const groups = $derived.by(() => {
     const map = new Map<string, typeof keymap.bindings>();
-    for (const b of keymap.bindings) map.set(b.group, [...(map.get(b.group) ?? []), b]);
+    // Palette-only commands (no keys) aren't shortcuts.
+    for (const b of keymap.bindings) if (b.keys) map.set(b.group, [...(map.get(b.group) ?? []), b]);
     return [...map];
   });
 </script>

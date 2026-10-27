@@ -82,6 +82,11 @@ describe("displayKeys", () => {
   it("splits sequences and chords for the help overlay", () => {
     expect(displayKeys("g i")).toEqual([["g"], ["i"]]);
     expect(displayKeys("ctrl+r")).toEqual([["Ctrl", "r"]]);
+    expect(displayKeys("ctrl+shift+u")).toEqual([["Ctrl", "Shift", "u"]]);
+  });
+
+  it("shows nothing for a palette-only command", () => {
+    expect(displayKeys("")).toEqual([]);
     expect(displayKeys("Escape")).toEqual([["Esc"]]);
   });
 });

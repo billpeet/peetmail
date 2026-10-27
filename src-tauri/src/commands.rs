@@ -327,6 +327,29 @@ pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// Where automatic updates stand (see update.rs).
+#[tauri::command]
+pub fn update_status(app: AppHandle) -> crate::update::UpdateStatus {
+    crate::update::status(&app)
+}
+
+/// Checks for an update now (and downloads it if there is one).
+#[tauri::command]
+pub async fn check_for_updates(app: AppHandle) -> Result<crate::update::UpdateStatus> {
+    Ok(crate::update::check(&app).await)
+}
+
+/// Closes PeetMail and installs the downloaded update.
+#[tauri::command]
+pub fn install_update(app: AppHandle) -> Result<()> {
+    crate::update::install(&app)
+}
+
+#[tauri::command]
+pub fn set_update_channel(app: AppHandle, channel: String) -> Result<crate::update::UpdateStatus> {
+    crate::update::set_channel(&app, &channel)
+}
+
 /// Snoozed conversations, soonest back first.
 #[tauri::command]
 pub fn list_snoozed(state: State<'_, AppState>) -> Result<Vec<actions::SnoozedThread>> {

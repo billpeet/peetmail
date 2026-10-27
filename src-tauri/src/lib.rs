@@ -18,6 +18,7 @@ mod sanitize;
 mod secure;
 mod state;
 mod testenv;
+mod update;
 
 use std::time::Duration;
 
@@ -182,6 +183,7 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(log.build())
         .setup(move |app| {
             install_panic_logging();
@@ -200,6 +202,7 @@ pub fn run() {
             };
             db.with(|c| outbox::reset_inflight(c))?;
             app.manage(state::AppState::new(db));
+            update::init(app.handle());
             create_main_window(app)?;
             // Headless test runs mustn't put icons in the user's taskbar.
             if !testenv::flag("PEETMAIL_HEADLESS") {
@@ -289,6 +292,10 @@ pub fn run() {
             commands::get_message_body_with_images,
             commands::list_attachments,
             commands::download_attachment,
+            commands::update_status,
+            commands::check_for_updates,
+            commands::install_update,
+            commands::set_update_channel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

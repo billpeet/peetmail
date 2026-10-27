@@ -1,11 +1,11 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
   pull_request:
-  # The release workflow runs this first, so nothing ships that hasn't passed it.
+  # Pushes to master and tags run this through release.yml (canary and stable builds),
+  # so nothing ships that hasn't passed it.
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read

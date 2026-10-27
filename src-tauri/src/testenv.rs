@@ -17,6 +17,9 @@
 //! | PEETMAIL_UNDO_SEND_SECS       | Default undo-send delay (a saved setting still wins)     |
 //! | PEETMAIL_NOTIFY_LOG           | Toasts are appended here as JSON lines, not shown        |
 //! | PEETMAIL_FAKE_AUTOSTART=1     | "Start with Windows" lives in settings, not the registry |
+//! | PEETMAIL_UPDATE_URL           | Update feeds: <url>/<channel>/latest.json (else GitHub)   |
+//! | PEETMAIL_UPDATE_FIRST_CHECK_SECS | First background update check after this (default 60) |
+//! | PEETMAIL_FAKE_UPDATE_INSTALL  | Installing an update writes {version, bytes} to this file |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

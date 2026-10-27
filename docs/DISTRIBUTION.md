@@ -8,7 +8,8 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 |---|---|
 | 0 Groundwork | Done |
 | 1 CI + releases | Done (workflows written and linted; first real run happens when the repo is pushed) |
-| 2–6 | Not started |
+| 2 Auto-update, canary and stable channels | Done (same caveat) |
+| 3–6 | Not started |
 
 ## Decisions
 
@@ -20,6 +21,9 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | Users | Small internal group, mostly in one Entra tenant, also using personal Outlook.com and Gmail accounts. |
 | Consent | Crash reports and telemetry on by default, with a first-run notice and an opt-out in Settings. |
 | Identity | Identifier `com.peetsoftware.peetmail`, publisher "Peet Software". |
+| Release channels | Canary (a build of every push to `master`) and Stable (tagged releases only). |
+| Sentry | PeetMail gets its own Sentry project, set up when Stage 3 starts. |
+| OTLP token | A PeetMail-specific gateway token, arranged when Stage 4 starts. |
 
 ## Where we started
 
@@ -59,22 +63,23 @@ Tests: Rust unit tests for backup, pruning, refusal and legacy-data adoption; Vi
 
 All actions are pinned by commit SHA (the release job holds a write token, and later the signing keys).
 
-Not done yet, added by later stages: updater signing and `latest.json` (Stage 2), Sentry release, PDB and source-map upload (Stage 3), OTLP endpoint and DSN secrets (Stages 3 and 4).
+Stage 2 reworked `release.yml` into the two channels described there. Not done yet, added by later stages: Sentry release, PDB and source-map upload (Stage 3), OTLP endpoint and DSN secrets (Stages 3 and 4).
 
-PolyCode, for comparison, releases on every push to `master` with `major.minor.<run number>` versions and publishes automatically. PeetMail uses tags and a manual publish because there's no staging channel yet. Once the updater and a beta channel exist, switching to PolyCode's continuous model is a small change to `release.yml`.
+## Stage 2: automatic updates, canary and stable (done)
 
-Optional later: a `beta` channel. Pre-release tags publish to a separate `latest-beta.json`; a setting picks the channel.
+**Channels.** Canary is a build of every push to `master`, versioned `<next patch>-canary.<run>` (`scripts/version.ts canary`), so canaries sort after the last stable and before the next. It's published straight away as a pre-release `canary-v<version>`; then the fixed pre-release `canary` gets a new `latest.json` pointing at it, and builds beyond the newest 10 are pruned. Stable is a `v*` tag, drafted with its `latest.json`; publishing the draft makes it the repo's latest release, which is what the Stable feed (`releases/latest/download/latest.json`) reads. PolyCode's publish-on-every-push model is the canary channel; stable keeps a human in the loop. Runbook: `docs/RELEASING.md`.
 
-## Stage 2: automatic updates
+**In the app** (`src-tauri/src/update.rs`, `src/lib/updates.svelte.ts`):
+- `tauri-plugin-updater` with the public key in `tauri.conf.json` and `requireSignedVersion` on, so a tampered manifest can't pass an older, validly signed build off as a newer version (the signature's trusted comment carries the version; `tauri build` writes it). `tauri-plugin-process` wasn't needed.
+- The feed URL is built at runtime from the channel and the repo, compiled in from CI (`PEETMAIL_UPDATE_REPO`, `PEETMAIL_CHANNEL`). Local builds have no repo, so they show "Updates aren't available in this build" and never check.
+- First check a minute after start, then every 6 hours, plus Settings → Updates → Check now and a palette command. A newer build is downloaded and verified in the background; the footer then shows "0.3.0 is ready · restart to update", and `Ctrl+Shift+U` (a keymap binding, so it's in `?` and the palette) installs it.
+- Install is refused while a draft is open or a send is in its undo window (`outbox::sends_in_progress`); scheduled sends persist and don't block. NSIS runs in passive mode; the app flushes its log, exits, and the new version starts.
+- Settings → Updates: version, channel (Stable / Canary), status, Check now / Restart to update. A build defaults to the channel it was built for. Switching channel drops a download from the other channel and checks the new one. Canary → Stable takes effect at the next stable release (no downgrades).
+- Status events carry a sequence number, so a late command result can't overwrite a newer event (a real race the E2E caught).
 
-- `tauri-plugin-updater` + `tauri-plugin-process`, public key in `tauri.conf.json`, endpoint `latest.json` (and the beta one).
-- Check on startup (after first sync, so it never slows launch) and every 6 hours. Download in the background. Show a quiet footer/toast: "PeetMail 0.4.0 is ready, restart to update" with a binding (`Ctrl+Shift+U`, in the keymap registry so it's in `?` and the palette) and a palette command "Check for updates".
-- Never restart on its own while the composer is open or the outbox has a pending send inside its undo window. Applying the update on quit is fine; the outbox is persistent, so scheduled sends survive.
-- NSIS update runs in `passive` mode. The app must exit cleanly first (flush logs, telemetry, close the DB).
-- `latest.json` can carry a `minimumVersion`/notes field we read ourselves: builds below it show a blocking "please update" (for when a provider API change or a bad migration needs everyone moved).
-- Settings > About: version, channel, last check, "Check now".
+**Tests.** Rust: channel resolution, feed URLs, canary version ordering (with the `semver` crate the updater uses), `sends_in_progress`. Vitest: canary version rule, manifest shape, status text, out-of-order statuses. E2E (`tests/e2e/updates.spec.ts`) against a fake update server serving test-key-signed payloads: disabled without a feed; background check finds, downloads, verifies and installs via `Ctrl+Shift+U`; Check now; channel switch; tampered payload refused; mismatched signed version refused; no install with a draft open or a send pending. Install itself is faked in tests (`PEETMAIL_FAKE_UPDATE_INSTALL`); the real install-and-relaunch is on the release smoke-test checklist. A canary-versioned, signed installer was built locally to confirm NSIS accepts pre-release versions and the asset names match the workflow.
 
-Tests: a fake update server in the harness serving a `latest.json` for a newer version. E2E asserts the "ready to restart" state appears, the binding is listed, and no restart happens with an open composer. The actual install-and-relaunch is a manual smoke test per release (documented checklist), since it replaces the exe under test.
+**Not done:** install-on-quit, and a `minimumVersion` field to force everyone off a bad build. Both are small additions to `update.rs` if they're needed.
 
 ## Stage 3: Sentry
 
@@ -222,8 +227,4 @@ Stage 5 is independent of 2–4 and can run in parallel or go first if the setup
 
 ## Open questions
 
-Answered ones are under Decisions at the top. Still open:
-
-1. **Sentry project.** A new `peetmail` project in the existing Sentry org, or somewhere else? (Stage 3)
-2. **OTLP gateway token.** A separate write-only token for PeetMail on the gateway PolyCode uses. (Stage 4)
-3. **Release cadence.** Keep tags and manual publish, or move to PolyCode's publish-every-master-push once the updater and a beta channel exist? (After Stage 2)
+Answered ones are under Decisions at the top. Nothing is open right now; Sentry and the OTLP token get set up when their stages start.

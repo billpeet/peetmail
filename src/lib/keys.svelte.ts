@@ -3,7 +3,7 @@
 
 export type Binding = {
   id: string;
-  /** Space-separated sequence, e.g. "j", "g i", "ctrl+k", "?", "Escape". */
+  /** Space-separated sequence, e.g. "j", "g i", "ctrl+k", "?", "Escape". Empty: palette only. */
   keys: string;
   label: string;
   group: string;
@@ -103,5 +103,6 @@ export function displayKeys(keys: string): string[][] {
     shift: "Shift",
     Space: "Space",
   };
+  if (!keys) return [];
   return keys.split(" ").map((step) => step.split("+").map((k) => names[k] ?? k));
 }

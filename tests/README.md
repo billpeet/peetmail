@@ -23,7 +23,8 @@ Playwright ──CDP──▶ WebView2 in peetmail.exe (debug build, headless)
 - **Fixtures.** `fixtures.ts` builds a seeded mailbox with dates relative to now. Messages are spread over Inbox and Sent Items, and notification senders are classified Other. Messages tests can target by id: `msg-hostile` (scripts and handlers to strip), `msg-newsletter` (remote images, Other), `msg-plain` (text body), `conv-thread-1` (4 received + your Sent reply), `msg-attach` (inline `cid:` image + PDF attachment), `msg-invite` (meeting invite), `msg-sent-*` (mail you sent, for contact suggestions).
 - **Isolation.** `app.ts` launches the exe with `PEETMAIL_DATA_DIR`, its own `WEBVIEW2_USER_DATA_FOLDER`, the fake server's URLs, and a free DevTools port. Every test gets a fresh app and a fresh fake server, so tests run in parallel.
 - **Headless.** The window is created hidden, so nothing appears on screen or takes focus. WebView2 still renders, and screenshots and keyboard input over CDP work. Set `PEETMAIL_HEADED=1` to watch.
-- **Builds.** `global-setup.ts` rebuilds the debug exe when sources are newer than the last harness build. `PEETMAIL_SKIP_BUILD=1` skips that check.
+- **Fake updates.** `fake-update.ts` serves update manifests per channel (`/stable/latest.json`, `/canary/latest.json`) built by `scripts/update-manifest.ts`, plus a payload signed with the test key in `tests/harness/updater/` (signed for version `9.9.0`). The harness build trusts that key and allows plain http through `src-tauri/tauri.harness.conf.json`, so the real download-and-verify code runs. Installing writes `{version, bytes}` to a file instead of running an installer (`PEETMAIL_FAKE_UPDATE_INSTALL`).
+- **Builds.** `global-setup.ts` rebuilds the debug exe (with `--config src-tauri/tauri.harness.conf.json`) when sources are newer than the last harness build. `PEETMAIL_SKIP_BUILD=1` skips that check.
 
 ## Writing an E2E test
 
@@ -35,6 +36,7 @@ Import from `tests/e2e/fixtures.ts`:
 - The default list is the built-in Inbox tab (mail the default `Other` split doesn't claim); `DEFAULT_CONVERSATIONS` is its expected size.
 - Writes the app makes (sends, replies, moves, patches) land in `fake.state.sent`; `fake.control("message?id=...")` returns the server's copy of a message. Triage ops leave after a 2s grace period, so poll with `expect.poll(..., { timeout: 10_000 })`.
 - Attachments download to `<dataDir>/downloads` in tests (`PEETMAIL_DOWNLOAD_DIR`).
+- Updates: `test.use({ withUpdates: true })` gives `updates` (the fake update server). `updates.publish("stable", { version: SIGNED_VERSION })` puts a release on a feed; `updateFeed: { stable: {...} }` does it before the app starts, and `updateFirstCheckSecs` sets when the app first checks by itself (default an hour, so tests use Settings → Check now). `updates.installedPath` is where an install lands.
 
 ```ts
 test("new mail appears after Ctrl+R", async ({ inbox: page, fake }) => {

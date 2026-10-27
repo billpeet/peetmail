@@ -239,6 +239,10 @@ export const api = {
   setSplits: (splits: Split[]) => invoke<void>("set_splits", { splits }),
   getMessageBodyWithImages: (messageId: number) => invoke<string>("get_message_body_with_images", { messageId }),
   listAttachments: (messageId: number) => invoke<Attachment[]>("list_attachments", { messageId }),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  checkForUpdates: () => invoke<UpdateStatus>("check_for_updates"),
+  installUpdate: () => invoke<void>("install_update"),
+  setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
 };
@@ -275,6 +279,24 @@ export type Invite = {
 export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => listen("scheduled-changed", () => cb());
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
+
+/** Automatic updates (src-tauri/src/update.rs). */
+export type UpdateChannel = "stable" | "canary";
+export type UpdateStatus = {
+  /** Increases with every change; a lower one is stale. */
+  seq: number;
+  state: "disabled" | "idle" | "checking" | "downloading" | "ready" | "upToDate" | "error";
+  channel: UpdateChannel;
+  currentVersion: string;
+  /** The version found (downloading or ready). */
+  version: string | null;
+  notes: string | null;
+  message: string | null;
+  lastCheck: string | null;
+};
+
+export const onUpdateStatus = (cb: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
+  listen<UpdateStatus>("update-status", (e) => cb(e.payload));
 
 export const onSyncStatus = (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
   listen<SyncStatus>("sync-status", (e) => cb(e.payload));

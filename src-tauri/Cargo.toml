@@ -39,6 +39,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
+# No `zip` feature: our update artifact is the NSIS setup exe itself (createUpdaterArtifacts v2),
+# so the zip/tar extraction code (and its advisories) isn't needed.
+tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -58,3 +61,6 @@ debug = "line-tables-only"
 # opt-level 0 so incremental builds remain fast.
 [profile.dev.package."*"]
 opt-level = 2
+
+[dev-dependencies]
+semver = "1"

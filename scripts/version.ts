@@ -4,6 +4,7 @@
 //   node scripts/version.ts check               all copies agree (CI runs this)
 //   node scripts/version.ts check --tag v1.2.3  ...and match the release tag
 //   node scripts/version.ts set 1.2.3           write the version everywhere
+//   node scripts/version.ts canary 42           print the canary version for CI run 42
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +31,21 @@ export function problems(t: Texts, tag?: string): string[] {
   }
   if (tag !== undefined && tag !== `v${want}`) out.push(`tag "${tag}" doesn't match version ${want} (expected v${want})`);
   return out;
+}
+
+/**
+ * The version of a canary build: the next patch after package.json's version, as a
+ * pre-release numbered by the CI run (0.2.0 -> 0.2.1-canary.42). It sorts above the last
+ * stable release and below the next one, and run numbers only grow, so every canary is
+ * newer than the one before. A package.json pre-release (0.3.0-beta.1) is already ahead
+ * of the last stable, so its core is kept (0.3.0-canary.42).
+ */
+export function canaryVersion(base: string, run: number): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)(-.+)?$/.exec(base);
+  if (!m) throw new Error(`"${base}" isn't a semver version`);
+  if (!Number.isInteger(run) || run < 1) throw new Error(`run number must be a positive integer, got ${run}`);
+  const [major, minor, patch] = [m[1], m[2], Number(m[3])];
+  return `${major}.${minor}.${m[4] ? patch : patch + 1}-canary.${run}`;
 }
 
 export function withVersion(t: Texts, version: string): Texts {
@@ -71,8 +87,10 @@ function main() {
     const next = withVersion(texts, args[0]);
     for (const k of keys) if (next[k] !== texts[k]) writeFileSync(paths[k], next[k]);
     console.log(`version set to ${args[0]}`);
+  } else if (cmd === "canary" && args[0]) {
+    console.log(canaryVersion(JSON.parse(texts.packageJson).version, Number(args[0])));
   } else {
-    console.error("usage: node scripts/version.ts check [--tag vX.Y.Z] | set <version>");
+    console.error("usage: node scripts/version.ts check [--tag vX.Y.Z] | set <version> | canary <run number>");
     process.exit(2);
   }
 }

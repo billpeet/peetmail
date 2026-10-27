@@ -1,25 +1,37 @@
 name: Release
 
-# Push a tag like v0.2.0 (or v0.3.0-beta.1 for a pre-release) to build the installer and
-# create a *draft* GitHub release. Publishing the draft is a manual step: docs/RELEASING.md.
+# Two update channels (see src-tauri/src/update.rs and docs/RELEASING.md):
+#
+#   canary  every push to master. Version <next patch>-canary.<run>, published at once as a
+#           pre-release `canary-v<version>`; the fixed `canary` pre-release's latest.json is
+#           then repointed at it. Older canary builds are pruned.
+#   stable  a tag like v0.2.0. Drafted with latest.json; publishing the draft (by hand) is
+#           what makes the stable channel offer it, through releases/latest.
+#
+# Both run the full CI first, so nothing ships that hasn't passed it.
 
 on:
   push:
+    branches: [master]
     tags: ["v*"]
 
 permissions:
   contents: read
 
 concurrency:
+  # One run per ref at a time; a newer master push waits, and GitHub drops older waiting ones.
   group: release-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  CANARY_KEEP: 10
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
   build:
-    name: Build and draft the release
+    name: Build and publish (${{ startsWith(github.ref, 'refs/tags/') && 'stable' || 'canary' }})
     needs: ci
     runs-on: windows-latest
     timeout-minutes: 60
@@ -27,7 +39,8 @@ jobs:
       contents: write
     env:
       CARGO_TERM_COLOR: always
-      TAG: ${{ github.ref_name }}
+      CHANNEL: ${{ startsWith(github.ref, 'refs/tags/') && 'stable' || 'canary' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -50,14 +63,38 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Tag matches the version
-        run: node scripts/version.ts check --tag "$env:TAG"
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:CHANNEL -eq 'stable') {
+            node scripts/version.ts check --tag $env:GITHUB_REF_NAME
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            $version = $env:GITHUB_REF_NAME.TrimStart('v')
+            $tag = $env:GITHUB_REF_NAME
+          } else {
+            $version = node scripts/version.ts canary $env:GITHUB_RUN_NUMBER
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            # Only for this build; nothing is committed.
+            node scripts/version.ts set $version
+            $tag = "canary-v$version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "Building $env:CHANNEL $version" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Build the installer
-        run: pnpm tauri build
+        # tauri.release.conf.json turns on the signed updater artifacts (needs the key below).
+        run: pnpm tauri build --config src-tauri/tauri.release.conf.json
         env:
-          # Built-in OAuth apps, read at compile time (option_env!). Unset secrets leave
-          # them empty and the app asks for a client ID on first run, as a dev build does.
+          # Signs the installer for the updater (minisign; unrelated to Authenticode).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Compiled in (option_env!): which channel this build is on and where to look for updates.
+          PEETMAIL_CHANNEL: ${{ env.CHANNEL }}
+          PEETMAIL_UPDATE_REPO: ${{ github.repository }}
+          # Built-in OAuth apps. Unset secrets leave them empty and the app asks for a
+          # client ID on first run, as a dev build does.
           PEETMAIL_MS_CLIENT_ID: ${{ secrets.PEETMAIL_MS_CLIENT_ID }}
           PEETMAIL_GOOGLE_CLIENT_ID: ${{ secrets.PEETMAIL_GOOGLE_CLIENT_ID }}
           PEETMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.PEETMAIL_GOOGLE_CLIENT_SECRET }}
@@ -65,35 +102,49 @@ jobs:
       - name: Collect release assets
         id: assets
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          $version = $env:TAG.TrimStart('v')
           $out = Join-Path $env:RUNNER_TEMP 'release-assets'
           New-Item -ItemType Directory -Force $out | Out-Null
+          $name = "PeetMail_$($env:VERSION)_x64-setup.exe"
 
-          $installer = "src-tauri/target/release/bundle/nsis/PeetMail_${version}_x64-setup.exe"
-          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer not found: $installer" }
-          Copy-Item -LiteralPath $installer -Destination $out
+          $installer = "src-tauri/target/release/bundle/nsis/$name"
+          foreach ($f in @($installer, "$installer.sig", 'src-tauri/target/release/peetmail.pdb')) {
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "Build output missing: $f" }
+          }
+          Copy-Item -LiteralPath $installer, "$installer.sig" -Destination $out
+          # Debug symbols for crash reports; not installed.
+          Compress-Archive -LiteralPath 'src-tauri/target/release/peetmail.pdb' -DestinationPath (Join-Path $out "PeetMail_$($env:VERSION)_x64-symbols.zip")
 
-          # Debug symbols for crash reports. Not installed; kept with the release so any
-          # version's stack traces can be symbolicated later.
-          $pdb = 'src-tauri/target/release/peetmail.pdb'
-          if (-not (Test-Path -LiteralPath $pdb -PathType Leaf)) { throw "PDB not found: $pdb" }
-          Compress-Archive -LiteralPath $pdb -DestinationPath (Join-Path $out "PeetMail_${version}_x64-symbols.zip")
+          $url = "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/$($env:TAG)/$name"
+          $notes = if ($env:CHANNEL -eq 'stable') {
+            "https://github.com/$($env:GITHUB_REPOSITORY)/releases/tag/$($env:TAG)"
+          } else {
+            git log -1 --format=%s $env:GITHUB_SHA
+          }
+          node scripts/update-manifest.ts --version $env:VERSION --url $url --sig "$installer.sig" --notes "$notes" --out (Join-Path $out 'latest.json')
+          if ($LASTEXITCODE -ne 0) { throw "manifest failed" }
 
           Push-Location $out
-          Get-ChildItem -File | Sort-Object Name | ForEach-Object {
+          $sums = Get-ChildItem -File | Sort-Object Name | ForEach-Object {
             "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.Name).Hash.ToLower())  $($_.Name)"
-          } | Set-Content -Encoding ascii SHA256SUMS.txt
+          }
+          if (-not $sums) { throw "nothing to checksum" }
+          $sums | Set-Content -Encoding ascii SHA256SUMS.txt
           Pop-Location
 
           Get-ChildItem $out | Format-Table Name, Length
           "dir=$out" >> $env:GITHUB_OUTPUT
 
-      - name: Create or update the draft release
+      - name: Draft the stable release
+        if: env.CHANNEL == 'stable'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ASSETS: ${{ steps.assets.outputs.dir }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           $files = Get-ChildItem -File $env:ASSETS | ForEach-Object FullName
           gh release view $env:TAG *> $null
@@ -103,19 +154,67 @@ jobs:
             if ($draft -ne 'true') { throw "Release $env:TAG is already published; bump the version instead of rebuilding it." }
             gh release upload $env:TAG @files --clobber
           } else {
-            $pre = if ($env:TAG.Contains('-')) { @('--prerelease') } else { @() }
-            gh release create $env:TAG @files --draft --verify-tag --generate-notes --title "PeetMail $($env:TAG.TrimStart('v'))" @pre
+            # A pre-release tag (v0.3.0-beta.1) never becomes "latest", so the stable channel ignores it.
+            $pre = if ($env:VERSION.Contains('-')) { @('--prerelease') } else { @() }
+            gh release create $env:TAG @files --draft --verify-tag --generate-notes --title "PeetMail $env:VERSION" @pre
           }
           if ($LASTEXITCODE -ne 0) { throw "gh release failed" }
 
-      - name: Verify the draft has every asset
+      - name: Publish the canary build
+        if: env.CHANNEL == 'canary'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ASSETS: ${{ steps.assets.outputs.dir }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $files = Get-ChildItem -File $env:ASSETS | ForEach-Object FullName
+          $subject = git log -1 --format=%s $env:GITHUB_SHA
+          $notes = "Canary build of $($env:GITHUB_SHA.Substring(0,7)): $subject`n`nBuilt automatically from master. Install it, or switch to the Canary channel in Settings, to get every change as it lands."
+          gh release create $env:TAG @files --prerelease --latest=false --target $env:GITHUB_SHA --title "Canary $env:VERSION" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw "creating $env:TAG failed" }
+
+      - name: Point the canary channel at this build
+        if: env.CHANNEL == 'canary'
+        shell: pwsh
+        env:
+          ASSETS: ${{ steps.assets.outputs.dir }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Only now that the build's release is complete does the channel's manifest move.
+          gh release view canary *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create canary --prerelease --latest=false --target $env:GITHUB_SHA --title "Canary channel" `
+              --notes "The Canary update channel reads latest.json from here. It always points at the newest canary-v* build."
+            if ($LASTEXITCODE -ne 0) { throw "creating the canary release failed" }
+          }
+          gh release upload canary (Join-Path $env:ASSETS 'latest.json') --clobber
+          if ($LASTEXITCODE -ne 0) { throw "updating canary/latest.json failed" }
+          "Canary channel now serves $env:TAG" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Prune old canary builds
+        if: env.CHANNEL == 'canary'
+        shell: pwsh
+        run: |
+          $old = gh release list --limit 200 --json tagName,createdAt --jq '[.[] | select(.tagName | startswith("canary-v"))] | sort_by(.createdAt) | reverse | .[].tagName' |
+            Select-Object -Skip ([int]$env:CANARY_KEEP)
+          foreach ($tag in $old) {
+            gh release delete $tag --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { Write-Warning "couldn't delete $tag" }
+          }
+
+      - name: Verify the release has every asset
+        shell: pwsh
+        env:
+          ASSETS: ${{ steps.assets.outputs.dir }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           $expected = Get-ChildItem -File $env:ASSETS | ForEach-Object Name
           $actual = @(gh release view $env:TAG --json assets --jq '.assets[].name')
           $missing = @($expected | Where-Object { $_ -notin $actual })
-          if ($missing.Count) { throw "Draft release is missing: $($missing -join ', ')" }
-          "Draft ready: $(gh release view $env:TAG --json url --jq .url)" >> $env:GITHUB_STEP_SUMMARY
+          if ($missing.Count) { throw "Release $env:TAG is missing: $($missing -join ', ')" }
+          if ($env:CHANNEL -eq 'canary') {
+            $feed = @(gh release view canary --json assets --jq '.assets[].name')
+            if ('latest.json' -notin $feed) { throw "canary/latest.json is missing" }
+          }
+          "Release: $(gh release view $env:TAG --json url --jq .url)" >> $env:GITHUB_STEP_SUMMARY

@@ -1,0 +1,313 @@
+//! Automatic updates from GitHub Releases, on one of two channels:
+//!
+//! - **stable**: tagged releases, read from the repo's latest release
+//!   (`releases/latest/download/latest.json`).
+//! - **canary**: a build of every push to `master`, read from the fixed `canary` pre-release
+//!   (`releases/download/canary/latest.json`), which CI repoints after each build.
+//!
+//! Updates are checked in the background, downloaded and signature-checked straight away,
+//! and installed only when the user asks (footer button or `Ctrl+Shift+U`). Builds without
+//! a repo compiled in (local and dev builds) never check.
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_updater::{Update, UpdaterExt};
+use url::Url;
+
+use crate::db;
+use crate::error::{AppError, Result};
+use crate::outbox;
+use crate::state::AppState;
+use crate::testenv;
+
+pub const EVENT_UPDATE_STATUS: &str = "update-status";
+const KEY_CHANNEL: &str = "update_channel";
+pub const CHANNELS: [&str; 2] = ["stable", "canary"];
+
+/// First check this long after start (sync gets the network first), then every few hours.
+const FIRST_CHECK_SECS: u64 = 60;
+const CHECK_EVERY_SECS: u64 = 6 * 60 * 60;
+
+/// What the UI shows. `state` is one of disabled, idle, checking, downloading, ready,
+/// upToDate, error.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    /// Increases with every change, so the UI can drop a status older than one it has.
+    pub seq: u64,
+    pub state: &'static str,
+    pub channel: String,
+    pub current_version: String,
+    /// The version found (downloading or ready).
+    pub version: Option<String>,
+    pub notes: Option<String>,
+    pub message: Option<String>,
+    /// When the last check finished (RFC 3339, UTC).
+    pub last_check: Option<String>,
+}
+
+struct Ready {
+    update: Update,
+    bytes: Vec<u8>,
+    channel: String,
+}
+
+#[derive(Default)]
+pub struct Updates {
+    status: Mutex<UpdateStatus>,
+    ready: Mutex<Option<Ready>>,
+    checking: tokio::sync::Mutex<()>,
+}
+
+/// The channel this binary was built for (set by CI); `None` for local builds.
+fn build_channel() -> Option<&'static str> {
+    option_env!("PEETMAIL_CHANNEL").filter(|c| CHANNELS.contains(c))
+}
+
+/// The saved choice, else the channel the build came from, else stable.
+pub fn resolve_channel(saved: Option<&str>, build: Option<&str>) -> &'static str {
+    let pick = |c: Option<&str>| c.and_then(|c| CHANNELS.iter().copied().find(|k| *k == c));
+    pick(saved).or(pick(build)).unwrap_or("stable")
+}
+
+/// Where a channel's manifest lives. `test_base` (debug builds only) replaces GitHub.
+pub fn feed_url(channel: &str, repo: Option<&str>, test_base: Option<&str>) -> Option<Url> {
+    let url = if let Some(base) = test_base {
+        format!("{}/{channel}/latest.json", base.trim_end_matches('/'))
+    } else {
+        let repo = repo.filter(|r| r.contains('/'))?;
+        match channel {
+            "canary" => format!("https://github.com/{repo}/releases/download/canary/latest.json"),
+            _ => format!("https://github.com/{repo}/releases/latest/download/latest.json"),
+        }
+    };
+    Url::parse(&url).ok()
+}
+
+fn channel(app: &AppHandle) -> String {
+    let saved = app.state::<AppState>().db.with(|c| db::get_setting(c, KEY_CHANNEL)).ok().flatten();
+    resolve_channel(saved.as_deref(), build_channel()).to_string()
+}
+
+fn feed(channel: &str) -> Option<Url> {
+    feed_url(channel, option_env!("PEETMAIL_UPDATE_REPO"), testenv::get("PEETMAIL_UPDATE_URL").as_deref())
+}
+
+fn now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn set(app: &AppHandle, f: impl FnOnce(&mut UpdateStatus)) -> UpdateStatus {
+    let updates = app.state::<Updates>();
+    let mut s = updates.status.lock().unwrap();
+    f(&mut s);
+    s.seq += 1;
+    let out = s.clone();
+    drop(s);
+    let _ = app.emit(EVENT_UPDATE_STATUS, &out);
+    out
+}
+
+pub fn status(app: &AppHandle) -> UpdateStatus {
+    app.state::<Updates>().status.lock().unwrap().clone()
+}
+
+/// Sets up the state and the background checks. Call once from setup.
+pub fn init(app: &AppHandle) {
+    app.manage(Updates::default());
+    let channel = channel(app);
+    let enabled = feed(&channel).is_some();
+    set(app, |s| {
+        s.state = if enabled { "idle" } else { "disabled" };
+        s.channel = channel;
+        s.current_version = app.package_info().version.to_string();
+    });
+    if !enabled {
+        return;
+    }
+    let first = testenv::get("PEETMAIL_UPDATE_FIRST_CHECK_SECS").and_then(|v| v.parse().ok()).unwrap_or(FIRST_CHECK_SECS);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(first)).await;
+        loop {
+            check(&app).await;
+            tokio::time::sleep(Duration::from_secs(CHECK_EVERY_SECS)).await;
+        }
+    });
+}
+
+/// Checks the channel's feed and, if there's a newer version, downloads it (the download
+/// verifies the signature). A check already running is not repeated; an update already
+/// downloaded for this channel is kept. If the channel changes while a check runs, its
+/// result is dropped and the new channel is checked.
+pub async fn check(app: &AppHandle) -> UpdateStatus {
+    let updates = app.state::<Updates>();
+    let Ok(_guard) = updates.checking.try_lock() else { return status(app) };
+    loop {
+        let channel = channel(app);
+        let Some(url) = feed(&channel) else {
+            return set(app, |s| s.state = "disabled");
+        };
+        if updates.ready.lock().unwrap().as_ref().is_some_and(|r| r.channel == channel) {
+            return status(app);
+        }
+        set(app, |s| {
+            s.state = "checking";
+            s.message = None;
+        });
+        let result = find_and_download(app, url).await;
+        if self::channel(app) != channel {
+            log::info!("update channel changed during the check; checking again");
+            continue;
+        }
+        return match result {
+            Ok(None) => {
+                log::info!("update check ({channel}): up to date");
+                set(app, |s| {
+                    s.state = "upToDate";
+                    s.version = None;
+                    s.notes = None;
+                    s.last_check = Some(now());
+                })
+            }
+            Ok(Some((update, bytes))) => {
+                log::info!("update {} ({channel}) downloaded and verified", update.version);
+                let (version, notes) = (update.version.clone(), update.body.clone());
+                *updates.ready.lock().unwrap() = Some(Ready { update, bytes, channel });
+                set(app, |s| {
+                    s.state = "ready";
+                    s.version = Some(version);
+                    s.notes = notes.filter(|n| !n.trim().is_empty());
+                    s.last_check = Some(now());
+                })
+            }
+            Err(e) => {
+                log::warn!("update check ({channel}) failed: {e}");
+                set(app, |s| {
+                    s.state = "error";
+                    s.message = Some(e.to_string());
+                    s.last_check = Some(now());
+                })
+            }
+        };
+    }
+}
+
+async fn find_and_download(app: &AppHandle, url: Url) -> std::result::Result<Option<(Update, Vec<u8>)>, tauri_plugin_updater::Error> {
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![url])?
+        .on_before_exit(|| {
+            log::info!("closing for the update installer");
+            log::logger().flush();
+        })
+        .build()?;
+    let Some(update) = updater.check().await? else { return Ok(None) };
+    set(app, |s| {
+        s.state = "downloading";
+        s.version = Some(update.version.clone());
+    });
+    let bytes = update.download(|_, _| {}, || {}).await?;
+    Ok(Some((update, bytes)))
+}
+
+/// Switches channel. A download for the other channel is dropped; the new channel is
+/// checked straight away. Going from canary to stable takes effect at the next stable
+/// release newer than the running build (no downgrades).
+pub fn set_channel(app: &AppHandle, channel: &str) -> Result<UpdateStatus> {
+    let channel = CHANNELS.iter().find(|c| **c == channel).ok_or_else(|| AppError::Other(format!("unknown update channel {channel}")))?;
+    app.state::<AppState>().db.with(|c| db::set_setting(c, KEY_CHANNEL, channel))?;
+    let keep_ready = {
+        let updates = app.state::<Updates>();
+        let mut ready = updates.ready.lock().unwrap();
+        if ready.as_ref().is_some_and(|r| r.channel != *channel) {
+            *ready = None;
+        }
+        ready.is_some()
+    };
+    let enabled = feed(channel).is_some();
+    let out = set(app, |s| {
+        s.channel = channel.to_string();
+        if !keep_ready {
+            s.state = if enabled { "idle" } else { "disabled" };
+            s.version = None;
+            s.notes = None;
+        }
+    });
+    if enabled {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            check(&app).await;
+        });
+    }
+    Ok(out)
+}
+
+/// Installs the downloaded update: PeetMail closes, the installer runs without asking, and
+/// the new version starts. Refused while a message is inside its undo-send window, so
+/// nobody loses the chance to take it back.
+pub fn install(app: &AppHandle) -> Result<()> {
+    let sending = app.state::<AppState>().db.with(|c| outbox::sends_in_progress(c))?;
+    if sending > 0 {
+        return Err(AppError::Other("A message is still sending. Try again in a few seconds.".into()));
+    }
+    let updates = app.state::<Updates>();
+    let ready = updates.ready.lock().unwrap();
+    let Some(ready) = ready.as_ref() else {
+        return Err(AppError::Other("No update is ready to install.".into()));
+    };
+    log::info!("installing update {}", ready.update.version);
+    if let Some(path) = testenv::get("PEETMAIL_FAKE_UPDATE_INSTALL") {
+        // Tests stop here: record what would have been installed instead of running it.
+        let record = serde_json::json!({ "version": ready.update.version, "bytes": ready.bytes.len() });
+        std::fs::write(path, record.to_string())?;
+        return Ok(());
+    }
+    ready.update.install(&ready.bytes).map_err(|e| AppError::Other(format!("couldn't start the installer: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_prefers_the_saved_choice_then_the_build() {
+        assert_eq!(resolve_channel(Some("canary"), Some("stable")), "canary");
+        assert_eq!(resolve_channel(None, Some("canary")), "canary");
+        assert_eq!(resolve_channel(Some("nightly"), Some("canary")), "canary");
+        assert_eq!(resolve_channel(None, None), "stable");
+    }
+
+    #[test]
+    fn feeds_point_at_the_right_release() {
+        let repo = Some("peetsoftware/peetmail");
+        assert_eq!(
+            feed_url("stable", repo, None).unwrap().as_str(),
+            "https://github.com/peetsoftware/peetmail/releases/latest/download/latest.json"
+        );
+        assert_eq!(
+            feed_url("canary", repo, None).unwrap().as_str(),
+            "https://github.com/peetsoftware/peetmail/releases/download/canary/latest.json"
+        );
+        assert_eq!(feed_url("canary", repo, Some("http://127.0.0.1:4100/")).unwrap().as_str(), "http://127.0.0.1:4100/canary/latest.json");
+    }
+
+    #[test]
+    fn canary_versions_sort_between_stable_releases() {
+        // The version scheme from scripts/version.ts, compared the way the updater compares.
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        assert!(v("0.2.0") < v("0.2.1-canary.9"), "a canary is newer than the stable it follows");
+        assert!(v("0.2.1-canary.9") < v("0.2.1-canary.10"), "run numbers compare as numbers");
+        assert!(v("0.2.1-canary.10") < v("0.2.1"), "the next stable is newer than its canaries");
+        assert!(v("0.3.0-beta.1") < v("0.3.0-canary.7"), "a canary of a beta sorts after the beta");
+    }
+
+    #[test]
+    fn no_repo_means_no_updates() {
+        assert!(feed_url("stable", None, None).is_none());
+        assert!(feed_url("stable", Some(""), None).is_none());
+    }
+}

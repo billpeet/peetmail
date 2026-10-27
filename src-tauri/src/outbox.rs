@@ -204,6 +204,18 @@ pub fn busy_remote_ids(conn: &Connection, account_id: i64) -> Result<HashSet<Str
 }
 
 /// Ops interrupted by a crash or quit go back in the queue.
+/// Sends inside their undo window or going out right now. Scheduled sends don't count:
+/// they wait for their time whether or not PeetMail restarts.
+pub fn sends_in_progress(conn: &Connection) -> Result<usize> {
+    let inflight: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM outbox WHERE status = 'inflight' AND json_extract(op, '$.type') = 'send'",
+        [],
+        |r| r.get(0),
+    )?;
+    let waiting = queued_sends(conn, false)?.iter().filter(|q| q.draft.send_at.is_none()).count();
+    Ok(inflight as usize + waiting)
+}
+
 pub fn reset_inflight(conn: &Connection) -> Result<()> {
     conn.execute("UPDATE outbox SET status = 'pending' WHERE status = 'inflight'", [])?;
     Ok(())
@@ -546,14 +558,17 @@ mod tests {
             assert_eq!(all.iter().map(|q| q.id).collect::<Vec<_>>(), vec![undo_window, scheduled]);
             assert_eq!(queued_sends(c, true)?.iter().map(|q| q.id).collect::<Vec<_>>(), vec![scheduled]);
             assert!(all[1].send_at.starts_with(&later.format("%Y-%m-%dT%H:%M").to_string()));
+            assert_eq!(sends_in_progress(c)?, 1, "the undo-window send, not the scheduled one");
 
             let back = take_send(c, undo_window)?.expect("still queued");
             assert_eq!(back.draft.subject, "Hi");
             assert!(take_send(c, undo_window)?.is_none(), "already taken");
+            assert_eq!(sends_in_progress(c)?, 0);
 
             // Once it's in flight it can't be taken back.
             c.execute("UPDATE outbox SET not_before = '2000-01-01T00:00:00.000Z' WHERE id = ?1", [scheduled])?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(scheduled));
+            assert_eq!(sends_in_progress(c)?, 1, "a send going out right now counts");
             assert!(take_send(c, scheduled)?.is_none());
             Ok(())
         })

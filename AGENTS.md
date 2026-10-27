@@ -22,3 +22,4 @@ Done means `pnpm verify` is green and every new behaviour has a test that would 
 - Every action is a binding in the keymap registry (`src/lib/keys.svelte.ts`) so it shows in the `?` overlay and the future command palette.
 - Clippy runs with `-D warnings` (`pnpm lint:rust`, part of `pnpm verify` and CI). The Rust code isn't rustfmt-formatted; don't reformat files wholesale.
 - The version lives in `package.json`; `pnpm version:set <x.y.z>` copies it to `Cargo.toml` and `Cargo.lock`. Releasing: `docs/RELEASING.md`.
+- Harness builds merge `src-tauri/tauri.harness.conf.json` over `tauri.conf.json`: the updater trusts the test key in `tests/harness/updater/` and allows the fake update server's http. Never put test keys or `dangerous*` flags in `tauri.conf.json`.

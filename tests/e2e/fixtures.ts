@@ -13,6 +13,10 @@ import { readFile } from "node:fs/promises";
 import { startFakeGraph } from "../harness/fake-graph.ts";
 import { startFakePair } from "../harness/fake-pair.ts";
 import { startFakeGmail } from "../harness/fake-gmail.ts";
+import { startFakeUpdates, type FakeUpdates, type Release } from "../harness/fake-update.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { launchApp, signIn } from "../harness/app.ts";
 import { defaultMailbox, FOLDER_IDS } from "../harness/fixtures.ts";
 
@@ -20,8 +24,26 @@ type Fake = Awaited<ReturnType<typeof startFakeGraph>>;
 type Pair = Awaited<ReturnType<typeof startFakePair>>;
 type Gmail = Awaited<ReturnType<typeof startFakeGmail>>;
 type App = Awaited<ReturnType<typeof launchApp>>;
+/** The fake update server, plus the file the app writes instead of running an installer. */
+type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates }>({
+  /** Serve update feeds (`test.use({ withUpdates: true })`), as `updates`. */
+  withUpdates: [false, { option: true }],
+  /** Releases on the feeds before the app starts (the background check can run before the test body). */
+  updateFeed: [{}, { option: true }],
+  /** Seconds after start before the app first checks for updates on its own. */
+  updateFirstCheckSecs: [3600, { option: true }],
+  updates: async ({ withUpdates, updateFeed }, use) => {
+    if (!withUpdates) return use(null as unknown as Updates);
+    const fake = await startFakeUpdates();
+    if (updateFeed.stable) fake.publish("stable", updateFeed.stable);
+    if (updateFeed.canary) fake.publish("canary", updateFeed.canary);
+    const installedPath = join(tmpdir(), `peetmail-update-installed-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    await use(Object.assign(fake, { installedPath }));
+    await fake.close();
+    await rm(installedPath, { force: true });
+  },
   /** Serve a fake Gmail too (`test.use({ withGmail: true })`), as `gmail`. */
   withGmail: [false, { option: true }],
   /** Extra filler messages in the fake Gmail inbox. */
@@ -49,8 +71,17 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail }, use, testInfo) => {
-    const extraEnv = gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : undefined;
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs }, use, testInfo) => {
+    const extraEnv: Record<string, string> = {
+      ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
+      ...(updates
+        ? {
+            PEETMAIL_UPDATE_URL: updates.url,
+            PEETMAIL_UPDATE_FIRST_CHECK_SECS: String(updateFirstCheckSecs),
+            PEETMAIL_FAKE_UPDATE_INSTALL: updates.installedPath,
+          }
+        : {}),
+    };
     const app = await launchApp({ fake, undoSendSecs, extraEnv });
     const consoleLines: string[] = [];
     app.page.on("console", (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));

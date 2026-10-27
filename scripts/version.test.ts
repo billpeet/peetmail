@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { problems, withVersion, type Texts } from "./version.ts";
+import { canaryVersion, problems, withVersion, type Texts } from "./version.ts";
 
 const texts = (v = "0.2.0"): Texts => ({
   packageJson: `{\n  "name": "peetmail",\n  "version": "${v}",\n  "devDependencies": { "x": "1.0.0" }\n}\n`,
@@ -50,5 +50,20 @@ describe("version set", () => {
 
   it("refuses something that isn't semver", () => {
     expect(() => withVersion(texts(), "v1.2")).toThrow(/semver/);
+  });
+});
+
+describe("canary version", () => {
+  it("is the next patch, numbered by the CI run", () => {
+    expect(canaryVersion("0.2.0", 42)).toBe("0.2.1-canary.42");
+  });
+
+  it("keeps the core of a version that's already a pre-release", () => {
+    expect(canaryVersion("0.3.0-beta.1", 7)).toBe("0.3.0-canary.7");
+  });
+
+  it("rejects a bad run number", () => {
+    expect(() => canaryVersion("0.2.0", 0)).toThrow();
+    expect(() => canaryVersion("0.2.0", NaN)).toThrow();
   });
 });

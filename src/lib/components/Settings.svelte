@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { mail } from "$lib/mail.svelte";
+  import { updates, updateText } from "$lib/updates.svelte";
+  import type { UpdateChannel } from "$lib/api";
   import ClientIdForm from "./ClientIdForm.svelte";
   import SplitEditor from "./SplitEditor.svelte";
   import SnippetEditor from "./SnippetEditor.svelte";
@@ -116,6 +118,41 @@
       </label>
       <p class="text-xs text-ink-500">Notifications only show while PeetMail isn't the window you're using. <kbd>Ctrl</kbd> <kbd>Q</kbd> quits.</p>
     </section>
+
+    {#if updates.status}
+      {@const u = updates.status}
+      <section class="space-y-2">
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Updates</h3>
+        <label class="flex items-center justify-between text-sm text-ink-300">
+          <span>PeetMail <span data-testid="app-version" class="tabular-nums">{u.currentVersion}</span></span>
+          <select
+            data-testid="update-channel"
+            value={u.channel}
+            disabled={u.state === "disabled"}
+            onchange={(e) => updates.setChannel(e.currentTarget.value as UpdateChannel)}
+            class="rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent disabled:opacity-50"
+          >
+            <option value="stable">Stable releases</option>
+            <option value="canary">Canary (every change)</option>
+          </select>
+        </label>
+        <div class="flex items-center justify-between gap-3 text-sm">
+          <span data-testid="update-status" data-state={u.state} class={["min-w-0 select-text", u.state === "error" ? "text-red-300" : "text-ink-500"]}>{updateText(u)}</span>
+          {#if u.state === "ready"}
+            <button data-testid="update-install" type="button" onclick={() => updates.install()} class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">Restart to update</button>
+          {:else}
+            <button
+              data-testid="update-check"
+              type="button"
+              disabled={u.state === "disabled" || updates.busy}
+              onclick={() => updates.check()}
+              class="shrink-0 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100 disabled:opacity-50"
+            >Check now</button>
+          {/if}
+        </div>
+        <p class="text-xs text-ink-500">Canary gets every change as soon as it builds, so it can be rough. Moving back to Stable takes effect at the next stable release newer than the version you have.</p>
+      </section>
+    {/if}
 
     <section class="space-y-2">
       <h3 class="text-xs tracking-wide text-ink-500 uppercase">Calendar</h3>
