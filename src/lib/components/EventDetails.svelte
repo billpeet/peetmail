@@ -27,6 +27,7 @@
     const key = `${e.accountId}:${e.remoteId}`;
     loadedFor = key;
     detail = null;
+    showAllGuests = false;
     detailError = null;
     // Placeholders for events still being created aren't on the server yet.
     if (e.remoteId.startsWith("local:")) return;
@@ -79,6 +80,22 @@
   ];
   const guests = $derived(e ? e.attendees.filter((a) => a.address?.toLowerCase() !== e.organizerAddress?.toLowerCase()) : []);
   const grouped = $derived(GROUPS.map((g) => ({ ...g, people: guests.filter(g.match) })).filter((g) => g.people.length));
+  /** Long guest lists start collapsed to the first few. */
+  const COLLAPSED_GUESTS = 5;
+  let showAllGuests = $state(false);
+  const collapsible = $derived(guests.length > COLLAPSED_GUESTS);
+  /** What's listed: everyone, or the first few in answer order (accepted first). */
+  const shownGroups = $derived.by(() => {
+    if (!collapsible || showAllGuests) return grouped;
+    let left = COLLAPSED_GUESTS;
+    return grouped
+      .map((g) => {
+        const people = g.people.slice(0, Math.max(0, left));
+        left -= people.length;
+        return { ...g, people, total: g.people.length };
+      })
+      .filter((g) => g.people.length);
+  });
   const summary = $derived(
     grouped.map((g) => `${g.people.length} ${g.key === "none" ? "no response" : g.label.toLowerCase()}`).join(", "),
   );
@@ -205,10 +222,10 @@
                 {/if}
                 {#if guests.length}
                   <p data-testid="event-guest-count" class="text-ink-100">{guests.length} {guests.length === 1 ? "guest" : "guests"} <span class="text-ink-500">· {summary}</span></p>
-                  <div data-testid="event-attendees" class="space-y-1.5">
-                    {#each grouped as g (g.key)}
+                  <div data-testid="event-attendees" data-collapsed={collapsible && !showAllGuests} class="space-y-1.5">
+                    {#each shownGroups as g (g.key)}
                       <div data-testid="event-attendee-group" data-group={g.key}>
-                        <p class="text-xs tracking-wide text-ink-500 uppercase">{g.label} · {g.people.length}</p>
+                        <p class="text-xs tracking-wide text-ink-500 uppercase">{g.label} · {"total" in g ? g.total : g.people.length}</p>
                         <ul>
                           {#each g.people as a, i (a.address ?? i)}
                             <li class="truncate">{senderName(a.name, a.address)}{#if a.type === "optional"}<span class="text-ink-500">&nbsp;· optional</span>{/if}</li>
@@ -217,6 +234,11 @@
                       </div>
                     {/each}
                   </div>
+                  {#if collapsible}
+                    <button data-testid="event-attendees-expand" onclick={() => (showAllGuests = !showAllGuests)} class="text-xs text-accent hover:underline">
+                      {showAllGuests ? "Show fewer" : `Show all ${guests.length} guests`}
+                    </button>
+                  {/if}
                 {/if}
               </div>
             </div>

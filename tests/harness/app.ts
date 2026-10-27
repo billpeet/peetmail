@@ -4,7 +4,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, statSync, readdirSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -181,8 +181,49 @@ export function killTree(pid: number | undefined) {
  * Starts the app. Returns { page, browser, proc, dataDir, cdpPort, logPath, close }.
  * `dev: true` runs `pnpm tauri dev` (hot reload) instead of the prebuilt exe.
  */
+/** Prefix of the temporary data dirs tests create (one per app launch). */
+export const TEMP_PREFIX = "peetmail-test-";
+
+/**
+ * Deletes a data dir, retrying while WebView2's processes (which outlive the app by a
+ * moment) still hold files in it. Each dir holds a WebView2 profile (~10 MB); thousands
+ * of leftovers once filled the disk.
+ */
+export async function removeDataDir(dir: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) {
+        console.warn(`couldn't remove ${dir}: ${e}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
+/** Removes temp data dirs left by earlier runs (crashed or killed before cleaning up). */
+export async function sweepStaleDataDirs(olderThanMs = 15 * 60_000) {
+  const now = Date.now();
+  const stale = readdirSync(tmpdir()).filter((n) => n.startsWith(TEMP_PREFIX)).map((n) => join(tmpdir(), n))
+    .filter((p) => {
+      try {
+        return now - statSync(p).mtimeMs > olderThanMs;
+      } catch {
+        return false;
+      }
+    });
+  await Promise.all(stale.map((p) => removeDataDir(p, 2_000)));
+  return stale.length;
+}
+
 export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undoSendSecs, extraEnv, headed, dev = false, detached = false }: LaunchOptions): Promise<LaunchedApp> {
-  dataDir ??= await mkdtemp(join(tmpdir(), "peetmail-test-"));
+  // A temp dir we create is ours to delete; one passed in (the drive CLI's) is kept.
+  const ownsDataDir = !dataDir && !detached;
+  dataDir ??= await mkdtemp(join(tmpdir(), TEMP_PREFIX));
   mkdirSync(dataDir, { recursive: true });
   cdpPort ??= await freePort();
   const logPath = join(dataDir, "app-stdout.log");
@@ -220,6 +261,7 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undo
     async close() {
       await browser.close().catch(() => {});
       killTree(proc.pid);
+      if (ownsDataDir) await removeDataDir(dataDir!);
     },
   };
 }

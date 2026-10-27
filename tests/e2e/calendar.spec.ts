@@ -200,6 +200,7 @@ test("event details with a long guest list scroll instead of overflowing the win
   await page.locator('[data-testid=week-event][data-remote-id="evt-big"]').click();
 
   await expect(page.getByTestId("event-guest-count")).toContainText("60 guests");
+  await page.getByTestId("event-attendees-expand").click(); // the whole list, not the collapsed first 5
   const viewport = page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
   const panel = (await page.getByTestId("event-panel").boundingBox())!;
   expect(panel.y + panel.height).toBeLessThanOrEqual(viewport.height);
