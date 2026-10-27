@@ -110,14 +110,21 @@ export function ensureBuilt({ force = false, log = console.log }: { force?: bool
 /** Headless unless PEETMAIL_HEADED=1 (or `headed: true`), so test windows never interrupt you. */
 export const DEFAULT_HEADED = process.env.PEETMAIL_HEADED === "1";
 
-// Off-screen windows count as occluded to Chromium, which then throttles rendering
-// and timers. Tauri's own feature flags are repeated because this env var replaces them.
+// The app passes these to WebView2 (PEETMAIL_WEBVIEW2_ARGS), replacing Tauri's own, so
+// those are repeated: no mini menu or SmartScreen, autoplay allowed.
+const TAURI_DEFAULT_FEATURES = "msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+const BASE_BROWSER_ARGS = "--autoplay-policy=no-user-gesture-required";
+// Off-screen windows count as occluded to Chromium, which then throttles rendering and timers.
 const HEADLESS_BROWSER_ARGS = [
-  "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
   "--disable-background-timer-throttling",
 ].join(" ");
+
+function browserArgs(cdpPort: number, headed: boolean): string {
+  const features = headed ? TAURI_DEFAULT_FEATURES : `${TAURI_DEFAULT_FEATURES},CalculateNativeWinOcclusion`;
+  return [`--remote-debugging-port=${cdpPort}`, `--disable-features=${features}`, BASE_BROWSER_ARGS, ...(headed ? [] : [HEADLESS_BROWSER_ARGS])].join(" ");
+}
 
 export function testEnv({
   fake,
@@ -143,7 +150,7 @@ export function testEnv({
     PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort}${headed ? "" : " " + HEADLESS_BROWSER_ARGS}`,
+    PEETMAIL_WEBVIEW2_ARGS: browserArgs(cdpPort, headed),
   };
 }
 
