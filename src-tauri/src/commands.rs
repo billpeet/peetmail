@@ -733,6 +733,12 @@ pub fn delete_calendar_event(
     Ok(())
 }
 
+/// Meeting rooms of a Microsoft 365 account (location suggestions); none for others.
+#[tauri::command]
+pub async fn list_rooms(state: State<'_, AppState>, account_id: i64) -> Result<Vec<crate::rooms::Room>> {
+    crate::rooms::list(&state, account_id).await
+}
+
 /// Everything the event popup shows beyond the cached row (description, repeat pattern...).
 #[tauri::command]
 pub async fn event_detail(state: State<'_, AppState>, account_id: i64, remote_id: String) -> Result<crate::calendar::EventDetail> {

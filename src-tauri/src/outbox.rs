@@ -468,7 +468,10 @@ fn create_body(e: &NewEvent) -> Value {
     };
     let mut body = json!({ "subject": e.subject, "start": start, "end": end, "isAllDay": e.all_day, "showAs": if e.all_day { "free" } else { "busy" } });
     if let Some(l) = &e.location {
-        body["location"] = json!({ "displayName": l });
+        body["location"] = match e.details.location_email.as_deref().filter(|m| !m.is_empty()) {
+            Some(email) => json!({ "displayName": l, "locationEmailAddress": email, "locationType": "conferenceRoom" }),
+            None => json!({ "displayName": l }),
+        };
     }
     // A full event's extra fields (the editor), in Graph's terms.
     if let Value::Object(extra) = crate::event_edit::graph_body(&e.details, &e.time_zone) {

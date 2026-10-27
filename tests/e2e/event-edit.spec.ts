@@ -200,3 +200,81 @@ test("Esc with unsaved changes asks first; nothing is sent", async ({ inbox: pag
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("event-editor")).toHaveCount(0);
 });
+
+test("a Microsoft 365 location suggests rooms; picking one books it as a room guest", async ({ inbox: page, fake }, testInfo) => {
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Planning tomorrow 10am");
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByTestId("event-editor")).toBeVisible();
+  const loc = page.getByTestId("editor-location");
+  await loc.click();
+  // All the rooms on focus, narrowed as you type.
+  await expect(page.getByTestId("editor-room")).toHaveCount(3);
+  await loc.fill("hud");
+  await expect(page.getByTestId("editor-room")).toHaveText(["Huddle 1"]);
+  await loc.fill("");
+  await loc.pressSequentially("board");
+  await snap(page, testInfo, "editor-rooms");
+  await loc.press("Enter");
+  await expect(loc).toHaveValue("Boardroom");
+  await expect(page.getByTestId("editor-location-room")).toBeVisible();
+  const room = page.locator("[data-testid=editor-attendee][data-room=true]");
+  await expect(room).toHaveAttribute("data-address", "boardroom@contoso.com");
+
+  // Choosing another room swaps it, rather than booking both.
+  await loc.fill("");
+  await loc.pressSequentially("Room 4");
+  await page.getByTestId("editor-room").first().click();
+  await expect(room).toHaveCount(1);
+  await expect(room).toHaveAttribute("data-address", "room4@contoso.com");
+
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "create-event").length, { timeout: 10_000 }).toBe(1);
+  const b = sentOf(fake, "create-event")[0].body;
+  expect(b.location).toEqual({ displayName: "Room 4", locationEmailAddress: "room4@contoso.com", locationType: "conferenceRoom" });
+  expect(b.attendees).toEqual([{ emailAddress: { address: "room4@contoso.com", name: "Room 4" }, type: "resource" }]);
+});
+
+test("typing over a booked room, or removing its chip, un-books it", async ({ inbox: page, fake }) => {
+  await openEditor(page, "evt-lunch");
+  const loc = page.getByTestId("editor-location");
+  await loc.fill("");
+  await loc.pressSequentially("Huddle");
+  await loc.press("Enter");
+  const room = page.locator("[data-testid=editor-attendee][data-room=true]");
+  await expect(room).toHaveCount(1);
+  // Removing the room chip clears the location it filled in.
+  await room.getByTestId("editor-attendee-remove").click();
+  await expect(room).toHaveCount(0);
+  await expect(loc).toHaveValue("");
+  // Pick it again, then type something else: no room any more.
+  await loc.pressSequentially("Huddle");
+  await loc.press("Enter");
+  await expect(room).toHaveCount(1);
+  await loc.press("End");
+  await loc.pressSequentially(" (or the kitchen)");
+  await expect(room).toHaveCount(0);
+  await expect(page.getByTestId("editor-location-room")).toHaveCount(0);
+  await page.keyboard.press("Escape"); // close the suggestions
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "update-event").length, { timeout: 10_000 }).toBe(1);
+  const b = sentOf(fake, "update-event")[0].body;
+  expect(b.location).toEqual({ displayName: "Huddle 1 (or the kitchen)" });
+  expect(b.attendees).toBeUndefined();
+});
+
+test("an event with a booked room reopens showing it as a room", async ({ inbox: page }) => {
+  await openEditor(page, "evt-lunch");
+  const loc = page.getByTestId("editor-location");
+  await loc.fill("");
+  await loc.pressSequentially("Boardroom");
+  await loc.press("Enter");
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByTestId("event-editor")).toHaveCount(0);
+  await expect(page.getByTestId("toast")).toContainText("Saved");
+  await page.waitForTimeout(1500); // let the outbox send it
+  await openEditor(page, "evt-lunch");
+  await expect(page.getByTestId("editor-location")).toHaveValue("Boardroom");
+  await expect(page.getByTestId("editor-location-room")).toBeVisible();
+  await expect(page.locator("[data-testid=editor-attendee][data-room=true]")).toHaveAttribute("data-address", "boardroom@contoso.com");
+});

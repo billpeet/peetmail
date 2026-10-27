@@ -218,6 +218,7 @@ export const api = {
   listEvents: (from: string, to: string, fromDate: string, toDate: string) =>
     invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
   inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
+  listRooms: (accountId: number) => invoke<Room[]>("list_rooms", { accountId }),
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   eventDetail: (accountId: number, remoteId: string) => invoke<EventDetail>("event_detail", { accountId, remoteId }),
   eventForEdit: (accountId: number, remoteId: string, series: boolean) =>
@@ -282,13 +283,17 @@ export type EventTimes = {
   allDay: boolean;
   timeZone: string;
 };
-export type EditAttendee = { name: string | null; address: string; optional: boolean; response?: string | null };
+export type EditAttendee = { name: string | null; address: string; optional: boolean; response?: string | null; /** A room being booked. */ resource?: boolean };
+/** A meeting room of a Microsoft 365 tenant. */
+export type Room = { name: string; address: string; capacity: number | null; building: string | null };
 /** What an edit changes; missing fields stay as they are. */
 export type EventChanges = {
   subject?: string;
   times?: EventTimes;
   /** "" clears it. */
   location?: string;
+  /** The room's mailbox when the location is a room. */
+  locationEmail?: string;
   descriptionHtml?: string;
   attendees?: EditAttendee[];
   showAs?: string;
@@ -303,6 +308,7 @@ export type EditableEvent = {
   subject: string;
   times: EventTimes;
   location: string;
+  locationEmail: string | null;
   descriptionHtml: string;
   attendees: EditAttendee[];
   showAs: string;

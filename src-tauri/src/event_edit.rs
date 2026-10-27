@@ -32,6 +32,9 @@ pub struct EditAttendee {
     /// Their answer so far (kept when the list is sent back): Graph vocabulary.
     #[serde(default)]
     pub response: Option<String>,
+    /// A room (or other resource) being booked, not a person.
+    #[serde(default)]
+    pub resource: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +52,9 @@ pub struct EventChanges {
     pub times: Option<Times>,
     /// "" clears it.
     pub location: Option<String>,
+    /// The room's mailbox when the location is a room (sent with the location).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_email: Option<String>,
     pub description_html: Option<String>,
     pub attendees: Option<Vec<EditAttendee>>,
     /// free | tentative | busy | oof | workingElsewhere
@@ -90,6 +96,8 @@ pub struct EditableEvent {
     pub subject: String,
     pub times: Times,
     pub location: String,
+    /// Set when the location is a room.
+    pub location_email: Option<String>,
     pub description_html: String,
     pub attendees: Vec<EditAttendee>,
     pub show_as: String,
@@ -132,7 +140,11 @@ pub fn graph_body(c: &EventChanges, time_zone: &str) -> Value {
         b.insert("isAllDay".into(), json!(t.all_day));
     }
     if let Some(l) = &c.location {
-        b.insert("location".into(), json!({ "displayName": l }));
+        let loc = match c.location_email.as_deref().filter(|e| !e.is_empty()) {
+            Some(email) => json!({ "displayName": l, "locationEmailAddress": email, "locationType": "conferenceRoom" }),
+            None => json!({ "displayName": l }),
+        };
+        b.insert("location".into(), loc);
     }
     if let Some(h) = &c.description_html {
         b.insert("body".into(), json!({ "contentType": "HTML", "content": crate::sanitize::clean_html(h) }));
@@ -140,7 +152,10 @@ pub fn graph_body(c: &EventChanges, time_zone: &str) -> Value {
     if let Some(list) = &c.attendees {
         let people: Vec<Value> = list
             .iter()
-            .map(|a| json!({ "emailAddress": { "address": a.address, "name": a.name.clone().unwrap_or_else(|| a.address.clone()) }, "type": if a.optional { "optional" } else { "required" } }))
+            .map(|a| {
+                let kind = if a.resource { "resource" } else if a.optional { "optional" } else { "required" };
+                json!({ "emailAddress": { "address": a.address, "name": a.name.clone().unwrap_or_else(|| a.address.clone()) }, "type": kind })
+            })
             .collect();
         b.insert("attendees".into(), Value::Array(people));
     }
@@ -183,6 +198,7 @@ pub fn from_graph(v: &Value, series: bool, local_zone: &str) -> Option<EditableE
         subject: v["subject"].as_str().unwrap_or_default().to_string(),
         times,
         location: v.pointer("/location/displayName").and_then(Value::as_str).unwrap_or_default().to_string(),
+        location_email: v.pointer("/location/locationEmailAddress").and_then(Value::as_str).filter(|e| !e.is_empty()).map(String::from),
         description_html: match v.pointer("/body/contentType").and_then(Value::as_str) {
             Some("text") => crate::sanitize::text_to_html(body),
             _ => crate::sanitize::clean_html(body),
@@ -197,6 +213,7 @@ pub fn from_graph(v: &Value, series: bool, local_zone: &str) -> Option<EditableE
                     address: a.pointer("/emailAddress/address").and_then(Value::as_str)?.to_string(),
                     optional: a["type"] == "optional",
                     response: a.pointer("/status/response").and_then(Value::as_str).map(String::from),
+                    resource: a["type"] == "resource",
                 })
             })
             .collect(),
@@ -247,6 +264,9 @@ pub fn google_body(c: &EventChanges) -> Value {
             .iter()
             .map(|a| {
                 let mut p = json!({ "email": a.address, "optional": a.optional, "responseStatus": google_response(a.response.as_deref()) });
+                if a.resource {
+                    p["resource"] = json!(true);
+                }
                 if let Some(n) = &a.name {
                     p["displayName"] = json!(n);
                 }
@@ -300,6 +320,7 @@ pub fn from_google(v: &Value, series: bool, local_zone: &str) -> Option<Editable
                     "declined" => "declined",
                     _ => "notResponded",
                 }.to_string()),
+                resource: a["resource"].as_bool().unwrap_or(false),
             })
         })
         .collect();
@@ -308,6 +329,7 @@ pub fn from_google(v: &Value, series: bool, local_zone: &str) -> Option<Editable
         subject: s("/summary").unwrap_or_default(),
         times,
         location: s("/location").unwrap_or_default(),
+        location_email: None,
         description_html: if description.contains('<') { crate::sanitize::clean_html(&description) } else { crate::sanitize::text_to_html(&description) },
         attendees,
         show_as: if s("/transparency").as_deref() == Some("transparent") { "free".into() } else { "busy".into() },
@@ -358,7 +380,7 @@ pub async fn load(state: &AppState, account_id: i64, remote_id: &str, series: bo
 fn attendees_json(list: &[EditAttendee]) -> String {
     Value::Array(
         list.iter()
-            .map(|a| json!({ "name": a.name, "address": a.address, "response": a.response.clone().unwrap_or_else(|| "notResponded".into()), "type": if a.optional { "optional" } else { "required" } }))
+            .map(|a| json!({ "name": a.name, "address": a.address, "response": a.response.clone().unwrap_or_else(|| "notResponded".into()), "type": if a.resource { "resource" } else if a.optional { "optional" } else { "required" } }))
             .collect(),
     )
     .to_string()
@@ -413,10 +435,11 @@ mod tests {
             subject: Some("Planning".into()),
             times: Some(Times { start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T03:00:00Z".into(), all_day: false, time_zone: "Australia/Sydney".into() }),
             location: Some("Room 2".into()),
+            location_email: None,
             description_html: Some("<p>Bring <b>numbers</b></p><script>x()</script>".into()),
             attendees: Some(vec![
-                EditAttendee { name: Some("Sam".into()), address: "sam@x.com".into(), optional: false, response: Some("accepted".into()) },
-                EditAttendee { name: None, address: "jo@x.com".into(), optional: true, response: None },
+                EditAttendee { name: Some("Sam".into()), address: "sam@x.com".into(), optional: false, response: Some("accepted".into()), resource: false },
+                EditAttendee { name: None, address: "jo@x.com".into(), optional: true, response: None, resource: false },
             ]),
             show_as: Some("free".into()),
             reminder: Some(Reminder { minutes: Some(30) }),
@@ -438,6 +461,20 @@ mod tests {
         assert_eq!(only, json!({ "location": { "displayName": "" }, "isReminderOn": false }));
         let stop = graph_body(&EventChanges { recurrence: Some(None), ..Default::default() }, "UTC");
         assert_eq!(stop, json!({ "recurrence": null }));
+    }
+
+    #[test]
+    fn a_room_goes_in_as_the_location_and_a_resource_attendee() {
+        let c = EventChanges {
+            location: Some("Boardroom".into()),
+            location_email: Some("board@x.com".into()),
+            attendees: Some(vec![EditAttendee { name: Some("Boardroom".into()), address: "board@x.com".into(), optional: false, response: None, resource: true }]),
+            ..Default::default()
+        };
+        let b = graph_body(&c, "UTC");
+        assert_eq!(b["location"], json!({ "displayName": "Boardroom", "locationEmailAddress": "board@x.com", "locationType": "conferenceRoom" }));
+        assert_eq!(b["attendees"][0]["type"], "resource");
+        assert_eq!(google_body(&c)["attendees"][0]["resource"], true);
     }
 
     #[test]

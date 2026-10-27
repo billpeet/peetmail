@@ -6,8 +6,8 @@
   // can only change their own show-as and reminder. Ctrl+Enter saves; Esc closes (twice
   // when there are unsaved changes).
   import { onMount } from "svelte";
-  import { Repeat, Users } from "@lucide/svelte";
-  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes } from "$lib/api";
+  import { DoorOpen, Repeat, Users } from "@lucide/svelte";
+  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes, type Room } from "$lib/api";
   import { calendar, localDate } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
@@ -145,6 +145,7 @@
           setTimes(fromWire(ev.times));
           lastStart = `${startDate}T${startTime}`;
           location = ev.location;
+          locationEmail = ev.locationEmail;
           attendees = ev.attendees.map((a) => ({ ...a }));
           showAs = ev.showAs;
           reminder = reminderValue(ev.reminderMinutes, ev.reminderDefault);
@@ -163,9 +164,78 @@
     }
     return keymap.register([
       { id: "editor.save", keys: "ctrl+Enter", label: "Save event", group: "Event editor", when: () => mail.overlay === "editevent", run: save },
-      { id: "editor.close", keys: "Escape", label: "Close the editor", group: "Event editor", when: () => mail.overlay === "editevent" && !suggestions.length, run: close },
+      { id: "editor.close", keys: "Escape", label: "Close the editor", group: "Event editor", when: () => mail.overlay === "editevent" && !suggestions.length && !roomOpen, run: close },
     ]);
   });
+
+  // ----- rooms (Microsoft 365: suggested for the location, booked by inviting them) -----
+  let locationEmail = $state<string | null>(null);
+  let rooms = $state<Room[]>([]);
+  let roomOpen = $state(false);
+  let roomActive = $state(0);
+  $effect(() => {
+    const id = accountId;
+    rooms = [];
+    if (mail.accountOf(id)?.provider !== "microsoft") return;
+    api.listRooms(id).then((r) => {
+      if (accountId === id) rooms = r;
+    }, () => {});
+  });
+  const roomMatches = $derived.by(() => {
+    const q = location.trim().toLowerCase();
+    // The room already chosen isn't suggested again.
+    const list = rooms.filter((r) => r.address.toLowerCase() !== locationEmail?.toLowerCase());
+    if (!q) return list.slice(0, 8);
+    return list.filter((r) => [r.name, r.address, r.building ?? ""].some((s) => s.toLowerCase().includes(q))).slice(0, 8);
+  });
+  const roomList = $derived(roomOpen && !guestMode ? roomMatches : []);
+
+  /** Make the room the location and invite it (that's what books it), replacing any earlier room. */
+  function pickRoom(r: Room) {
+    const before = locationEmail?.toLowerCase();
+    attendees = attendees.filter((a) => !(a.resource && a.address.toLowerCase() === before) && a.address.toLowerCase() !== r.address.toLowerCase());
+    attendees = [...attendees, { name: r.name, address: r.address, optional: false, response: null, resource: true }];
+    location = r.name;
+    locationEmail = r.address;
+    roomOpen = false;
+    armedDiscard = false;
+  }
+
+  /** Typing over a chosen room un-books it. */
+  function onLocationInput() {
+    armedDiscard = false;
+    roomOpen = true;
+    roomActive = 0;
+    const room = attendees.find((a) => a.resource && a.address.toLowerCase() === locationEmail?.toLowerCase());
+    if (locationEmail && location !== room?.name) {
+      attendees = attendees.filter((a) => a !== room);
+      locationEmail = null;
+    }
+  }
+
+  function removeAttendee(a: EditAttendee) {
+    attendees = attendees.filter((x) => x !== a);
+    // Dropping the booked room clears it from the location too.
+    if (a.resource && a.address.toLowerCase() === locationEmail?.toLowerCase()) {
+      if (location === a.name) location = "";
+      locationEmail = null;
+    }
+  }
+
+  function locationKeys(e: KeyboardEvent) {
+    if (!roomList.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      roomActive = (roomActive + (e.key === "ArrowDown" ? 1 : roomList.length - 1)) % roomList.length;
+    } else if ((e.key === "Enter" && !e.ctrlKey) || (e.key === "Tab" && location.trim())) {
+      e.preventDefault();
+      pickRoom(roomList[roomActive] ?? roomList[0]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      roomOpen = false;
+    }
+  }
 
   // ----- guests -----
   let guestText = $state("");
@@ -217,7 +287,7 @@
       e.stopPropagation();
       suggestions = [];
     } else if (e.key === "Backspace" && !guestText && attendees.length) {
-      attendees = attendees.slice(0, -1);
+      removeAttendee(attendees[attendees.length - 1]);
     }
   }
 
@@ -228,9 +298,12 @@
     if (!original) return c;
     if (subject !== original.subject) c.subject = subject.trim();
     if (JSON.stringify(times) !== JSON.stringify({ ...original.times, timeZone: zone })) c.times = times;
-    if (location !== original.location) c.location = location.trim();
+    if (location !== original.location || locationEmail !== original.locationEmail) {
+      c.location = location.trim();
+      if (locationEmail) c.locationEmail = locationEmail;
+    }
     if (descriptionDirty) c.descriptionHtml = descriptionHtml;
-    const key = (list: EditAttendee[]) => JSON.stringify(list.map((a) => [a.address.toLowerCase(), a.optional]));
+    const key = (list: EditAttendee[]) => JSON.stringify(list.map((a) => [a.address.toLowerCase(), a.optional, !!a.resource]));
     if (key(attendees) !== key(original.attendees)) c.attendees = attendees;
     if (showAs !== original.showAs) c.showAs = showAs;
     if (reminder !== reminderValue(original.reminderMinutes, original.reminderDefault) && minutes !== undefined) c.reminder = { minutes };
@@ -269,6 +342,7 @@
           timeZone: zone,
           details: {
             ...(descriptionHtml ? { descriptionHtml } : {}),
+            ...(locationEmail && location.trim() ? { locationEmail } : {}),
             ...(attendees.length ? { attendees } : {}),
             showAs,
             reminder: { minutes },
@@ -409,17 +483,62 @@
           </span>
 
           <span>Location</span>
-          <input data-testid="editor-location" bind:value={location} disabled={guestMode} placeholder="Add a place or a meeting link" class={field} />
+          <div class="relative">
+            <div class="flex items-center gap-2">
+              <input
+                data-testid="editor-location"
+                bind:value={location}
+                oninput={onLocationInput}
+                onfocus={() => (roomOpen = true)}
+                onblur={() => setTimeout(() => (roomOpen = false), 150)}
+                onkeydown={locationKeys}
+                disabled={guestMode}
+                placeholder={rooms.length ? "Add a room, a place or a meeting link" : "Add a place or a meeting link"}
+                autocomplete="off"
+                class={[field, "flex-1"]}
+              />
+              {#if locationEmail}
+                <span data-testid="editor-location-room" class="flex shrink-0 items-center gap-1 text-xs text-ink-500"><DoorOpen size={13} /> Room booked</span>
+              {/if}
+            </div>
+            {#if roomList.length}
+              <ul data-testid="editor-room-suggestions" class="absolute top-full left-0 z-20 mt-1 max-h-72 w-96 overflow-y-auto rounded-md border border-ink-700 bg-ink-900 shadow-xl">
+                <li class="px-3 pt-1.5 pb-1 text-[11px] tracking-wide text-ink-500 uppercase">Rooms</li>
+                {#each roomList as r, i (r.address)}
+                  <li>
+                    <button
+                      type="button"
+                      data-testid="editor-room"
+                      data-address={r.address}
+                      onmousedown={(e) => {
+                        e.preventDefault();
+                        pickRoom(r);
+                      }}
+                      class={["flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm", i === roomActive ? "bg-ink-800 text-ink-100" : "text-ink-300"]}
+                    >
+                      <DoorOpen size={14} class="shrink-0 text-ink-500" />
+                      <span class="min-w-0 flex-1 truncate">{r.name}</span>
+                      <span class="shrink-0 text-xs text-ink-500">{[r.building, r.capacity ? `${r.capacity} seats` : null].filter(Boolean).join(" · ")}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
 
           <span class="self-start pt-1.5">Guests</span>
           <div class="relative">
             <div data-testid="editor-attendees" class={["flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-ink-700 bg-ink-950 px-2 py-1 focus-within:border-accent", guestMode && "opacity-50"]}>
               {#each attendees as a, i (a.address)}
-                <span data-testid="editor-attendee" data-address={a.address} class="flex items-center gap-1 rounded bg-ink-800 px-2 py-0.5 text-xs text-ink-100">
+                <span data-testid="editor-attendee" data-address={a.address} data-room={a.resource ? "true" : undefined} class="flex items-center gap-1 rounded bg-ink-800 px-2 py-0.5 text-xs text-ink-100">
+                  {#if a.resource}<DoorOpen size={12} class="text-ink-500" />{/if}
                   {senderName(a.name, a.address)}
+                  {#if a.resource}<span class="text-ink-500">room</span>{/if}
                   {#if !guestMode}
-                    <button type="button" data-testid="editor-attendee-optional" title="Required or optional" onclick={() => (attendees[i] = { ...a, optional: !a.optional })} class="text-ink-500 hover:text-ink-100">{a.optional ? "optional" : "required"}</button>
-                    <button type="button" data-testid="editor-attendee-remove" title="Remove" aria-label="Remove {a.address}" onclick={() => (attendees = attendees.filter((x) => x !== a))} class="text-ink-500 hover:text-red-300">×</button>
+                    {#if !a.resource}
+                      <button type="button" data-testid="editor-attendee-optional" title="Required or optional" onclick={() => (attendees[i] = { ...a, optional: !a.optional })} class="text-ink-500 hover:text-ink-100">{a.optional ? "optional" : "required"}</button>
+                    {/if}
+                    <button type="button" data-testid="editor-attendee-remove" title="Remove" aria-label="Remove {a.address}" onclick={() => removeAttendee(a)} class="text-ink-500 hover:text-red-300">×</button>
                   {:else if a.optional}<span class="text-ink-500">optional</span>{/if}
                 </span>
               {/each}

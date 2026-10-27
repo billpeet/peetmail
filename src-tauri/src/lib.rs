@@ -15,6 +15,7 @@ mod notify;
 mod outbox;
 mod query;
 mod recurrence;
+mod rooms;
 mod sanitize;
 mod secure;
 mod state;
@@ -234,6 +235,7 @@ pub fn run() {
             commands::respond_to_event,
             commands::event_detail,
             commands::event_for_edit,
+            commands::list_rooms,
             commands::update_event,
             commands::delete_calendar_event,
             commands::create_event,

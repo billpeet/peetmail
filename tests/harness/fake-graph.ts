@@ -24,6 +24,13 @@ import {
 import { defaultCalendar, makeEvent, type GraphEvent } from "./calendar-fixtures.ts";
 
 /** The only client ID the fake authority accepts. Anything else never redirects back, like Entra. */
+/** The tenant's meeting rooms (findRooms). */
+export const ROOMS = [
+  { name: "Boardroom", address: "boardroom@contoso.com" },
+  { name: "Huddle 1", address: "huddle1@contoso.com" },
+  { name: "Room 4", address: "room4@contoso.com" },
+];
+
 export const CLIENT_ID = "11111111-2222-3333-4444-555555555555";
 export const INBOX_ID = FOLDER_IDS.inbox;
 
@@ -165,7 +172,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       res.writeHead(200, { "Content-Type": "image/png" });
       return res.end(Buffer.from(PIXEL_PNG, "base64"));
     }
-    if (p.startsWith("/v1.0/")) {
+    if (p.startsWith("/v1.0/") || p.startsWith("/beta/")) {
       if (state.config.latencyMs) await new Promise((r) => setTimeout(r, state.config.latencyMs));
       return graph(req, url, reply);
     }
@@ -237,6 +244,13 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     const t = state.throttle.shift();
     if (t) return graphError(reply, t.status, "TooManyRequests", "Throttled by test", { "Retry-After": String(t.retryAfter) });
 
+    // Beta is served only where the app uses it (findRooms).
+    if (url.pathname.startsWith("/beta/")) {
+      if (url.pathname === "/beta/me/findRooms") return reply(200, { value: ROOMS.map((r) => ({ name: r.name, address: r.address })) });
+      return graphError(reply, 400, "BadRequest", `Not in beta: ${url.pathname}`);
+    }
+    // The Places API needs admin consent: like most tenants, this one hasn't granted it.
+    if (url.pathname === "/v1.0/places/microsoft.graph.room") return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
     const p = url.pathname.replace(/^\/v1\.0/, "");
     const method = req.method ?? "GET";
     const isWrite = method !== "GET";
@@ -329,6 +343,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         location: b.location?.displayName,
         showAs: b.showAs,
       });
+      if (b.location) e.location = b.location;
       // A full event from the editor: guests, description, reminder, privacy, repeat.
       if (b.attendees) e.attendees = b.attendees.map((a: any) => ({ emailAddress: a.emailAddress, status: { response: "none" }, type: a.type ?? "required" }));
       if (b.body) e.body = b.body;

@@ -225,6 +225,10 @@ test("editing and deleting Google events: PATCH with only the changes; a guest r
   await (await findInDayView(page, "gcal-dentist")).click();
   await page.keyboard.press("e");
   await expect(page.getByTestId("editor-title")).toHaveValue("Dentist");
+  // Rooms are a Microsoft 365 thing: none suggested here.
+  await page.getByTestId("editor-location").click();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId("editor-room-suggestions")).toHaveCount(0);
   await page.getByTestId("editor-title").fill("Dentist (check-up)");
   await page.getByTestId("editor-show-as").selectOption("oof");
   await page.keyboard.press("Control+Enter");
