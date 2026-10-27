@@ -9,8 +9,9 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
-  // Each test starts its own app + fake server; WebView2 instances are heavy-ish.
-  workers: process.env.CI ? 1 : 3,
+  // Each test starts its own app + fake server; WebView2 instances are heavy-ish. Three
+  // fit a 4-CPU GitHub runner (public repos) as well as a dev machine.
+  workers: 3,
   retries: 0,
   // On CI a broken environment (the app can't start) fails every test after a 30s wait:
   // stop early so the run ends in minutes and the results still get uploaded.
