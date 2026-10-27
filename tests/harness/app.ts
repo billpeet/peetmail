@@ -3,7 +3,7 @@
 // Used by the Playwright fixtures (tests/e2e) and the drive CLI.
 
 import { spawn, spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, statSync, readdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -152,15 +152,43 @@ export async function waitForCdp(
   { timeoutMs = 30_000, proc }: { timeoutMs?: number; proc?: ReturnType<typeof spawnType> } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
+  // What the port last said, for the error: nothing listening, or which targets.
+  let seen = "nothing listening";
   while (Date.now() < deadline) {
     if (proc && proc.exitCode !== null) throw new Error(`app exited with code ${proc.exitCode} before WebView2 came up`);
     try {
       const targets: { type: string; url: string }[] = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
       if (targets.some((t) => t.type === "page" && /tauri\.localhost|localhost:1420/.test(t.url))) return;
+      seen = `targets: ${JSON.stringify(targets.map((t) => `${t.type} ${t.url}`))}`;
     } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`WebView2 DevTools endpoint on port ${port} did not come up within ${timeoutMs}ms`);
+  throw new Error(`WebView2 DevTools endpoint on port ${port} did not come up within ${timeoutMs}ms (${seen})`);
+}
+
+/** The end of a text file, or a note that it isn't there. */
+function tail(path: string, lines = 30): string {
+  try {
+    const all = readFileSync(path, "utf8").split(/\r?\n/);
+    // A Rust panic's message comes before a long backtrace: show it, not just the end.
+    const panic = all.findIndex((l) => l.includes("panicked at"));
+    const head = panic >= 0 && panic < all.length - lines ? [...all.slice(panic, panic + 4), "..."] : [];
+    return [...head, ...all.slice(-lines)].join("\n").trim() || "(empty)";
+  } catch {
+    return "(missing)";
+  }
+}
+
+/** Everything that might say why the app didn't come up (shown in the CI log). */
+function launchDiagnostics(dataDir: string, logPath: string, proc: ReturnType<typeof spawnType>): string {
+  const logsDir = join(dataDir, "logs");
+  const appLogs = existsSync(logsDir) ? readdirSync(logsDir).map((f) => `--- ${f}\n${tail(join(logsDir, f))}`).join("\n") : "(no logs dir)";
+  return [
+    `exe: ${EXE} (exists: ${existsSync(EXE)}), pid ${proc.pid}, still running: ${proc.exitCode === null}`,
+    `WebView2 profile created: ${existsSync(join(dataDir, "webview2"))}`,
+    `--- stdout/stderr (${logPath})\n${tail(logPath)}`,
+    appLogs,
+  ].join("\n");
 }
 
 export async function connect(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
@@ -251,8 +279,9 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undo
   try {
     await waitForCdp(cdpPort, { timeoutMs: dev ? 300_000 : 30_000, proc: detached ? undefined : proc });
   } catch (e) {
+    const why = detached ? "" : `\n${launchDiagnostics(dataDir, logPath, proc)}`;
     killTree(proc.pid);
-    throw e;
+    throw new Error(`${e instanceof Error ? e.message : String(e)}${why}`);
   }
   const { browser, page } = await connect(cdpPort);
   await page.waitForLoadState("domcontentloaded");

@@ -12,5 +12,8 @@ export default defineConfig({
   // Each test starts its own app + fake server; WebView2 instances are heavy-ish.
   workers: process.env.CI ? 1 : 3,
   retries: 0,
+  // On CI a broken environment (the app can't start) fails every test after a 30s wait:
+  // stop early so the run ends in minutes and the results still get uploaded.
+  maxFailures: process.env.CI ? 5 : 0,
   reporter: [["list"], ["html", { outputFolder: "test-results/e2e-report", open: "never" }]],
 });
