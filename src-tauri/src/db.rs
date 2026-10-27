@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
@@ -24,9 +24,27 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
+/// Pre-migration backups kept next to the database (`peetmail.db.v<schema>.bak`).
+const BACKUPS_KEPT: usize = 2;
+
 impl Db {
+    /// Opens (or creates) the database and brings its schema up to date. A database from a
+    /// newer build is refused rather than half-understood, and an existing database is
+    /// copied aside before any migration runs, so a bad migration can be undone by hand.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let known = MIGRATIONS.len() as i64;
+        if version > known {
+            return Err(AppError::Other(format!(
+                "This mailbox cache was written by a newer version of PeetMail (schema {version}; this version knows up to {known}). \
+                 Install the latest PeetMail to open it."
+            )));
+        }
+        if version > 0 && version < known {
+            backup_before_migrating(&conn, path, version);
+        }
+        Self::init(conn)
     }
 
     #[cfg(test)]
@@ -62,9 +80,44 @@ impl Db {
     }
 }
 
+/// Copies the database to `<name>.v<schema>.bak` and keeps only the newest few. `VACUUM INTO`
+/// writes a consistent copy even with WAL pages not yet checkpointed. A failed backup is
+/// logged, not fatal: refusing to start would be worse than migrating without one.
+fn backup_before_migrating(conn: &Connection, path: &Path, version: i64) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
+    let backup = dir.join(format!("{name}.v{version}.bak"));
+    let _ = std::fs::remove_file(&backup);
+    match conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()]) {
+        Ok(_) => log::info!("backed up the database (schema {version}) before migrating"),
+        Err(e) => log::error!("couldn't back up the database before migrating: {e}"),
+    }
+    prune_backups(dir, name, BACKUPS_KEPT);
+}
+
+fn prune_backups(dir: &Path, name: &str, keep: usize) {
+    let prefix = format!("{name}.v");
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut backups: Vec<(i64, std::path::PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let file = e.file_name().into_string().ok()?;
+            let v = file.strip_prefix(&prefix)?.strip_suffix(".bak")?.parse().ok()?;
+            Some((v, e.path()))
+        })
+        .collect();
+    backups.sort_by_key(|b| std::cmp::Reverse(b.0));
+    for (_, old) in backups.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
 fn migrate(conn: &mut Connection) -> Result<()> {
+    migrate_to(conn, MIGRATIONS.len())
+}
+
+fn migrate_to(conn: &mut Connection, target: usize) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+    for (i, sql) in MIGRATIONS.iter().enumerate().take(target).skip(version as usize) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;
@@ -772,6 +825,90 @@ pub fn evict_bodies(conn: &Connection, max_bytes: i64) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh directory under the OS temp dir, removed on drop.
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let mut bytes = [0u8; 8];
+            getrandom::fill(&mut bytes).unwrap();
+            let dir = std::env::temp_dir().join(format!("peetmail-db-{tag}-{:016x}", u64::from_le_bytes(bytes)));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn user_version(path: &Path) -> i64 {
+        Connection::open(path).unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    fn backups(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".bak"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_untouched() {
+        let tmp = TempDir::new("newer");
+        let path = tmp.0.join("peetmail.db");
+        let newer = MIGRATIONS.len() as i64 + 1;
+        Connection::open(&path).unwrap().pragma_update(None, "user_version", newer).unwrap();
+
+        let err = Db::open(&path).err().expect("a newer schema must not open").to_string();
+        assert!(err.contains("newer version of PeetMail"), "{err}");
+        assert_eq!(user_version(&path), newer);
+        assert!(backups(&tmp.0).is_empty());
+    }
+
+    #[test]
+    fn an_older_database_is_backed_up_before_migrating() {
+        let tmp = TempDir::new("upgrade");
+        let path = tmp.0.join("peetmail.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            migrate_to(&mut c, 3).unwrap();
+            set_setting(&c, "marker", "before").unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        drop(db);
+
+        assert_eq!(user_version(&path), MIGRATIONS.len() as i64);
+        assert_eq!(backups(&tmp.0), ["peetmail.db.v3.bak"]);
+        let backup = Connection::open(tmp.0.join("peetmail.db.v3.bak")).unwrap();
+        assert_eq!(backup.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(get_setting(&backup, "marker").unwrap().as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn new_and_current_databases_are_not_backed_up() {
+        let tmp = TempDir::new("current");
+        let path = tmp.0.join("peetmail.db");
+        drop(Db::open(&path).unwrap());
+        drop(Db::open(&path).unwrap());
+        assert!(backups(&tmp.0).is_empty());
+    }
+
+    #[test]
+    fn only_the_newest_backups_are_kept() {
+        let tmp = TempDir::new("prune");
+        for v in [1, 2, 5, 7] {
+            std::fs::write(tmp.0.join(format!("peetmail.db.v{v}.bak")), b"x").unwrap();
+        }
+        std::fs::write(tmp.0.join("other.db.v1.bak"), b"x").unwrap();
+        prune_backups(&tmp.0, "peetmail.db", 2);
+        assert_eq!(backups(&tmp.0), ["other.db.v1.bak", "peetmail.db.v5.bak", "peetmail.db.v7.bak"]);
+    }
 
     fn seed() -> (Db, i64, i64) {
         let db = Db::open_in_memory().unwrap();

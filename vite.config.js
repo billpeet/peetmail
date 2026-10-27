@@ -10,7 +10,7 @@ export default defineConfig(() => ({
 
   // Unit tests for pure TS modules. E2E lives in tests/e2e (Playwright).
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
     environment: "node",
   },
 

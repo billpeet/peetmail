@@ -296,10 +296,9 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
     };
 
     let mut to = d.to.clone();
-    if to.is_empty() && matches!(d.kind, DraftKind::Reply | DraftKind::ReplyAll) {
-        if let Some(o) = &original {
-            to.push(o.from.clone());
-        }
+    if to.is_empty() && matches!(d.kind, DraftKind::Reply | DraftKind::ReplyAll)
+        && let Some(o) = &original {
+        to.push(o.from.clone());
     }
     let subject = subject_for(d.kind, &d.subject, original.as_ref().map(|o| o.subject.as_str()).unwrap_or(""));
     let (text, html) = compose_bodies(d.kind, &d.body, original.as_ref());

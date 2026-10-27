@@ -210,11 +210,10 @@ impl AppState {
         let mut cache = self.tokens.lock().await;
         if let Some(t) = cache.get_mut(&account_id) {
             t.expires_at = 0;
-        } else if let Ok(Some(blob)) = self.db.with(|c| db::get_token_blob(c, account_id)) {
-            if let Ok(mut t) = secure::unprotect(&blob).and_then(|b| Ok(serde_json::from_slice::<TokenSet>(&b)?)) {
-                t.expires_at = 0;
-                cache.insert(account_id, t);
-            }
+        } else if let Ok(Some(blob)) = self.db.with(|c| db::get_token_blob(c, account_id))
+            && let Ok(mut t) = secure::unprotect(&blob).and_then(|b| Ok(serde_json::from_slice::<TokenSet>(&b)?)) {
+            t.expires_at = 0;
+            cache.insert(account_id, t);
         }
     }
 

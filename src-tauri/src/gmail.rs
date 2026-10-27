@@ -205,10 +205,9 @@ fn decode_q(s: &str) -> Vec<u8> {
 /// UTF-8 when it is; otherwise Latin-1 (close enough for Windows-1252 text).
 pub fn decode_charset(bytes: &[u8], charset: &str) -> String {
     let cs = charset.to_ascii_lowercase();
-    if cs.is_empty() || cs.contains("utf-8") || cs.contains("utf8") || cs.contains("ascii") {
-        if let Ok(s) = std::str::from_utf8(bytes) {
-            return s.to_string();
-        }
+    if (cs.is_empty() || cs.contains("utf-8") || cs.contains("utf8") || cs.contains("ascii"))
+        && let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
     }
     match std::str::from_utf8(bytes) {
         Ok(s) if !(cs.contains("8859") || cs.contains("1252") || cs.contains("latin")) => s.to_string(),
@@ -222,12 +221,11 @@ fn parse_one_address(s: &str) -> Option<(Option<String>, String)> {
     if s.is_empty() {
         return None;
     }
-    if let (Some(lt), Some(gt)) = (s.rfind('<'), s.rfind('>')) {
-        if lt < gt {
-            let address = s[lt + 1..gt].trim().to_string();
-            let name = s[..lt].trim().trim_matches('"').trim().to_string();
-            return Some(((!name.is_empty()).then(|| decode_words(&name)), address));
-        }
+    if let (Some(lt), Some(gt)) = (s.rfind('<'), s.rfind('>'))
+        && lt < gt {
+        let address = s[lt + 1..gt].trim().to_string();
+        let name = s[..lt].trim().trim_matches('"').trim().to_string();
+        return Some(((!name.is_empty()).then(|| decode_words(&name)), address));
     }
     Some((None, s.trim_matches('"').to_string()))
 }
@@ -317,7 +315,7 @@ pub fn role_for(labels: &[&str], snooze_label: Option<&str>) -> Option<&'static 
     if has("SPAM") || (has("DRAFT") && !has("INBOX") && !has("SENT")) {
         return None;
     }
-    if snooze_label.is_some_and(|s| has(s)) {
+    if snooze_label.is_some_and(&has) {
         return Some("snoozed");
     }
     if has("INBOX") {
@@ -595,13 +593,16 @@ async fn fetch_many(app: &AppHandle, account_id: i64, ids: Vec<String>) -> Vec<(
     out
 }
 
+/// A fetched message parsed (its folder role and row), or why its fetch failed.
+type ParsedMessage<'a> = std::result::Result<(Option<&'static str>, MessageUpsert), &'a AppError>;
+
 /// Writes fetched messages into their folders. `only_known_archive`: an archived message
 /// is only stored if it's already local (history also reports label changes on old mail).
 /// Returns (anything changed, how many fetches failed).
 fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)], only_known_archive: bool) -> Result<(bool, usize)> {
     let snooze = state.db.with(|c| db::get_setting(c, &snooze_label_key(account_id)))?;
     // Parse before taking the database lock: no parsing bug can hold (or poison) it.
-    let parsed: Vec<(&String, std::result::Result<(Option<&'static str>, MessageUpsert), &AppError>)> =
+    let parsed: Vec<(&String, ParsedMessage<'_>)> =
         fetched.iter().map(|(id, r)| (id, r.as_ref().map(|v| parse_message(v, snooze.as_deref())))).collect();
     state.db.with(|c| {
         let busy = outbox::busy_remote_ids(c, account_id)?;
@@ -674,10 +675,9 @@ async fn full(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> 
             }
             let page = get(state, account_id, &url).await?;
             for m in page["messages"].as_array().into_iter().flatten() {
-                if let Some(id) = m["id"].as_str() {
-                    if seen_set.insert(id.to_string()) {
-                        seen.push(id.to_string());
-                    }
+                if let Some(id) = m["id"].as_str()
+                    && seen_set.insert(id.to_string()) {
+                    seen.push(id.to_string());
                 }
             }
             match page["nextPageToken"].as_str() {
@@ -733,10 +733,9 @@ async fn incremental(app: &AppHandle, state: &AppState, account_id: i64, start: 
         for h in page["history"].as_array().into_iter().flatten() {
             for key in ["messagesAdded", "labelsAdded", "labelsRemoved"] {
                 for e in h[key].as_array().into_iter().flatten() {
-                    if let Some(id) = e["message"]["id"].as_str() {
-                        if changed_set.insert(id.to_string()) {
-                            changed.push(id.to_string());
-                        }
+                    if let Some(id) = e["message"]["id"].as_str()
+                        && changed_set.insert(id.to_string()) {
+                        changed.push(id.to_string());
                     }
                 }
             }

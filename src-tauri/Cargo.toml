@@ -2,7 +2,8 @@
 name = "peetmail"
 version = "0.1.0"
 description = "PeetMail, a fast keyboard-first mail and calendar client"
-authors = ["Boris"]
+authors = ["Peet Software"]
+license = "MIT"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -34,7 +35,7 @@ getrandom = "0.4.3"
 log = "0.4.34"
 tauri-plugin-log = "2.10.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging"] }
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
@@ -47,6 +48,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+# Line tables give crash reports file:line frames. With MSVC the debug info goes into a
+# separate peetmail.pdb (attached to each release, not installed); `strip` still leaves it
+# and the exe's link to it intact, and only trims the exe.
+debug = "line-tables-only"
 
 # Dependencies (html5ever/ammonia, serde_json, rusqlite...) are compiled optimised even in
 # dev builds: sanitising a 1 MB email took ~0.5s unoptimised. Our own crate stays at

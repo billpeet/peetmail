@@ -8,6 +8,9 @@ use crate::db::{self, MessageState};
 use crate::error::Result;
 use crate::outbox::{self, Op, GRACE};
 
+/// What an action does to one message in SQLite.
+type LocalChange = Box<dyn Fn(&Connection, &MessageState) -> Result<()>>;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum Action {
@@ -174,7 +177,7 @@ pub fn apply(conn: &mut Connection, account_id: i64, conversation_id: &str, acti
     let all = db::conversation_states(&tx, account_id, conversation_id, None)?;
 
     // Which messages the action touches, and what it does to each.
-    let (targets, local, remote, inverse): (Vec<MessageState>, Box<dyn Fn(&Connection, &MessageState) -> Result<()>>, Op, Op) =
+    let (targets, local, remote, inverse): (Vec<MessageState>, LocalChange, Op, Op) =
         match action {
             Action::Archive | Action::Trash => {
                 let (role, name, dest) = if action == Action::Archive {

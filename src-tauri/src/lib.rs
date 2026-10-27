@@ -2,6 +2,7 @@ mod actions;
 mod auth;
 mod calendar;
 mod commands;
+mod datadir;
 mod db;
 mod error;
 mod gcal;
@@ -40,6 +41,33 @@ fn install_panic_logging() {
         log::logger().flush();
         default_hook(info);
     }));
+}
+
+/// Early dev builds used another identifier, so their data sits in sibling folders. Moves
+/// it over once; a failure (say the old build is still running) is logged and we start fresh.
+fn adopt_legacy_data(roaming: &std::path::Path, local: &std::path::Path) {
+    for (dir, names) in [(roaming, datadir::DB_FILES), (local, datadir::WEBVIEW_FILES)] {
+        match datadir::adopt_legacy(dir, names) {
+            Ok(true) => log::info!("moved {} from {}", names[0], datadir::LEGACY_IDENTIFIER),
+            Ok(false) => {}
+            Err(e) => log::error!("couldn't move {} from {}: {e}", names[0], datadir::LEGACY_IDENTIFIER),
+        }
+    }
+}
+
+/// PeetMail can't start (e.g. its database is from a newer version). Says why in a message
+/// box rather than vanishing, then exits. Headless test runs only log it.
+fn fatal_startup_error(message: &str) -> ! {
+    log::error!("cannot start: {message}");
+    log::logger().flush();
+    if !testenv::flag("PEETMAIL_HEADLESS") {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (text, caption) = (wide(message), wide("PeetMail can't start"));
+        // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+    }
+    std::process::exit(1);
 }
 
 /// Brings the main window back (tray click, second launch, tray menu).
@@ -159,10 +187,17 @@ pub fn run() {
             install_panic_logging();
             let dir = match data_dir_override {
                 Some(dir) => dir,
-                None => app.path().app_data_dir()?,
+                None => {
+                    let dir = app.path().app_data_dir()?;
+                    adopt_legacy_data(&dir, &app.path().app_local_data_dir()?);
+                    dir
+                }
             };
             std::fs::create_dir_all(&dir)?;
-            let db = db::Db::open(&dir.join("peetmail.db"))?;
+            let db = match db::Db::open(&dir.join("peetmail.db")) {
+                Ok(db) => db,
+                Err(e) => fatal_startup_error(&e.to_string()),
+            };
             db.with(|c| outbox::reset_inflight(c))?;
             app.manage(state::AppState::new(db));
             create_main_window(app)?;

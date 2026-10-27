@@ -58,12 +58,14 @@ const WEEKDAYS: [(&str, &str, &str); 7] = [
 fn day_from_graph(d: &str) -> Option<String> {
     WEEKDAYS.iter().find(|w| w.1 == d.to_ascii_lowercase()).map(|w| w.0.to_string())
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn day_to_graph(d: &str) -> Option<&'static str> {
     WEEKDAYS.iter().find(|w| w.0 == d).map(|w| w.1)
 }
 fn day_from_rrule(d: &str) -> Option<String> {
     WEEKDAYS.iter().find(|w| w.2 == d.to_ascii_uppercase()).map(|w| w.0.to_string())
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn day_to_rrule(d: &str) -> Option<&'static str> {
     WEEKDAYS.iter().find(|w| w.0 == d).map(|w| w.2)
 }
@@ -105,7 +107,9 @@ pub fn from_graph(v: &Value) -> Option<Recurrence> {
     })
 }
 
+// Writing recurrence back (Graph and RRULE) waits for event editing; the tests use it already.
 /// To Graph's `recurrence`. `time_zone` is the IANA/Windows zone the range dates are in.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn to_graph(r: &Recurrence, time_zone: &str) -> Value {
     let relative = r.ordinal.is_some();
     let kind = match (r.freq, relative) {
@@ -210,6 +214,7 @@ pub fn from_rrule(lines: &[String], start: &str) -> Option<Recurrence> {
 
 /// To an RRULE line. Until dates are written as the end of that day in UTC, which keeps
 /// the last occurrence for any time zone east of UTC-12.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn to_rrule(r: &Recurrence) -> String {
     let freq = match r.freq {
         Freq::Daily => "DAILY",
@@ -237,11 +242,10 @@ pub fn to_rrule(r: &Recurrence) -> String {
         }
         _ => {}
     }
-    if r.freq == Freq::Yearly {
-        if let Some(m) = r.month {
+    if r.freq == Freq::Yearly
+        && let Some(m) = r.month {
             parts.push(format!("BYMONTH={m}"));
         }
-    }
     match &r.end {
         End::Never => {}
         End::Until { date } => parts.push(format!("UNTIL={}T235959Z", date.replace('-', ""))),

@@ -173,10 +173,9 @@ pub fn queued_sends(conn: &Connection, scheduled_only: bool) -> Result<Vec<Queue
     let mut out = Vec::new();
     for row in rows {
         let (id, account_id, send_at, op) = row?;
-        if let Op::Send(draft) = serde_json::from_str(&op)? {
-            if !scheduled_only || draft.send_at.is_some() {
-                out.push(QueuedSend { id, account_id, send_at, draft });
-            }
+        if let Op::Send(draft) = serde_json::from_str(&op)?
+            && (!scheduled_only || draft.send_at.is_some()) {
+            out.push(QueuedSend { id, account_id, send_at, draft });
         }
     }
     Ok(out)

@@ -171,6 +171,7 @@ mod tests {
     use super::*;
     use crate::db::{Db, MessageUpsert};
 
+    #[allow(clippy::too_many_arguments)]
     fn msg(c: &Connection, a: i64, folder: i64, id: &str, at: &str, from: &str, inference: &str, read: bool) {
         db::upsert_message(c, a, folder, &MessageUpsert {
             remote_id: id.into(),

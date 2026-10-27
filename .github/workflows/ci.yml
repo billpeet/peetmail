@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # The release workflow runs this first, so nothing ships that hasn't passed it.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow_ref }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify (types, unit, Rust, E2E)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # One target dir for clippy, cargo test and the E2E harness's debug build (which
+      # forces this same dir), so the cache holds one set of compiled dependencies.
+      CARGO_TARGET_DIR: ${{ github.workspace }}\src-tauri\target-harness
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target-harness
+          # Only master writes the cache; PRs restore it.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Version is consistent
+        run: pnpm version:check
+
+      - name: Types (svelte-check)
+        run: pnpm check
+
+      - name: Unit tests (Vitest)
+        run: pnpm test:unit
+
+      - name: Clippy
+        run: pnpm lint:rust
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: E2E (Playwright against the fake servers)
+        run: pnpm test:e2e
+
+      - name: Upload E2E results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Licences, bans, sources (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: src-tauri/Cargo.toml
+          command: check licenses bans sources
+
+      # New advisories appear without any change here; report them without blocking
+      # unrelated work. A release (a tag push, which calls this workflow) fails on them.
+      - name: Security advisories (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          manifest-path: src-tauri/Cargo.toml
+          command: check advisories
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: npm advisories (production dependencies)
+        run: pnpm audit --prod

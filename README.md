@@ -29,11 +29,13 @@ pnpm drive start                   # explore a test instance step by step
 
 How the test system works, including the fake Microsoft server and the drive CLI: [tests/README.md](tests/README.md).
 
-## Build
+## Build and release
 
 ```sh
 pnpm tauri build                   # NSIS installer in src-tauri/target/release/bundle
 ```
+
+Releases are built by GitHub Actions from a version tag; see [docs/RELEASING.md](docs/RELEASING.md). The distribution roadmap (updates, crash reporting, telemetry) is in [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 ## Where things live
 
@@ -46,4 +48,8 @@ pnpm tauri build                   # NSIS installer in src-tauri/target/release/
 | `src/lib/mail.svelte.ts` | UI state: threads, selection, view |
 | `src/lib/components/` | Svelte components |
 
-App data lives in `%APPDATA%\com.boris.peetmail\peetmail.db`. Logs go to `%LOCALAPPDATA%\com.boris.peetmail\logs`.
+App data lives in `%APPDATA%\com.peetsoftware.peetmail\peetmail.db`. Logs go to `%LOCALAPPDATA%\com.peetsoftware.peetmail\logs`. Before a schema migration the database is copied to `peetmail.db.v<schema>.bak` beside it (the last two are kept). Early dev builds used `com.boris.peetmail`; the first start of a current build moves that data across.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
