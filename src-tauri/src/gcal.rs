@@ -220,7 +220,17 @@ fn create_body(e: &NewEvent) -> Value {
     if let Some(l) = &e.location {
         body["location"] = json!(l);
     }
+    if let Value::Object(extra) = crate::event_edit::google_body(&e.details) {
+        for (k, v) in extra {
+            body[k] = v;
+        }
+    }
     body
+}
+
+/// One event, as Google has it now.
+pub async fn get_event(state: &AppState, account_id: i64, id: &str) -> Result<Value> {
+    call(state, account_id, Method::GET, &format!("{}/{id}", events_url()), None).await
 }
 
 fn google_status(r: Rsvp) -> &'static str {
@@ -245,6 +255,17 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
             me["responseStatus"] = json!(google_status(*response));
             // PATCH replaces the attendee list, so send it whole. sendUpdates tells the organiser.
             call(state, account_id, Method::PATCH, &format!("{url}?sendUpdates=all"), Some(&json!({ "attendees": attendees }))).await
+        }
+        Op::UpdateEvent { changes } => {
+            let id = remote_id.ok_or_else(|| AppError::Other("edit has no event".into()))?;
+            // Guests hear about it (Google sends nothing for events without any).
+            let url = format!("{}/{id}?sendUpdates=all", events_url());
+            call(state, account_id, Method::PATCH, &url, Some(&crate::event_edit::google_body(changes))).await
+        }
+        Op::DeleteEvent { cancel, .. } => {
+            let id = remote_id.ok_or_else(|| AppError::Other("delete has no event".into()))?;
+            let url = format!("{}/{id}?sendUpdates={}", events_url(), if *cancel { "all" } else { "none" });
+            call(state, account_id, Method::DELETE, &url, None).await
         }
         _ => Err(AppError::Graph { status: 400, message: "not a calendar operation".into() }),
     }
@@ -303,6 +324,8 @@ pub async fn event_detail(state: &AppState, account_id: i64, remote_id: &str) ->
         .to_string(),
         categories: vec![],
         importance: "normal".into(),
+        join_url: None,
+        join_provider: None,
     })
 }
 
@@ -454,7 +477,7 @@ mod tests {
 
     #[test]
     fn create_bodies() {
-        let e = NewEvent { subject: "Lunch".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(), all_day: false, location: None, time_zone: "UTC".into() };
+        let e = NewEvent { subject: "Lunch".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(), all_day: false, location: None, time_zone: "UTC".into(), details: Default::default() };
         assert_eq!(create_body(&e)["start"], json!({ "dateTime": "2026-10-30T02:00:00Z", "timeZone": "UTC" }));
         let d = NewEvent { start: "2026-11-06".into(), end: "2026-11-07".into(), all_day: true, location: Some("Home".into()), ..e };
         let b = create_body(&d);

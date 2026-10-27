@@ -5,15 +5,18 @@ mod commands;
 mod datadir;
 mod db;
 mod error;
+mod event_edit;
 mod gcal;
 mod gmail;
 mod gmail_send;
 mod graph;
 mod mail;
+mod meeting_links;
 mod notify;
 mod outbox;
 mod query;
 mod recurrence;
+mod rooms;
 mod sanitize;
 mod secure;
 mod state;
@@ -269,6 +272,11 @@ pub fn run() {
             commands::invite_event,
             commands::respond_to_event,
             commands::event_detail,
+            commands::event_for_edit,
+            commands::list_rooms,
+            commands::reconnect_account,
+            commands::update_event,
+            commands::delete_calendar_event,
             commands::create_event,
             commands::snooze_thread,
             commands::unsnooze_thread,
@@ -278,6 +286,7 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::quit_app,
+            commands::open_external,
             commands::debug_panic,
             commands::set_snippets,
             commands::cancel_send,

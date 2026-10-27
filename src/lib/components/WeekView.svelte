@@ -7,6 +7,7 @@
   import { layoutDay } from "$lib/eventLayout";
   import { eventTone, TONE_CLASSES } from "$lib/eventTone";
   import { mail } from "$lib/mail.svelte";
+  import JoinChip from "./JoinChip.svelte";
   import type { CalendarEvent } from "$lib/api";
 
   const HOUR = 48;
@@ -140,6 +141,7 @@
               style:left="calc({(p.col / p.cols) * 100}% + 2px)"
               style:width="calc({100 / p.cols}% - 4px)"
             >
+              <JoinChip {e} {now} testid="week-join" compact={px < 16} />
               <span class="block truncate font-semibold">{#if mail.accounts.length > 1}<span data-testid="event-account" title={mail.accountOf(e.accountId)?.email} class={["mr-1 inline-block size-2 shrink-0 rounded-full align-middle", mail.accountColor(e.accountId)]}></span>{/if}{e.subject || "(no title)"}</span>
               {#if px >= 32}<span class="block truncate text-ink-300">{time(p.item.start)}</span>{/if}
             </button>

@@ -26,7 +26,11 @@ test("the right pane shows today's calendar by default, synced from Graph; 0 tog
   await expect(page.getByTestId("day-view")).toBeVisible();
 });
 
-test("overlapping events sit side by side", async ({ inbox: page }) => {
+test("overlapping events sit side by side", async ({ inbox: page, fake }) => {
+  // The "happening now" fixture moves with the clock and can overlap anything; leave it out.
+  await fake.control("event-remove", { id: "evt-helpdesk" });
+  await syncNow(page, fake);
+  await expect(event(page, "evt-helpdesk")).toHaveCount(0);
   await showCalendar(page);
   await expect(event(page, "evt-1on1")).toHaveAttribute("data-cols", "2");
   await expect(event(page, "evt-focus")).toHaveAttribute("data-cols", "2");

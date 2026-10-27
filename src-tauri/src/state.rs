@@ -225,6 +225,17 @@ impl AppState {
         self.tokens.lock().await.remove(&account_id);
     }
 
+    /// The scopes an account's tokens were granted (the provider's defaults for older sign-ins).
+    pub async fn granted_scopes(&self, account_id: i64) -> Result<String> {
+        self.access_token(account_id).await?;
+        let provider = self.db.with(|c| db::account_provider(c, account_id))?;
+        let cached = self.tokens.lock().await.get(&account_id).and_then(|t| t.scopes.clone());
+        Ok(match cached {
+            Some(s) => s,
+            None => self.oauth_for(&provider)?.scopes().to_string(),
+        })
+    }
+
     /// Returns a valid access token, refreshing and persisting a new token set if needed.
     pub async fn access_token(&self, account_id: i64) -> Result<String> {
         let mut cache = self.tokens.lock().await;
@@ -243,7 +254,7 @@ impl AppState {
             return Ok(current.access_token);
         }
         let provider = self.db.with(|c| db::account_provider(c, account_id))?;
-        let fresh = auth::refresh(&self.http, &self.oauth_for(&provider)?, &current.refresh_token).await?;
+        let fresh = auth::refresh(&self.http, &self.oauth_for(&provider)?, &current).await?;
         let blob = Self::store_tokens_blob(&fresh)?;
         self.db.with(|c| db::set_token_blob(c, account_id, &blob))?;
         let token = fresh.access_token.clone();

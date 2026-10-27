@@ -148,6 +148,8 @@ export type CalendarEvent = {
   joinUrl: string | null;
   webLink: string | null;
   preview: string;
+  /** "Microsoft Teams", "Zoom", "Google Meet", "Webex" or "Online meeting" (with joinUrl). */
+  joinProvider: string | null;
   /** singleInstance | occurrence | exception */
   eventType: string;
   /** The series an occurrence belongs to. */
@@ -167,6 +169,9 @@ export type EventDetail = {
   sensitivity: string;
   categories: string[];
   importance: string;
+  /** A join link found in the description (when the event has none). */
+  joinUrl: string | null;
+  joinProvider: string | null;
 };
 
 export type Bootstrap = {
@@ -213,8 +218,16 @@ export const api = {
   listEvents: (from: string, to: string, fromDate: string, toDate: string) =>
     invoke<CalendarEvent[]>("list_events", { from, to, fromDate, toDate }),
   inviteEvent: (messageId: number) => invoke<Invite | null>("invite_event", { messageId }),
+  listRooms: (accountId: number) => invoke<RoomList>("list_rooms", { accountId }),
+  /** Sign a known account in again in place (new tokens, optionally extra permissions); keeps its mail. */
+  reconnectAccount: (accountId: number, addScopes?: string[]) => invoke<Account>("reconnect_account", { accountId, addScopes: addScopes ?? null }),
   createEvent: (accountId: number, event: NewEvent) => invoke<CalendarEvent>("create_event", { accountId, event }),
   eventDetail: (accountId: number, remoteId: string) => invoke<EventDetail>("event_detail", { accountId, remoteId }),
+  eventForEdit: (accountId: number, remoteId: string, series: boolean) =>
+    invoke<EditableEvent>("event_for_edit", { accountId, remoteId, series, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  updateEvent: (accountId: number, remoteId: string, changes: EventChanges) => invoke<void>("update_event", { accountId, remoteId, changes }),
+  deleteCalendarEvent: (accountId: number, remoteId: string, cancel: boolean, comment: string | null) =>
+    invoke<void>("delete_calendar_event", { accountId, remoteId, cancel, comment }),
   respondToEvent: (accountId: number, eventRemoteId: string, response: Rsvp, series = false) =>
     invoke<void>("respond_to_event", { accountId, eventRemoteId, response, series }),
   snoozeThread: (accountId: number, conversationId: string, until: string) =>
@@ -225,6 +238,8 @@ export const api = {
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   quitApp: () => invoke<void>("quit_app"),
+  /** Opens a link in the browser / mail app (recorded instead in tests). */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
   setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
@@ -263,6 +278,54 @@ export type NewEvent = {
   location: string | null;
   /** IANA zone the all-day dates belong to. */
   timeZone: string;
+  /** A full event's other fields (the editor). */
+  details?: EventChanges;
+};
+
+export type EventTimes = {
+  /** Timed: UTC ISO instants. All-day: YYYY-MM-DD (end exclusive). */
+  start: string;
+  end: string;
+  allDay: boolean;
+  timeZone: string;
+};
+export type EditAttendee = { name: string | null; address: string; optional: boolean; response?: string | null; /** A room being booked. */ resource?: boolean };
+/** A meeting room of a Microsoft 365 tenant. */
+export type Room = { name: string; address: string; capacity: number | null; building: string | null };
+/** Rooms, or (when there are none) the permission that would list them. */
+export type RoomList = { rooms: Room[]; needs: { scope: string; admin: boolean } | null };
+/** What an edit changes; missing fields stay as they are. */
+export type EventChanges = {
+  subject?: string;
+  times?: EventTimes;
+  /** "" clears it. */
+  location?: string;
+  /** The room's mailbox when the location is a room. */
+  locationEmail?: string;
+  descriptionHtml?: string;
+  attendees?: EditAttendee[];
+  showAs?: string;
+  reminder?: { minutes: number | null };
+  sensitivity?: "normal" | "private";
+  /** null stops it repeating. */
+  recurrence?: Recurrence | null;
+};
+/** The event the editor works on (fresh from the server). */
+export type EditableEvent = {
+  remoteId: string;
+  subject: string;
+  times: EventTimes;
+  location: string;
+  locationEmail: string | null;
+  descriptionHtml: string;
+  attendees: EditAttendee[];
+  showAs: string;
+  reminderMinutes: number | null;
+  reminderDefault: boolean;
+  sensitivity: "normal" | "private";
+  recurrence: Recurrence | null;
+  isOrganizer: boolean;
+  series: boolean;
 };
 /** The calendar event behind a meeting-invite message. */
 export type Invite = {

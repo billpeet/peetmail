@@ -24,6 +24,13 @@ import {
 import { defaultCalendar, makeEvent, type GraphEvent } from "./calendar-fixtures.ts";
 
 /** The only client ID the fake authority accepts. Anything else never redirects back, like Entra. */
+/** The tenant's meeting rooms (findRooms). */
+export const ROOMS = [
+  { name: "Boardroom", address: "boardroom@contoso.com" },
+  { name: "Huddle 1", address: "huddle1@contoso.com" },
+  { name: "Room 4", address: "room4@contoso.com" },
+];
+
 export const CLIENT_ID = "11111111-2222-3333-4444-555555555555";
 export const INBOX_ID = FOLDER_IDS.inbox;
 
@@ -45,6 +52,10 @@ type Reply = (status: number, body: Json | string, headers?: Record<string, stri
 export type RequestRecord = { method: string; path: string; query: string; status: number; at: number };
 
 export type FakeConfig = {
+  /** findRooms is refused unless the token was granted this scope (like some real tenants). */
+  roomsNeedScope?: string;
+  /** Scopes the user can't consent to (admin approval): asking for one comes back access_denied. */
+  denyScopes?: string[];
   /** Return 400 for the delta `$filter`, like a tenant that doesn't support it. */
   rejectDeltaFilter: boolean;
   /** Next delta-link request returns 410 SyncStateNotFound (one-shot). */
@@ -85,8 +96,12 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     seq: 0,
     changes: [] as Change[],
     sessions: new Map<string, Session>(),
-    codes: new Map<string, { challenge: string; redirectUri: string }>(),
+    codes: new Map<string, { challenge: string; redirectUri: string; scopes: string[] }>(),
     accessTokens: new Map<string, number>(), // token -> expiresAt (ms)
+    /** What each access and refresh token was granted (lowercase). */
+    tokenScopes: new Map<string, string[]>(),
+    /** The query of each sign-in page opened (login_hint, scope...). */
+    authorizations: [] as Record<string, string>[],
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
     config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
@@ -165,7 +180,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       res.writeHead(200, { "Content-Type": "image/png" });
       return res.end(Buffer.from(PIXEL_PNG, "base64"));
     }
-    if (p.startsWith("/v1.0/")) {
+    if (p.startsWith("/v1.0/") || p.startsWith("/beta/")) {
       if (state.config.latencyMs) await new Promise((r) => setTimeout(r, state.config.latencyMs));
       return graph(req, url, reply);
     }
@@ -186,8 +201,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       }
       const code = prefix + b64url(randomBytes(16));
       const redirectUri = q.get("redirect_uri") ?? "";
-      state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri });
+      const scopes = (q.get("scope") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+      state.authorizations.push(Object.fromEntries(q));
       const back = new URL(redirectUri);
+      const denied = (state.config.denyScopes ?? []).find((s) => scopes.includes(s.toLowerCase()));
+      if (denied) {
+        back.searchParams.set("error", "access_denied");
+        back.searchParams.set("error_description", `AADSTS90094: Admin approval required for ${denied}.`);
+        back.searchParams.set("state", q.get("state") ?? "");
+        return reply(302, "", { Location: back.toString() });
+      }
+      state.codes.set(code, { challenge: q.get("code_challenge") ?? "", redirectUri, scopes });
       back.searchParams.set("code", code);
       back.searchParams.set("state", q.get("state") ?? "");
       return reply(302, "", { Location: back.toString() });
@@ -203,23 +227,32 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         if (entry.redirectUri !== f.redirect_uri) return reply(400, { error: "invalid_grant", error_description: "redirect_uri mismatch" });
         const expected = b64url(createHash("sha256").update(f.code_verifier ?? "").digest());
         if (expected !== entry.challenge) return reply(400, { error: "invalid_grant", error_description: "PKCE verification failed" });
-        return reply(200, issueTokens());
+        return reply(200, issueTokens(entry.scopes));
       }
       if (f.grant_type === "refresh_token") {
         if (!state.refreshTokens.has(f.refresh_token)) return reply(400, { error: "invalid_grant", error_description: "refresh token revoked" });
+        // Like Entra: a refresh may not ask for anything the user never consented to.
+        const granted = state.tokenScopes.get(f.refresh_token) ?? [];
+        const asked = (f.scope ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+        const missing = asked.filter((s: string) => !granted.includes(s));
+        if (granted.length && missing.length) {
+          return reply(400, { error: "invalid_grant", error_description: `AADSTS65001: The user or administrator has not consented to use the application (${missing.join(" ")}).` });
+        }
         state.refreshTokens.delete(f.refresh_token); // rotate, like Entra
-        return reply(200, issueTokens());
+        return reply(200, issueTokens(granted));
       }
       return reply(400, { error: "unsupported_grant_type" });
     }
     reply(404, { error: "not_found" });
   }
 
-  function issueTokens() {
+  function issueTokens(scopes: string[]) {
     const access = `${prefix}at-${b64url(randomBytes(12))}`;
     const refresh = `${prefix}rt-${b64url(randomBytes(12))}`;
     state.accessTokens.set(access, Date.now() + state.config.tokenTtl * 1000);
     state.refreshTokens.add(refresh);
+    state.tokenScopes.set(access, scopes);
+    state.tokenScopes.set(refresh, scopes);
     return { token_type: "Bearer", access_token: access, refresh_token: refresh, expires_in: state.config.tokenTtl, scope: "Mail.ReadWrite" };
   }
 
@@ -237,6 +270,21 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     const t = state.throttle.shift();
     if (t) return graphError(reply, t.status, "TooManyRequests", "Throttled by test", { "Retry-After": String(t.retryAfter) });
 
+    // Beta is served only where the app uses it (findRooms).
+    const granted = state.tokenScopes.get(token) ?? [];
+    if (url.pathname.startsWith("/beta/")) {
+      if (url.pathname === "/beta/me/findRooms") {
+        const need = state.config.roomsNeedScope?.toLowerCase();
+        if (need && !granted.includes(need)) return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
+        return reply(200, { value: ROOMS.map((r) => ({ name: r.name, address: r.address })) });
+      }
+      return graphError(reply, 400, "BadRequest", `Not in beta: ${url.pathname}`);
+    }
+    // The Places API needs Place.Read.All (admin consent).
+    if (url.pathname === "/v1.0/places/microsoft.graph.room") {
+      if (!granted.includes("place.read.all")) return graphError(reply, 403, "ErrorAccessDenied", "Access is denied. Check credentials and try again.");
+      return reply(200, { value: ROOMS.map((r) => ({ displayName: r.name, emailAddress: r.address })) });
+    }
     const p = url.pathname.replace(/^\/v1\.0/, "");
     const method = req.method ?? "GET";
     const isWrite = method !== "GET";
@@ -329,6 +377,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         location: b.location?.displayName,
         showAs: b.showAs,
       });
+      if (b.location) e.location = b.location;
+      // A full event from the editor: guests, description, reminder, privacy, repeat.
+      if (b.attendees) e.attendees = b.attendees.map((a: any) => ({ emailAddress: a.emailAddress, status: { response: "none" }, type: a.type ?? "required" }));
+      if (b.body) e.body = b.body;
+      if ("isReminderOn" in b) e.isReminderOn = b.isReminderOn;
+      if (b.reminderMinutesBeforeStart !== undefined) e.reminderMinutesBeforeStart = b.reminderMinutesBeforeStart;
+      if (b.sensitivity) e.sensitivity = b.sensitivity;
+      if (b.recurrence) {
+        e.recurrence = b.recurrence;
+        e.type = "seriesMaster";
+      }
       state.events.set(e.id, e);
       eventChange(e.id);
       state.sent.push({ kind: "create-event", id: e.id, body: b });
@@ -340,6 +399,52 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       const e = state.events.get(decodeURIComponent(eventGet[1]));
       if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
       return reply(200, fullForm(e));
+    }
+    if (eventGet && method === "PATCH") {
+      const e = state.events.get(decodeURIComponent(eventGet[1]));
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      const b = await readBody(req);
+      const utc = (t: { dateTime: string; timeZone: string }) =>
+        t.timeZone === "UTC" ? { dateTime: `${t.dateTime}.0000000`, timeZone: "UTC" } : { dateTime: `${t.dateTime.slice(0, 10)}T00:00:00.0000000`, timeZone: "UTC" };
+      const { start, end, attendees, ...rest } = b;
+      Object.assign(e, rest);
+      if (start) e.start = utc(start);
+      if (end) e.end = utc(end);
+      if (attendees) e.attendees = attendees.map((a: any) => ({ emailAddress: a.emailAddress, status: { response: "none" }, type: a.type ?? "required" }));
+      if (b.recurrence === null) delete e.recurrence;
+      if (e.type === "occurrence" && (start || end || b.subject)) e.type = "exception";
+      e.bare = false;
+      eventChange(e.id);
+      state.sent.push({ kind: "update-event", id: e.id, body: b });
+      return reply(200, fullForm(e));
+    }
+    if (eventGet && method === "DELETE") {
+      const id = decodeURIComponent(eventGet[1]);
+      if (!state.events.has(id)) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      for (const ev of [...state.events.values()]) {
+        if (ev.id === id || ev.seriesMasterId === id) {
+          state.events.delete(ev.id);
+          eventChange(ev.id, true);
+        }
+      }
+      state.sent.push({ kind: "delete-event", id });
+      return reply(204, "");
+    }
+    const cancel = p.match(/^\/me\/events\/([^/]+)\/cancel$/);
+    if (cancel && method === "POST") {
+      const id = decodeURIComponent(cancel[1]);
+      const e = state.events.get(id);
+      if (!e) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+      if (!e.isOrganizer) return graphError(reply, 400, "ErrorAccessDenied", "Your request can't be completed. You need to be an organizer to cancel a meeting.");
+      const b = await readBody(req);
+      for (const ev of [...state.events.values()]) {
+        if (ev.id === id || ev.seriesMasterId === id) {
+          state.events.delete(ev.id);
+          eventChange(ev.id, true);
+        }
+      }
+      state.sent.push({ kind: "cancel-event", id, comment: b.Comment ?? b.comment ?? "" });
+      return reply(202, "");
     }
 
     const rsvp = p.match(/^\/me\/events\/([^/]+)\/(accept|tentativelyAccept|decline)$/);

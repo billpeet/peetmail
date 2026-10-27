@@ -18,6 +18,7 @@
   import Rail from "$lib/components/Rail.svelte";
   import EventDetails from "$lib/components/EventDetails.svelte";
   import QuickAdd from "$lib/components/QuickAdd.svelte";
+  import EventEditor from "$lib/components/EventEditor.svelte";
   import ResizeHandle from "$lib/components/ResizeHandle.svelte";
   import RightPane from "$lib/components/RightPane.svelte";
   import ScheduledList from "$lib/components/ScheduledList.svelte";
@@ -142,7 +143,8 @@
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
       { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
-      { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null, run: () => {
+      // The event editor handles Esc itself (it asks before discarding changes).
+      { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null && mail.overlay !== "editevent", run: () => {
         mail.overlay = null;
         calendar.selected = null;
       } },
@@ -354,6 +356,7 @@
 {#if mail.overlay === "palette"}<Palette />{/if}
 {#if mail.overlay === "event"}<EventDetails />{/if}
 {#if mail.overlay === "quickadd"}<QuickAdd />{/if}
+{#if mail.overlay === "editevent" && calendar.editing}<EventEditor />{/if}
 {#if mail.overlay === "scheduled"}<ScheduledList />{/if}
 {#if mail.overlay === "snooze"}<SnoozePicker />{/if}
 {#if mail.overlay === "snoozed"}<SnoozedList />{/if}

@@ -95,7 +95,7 @@ export function makeEvent(s: Spec): GraphEvent {
     isOrganizer,
     isCancelled: false,
     showAs: s.showAs ?? "busy",
-    onlineMeeting: s.join ? { joinUrl: `https://teams.example/join/${s.id}` } : null,
+    onlineMeeting: s.join ? { joinUrl: `https://teams.microsoft.com/l/meetup-join/${s.id}` } : null,
     webLink: `https://outlook.office.com/calendar/item/${s.id}`,
     bodyPreview: "",
     type: s.type ?? (s.seriesMasterId ? "occurrence" : "singleInstance"),
@@ -155,6 +155,18 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
       seriesMasterId: "evt-sync-series", bare: true,
     }));
   }
+  // A weekly series you organise, with guests: today's occurrence and one either side.
+  events.push(makeEvent({
+    id: "evt-review-series", type: "seriesMaster", subject: "Weekly review", start: localAt(-7, 10, 0, now), end: localAt(-7, 10, 30, now),
+    location: "Room 5", attendees: [PRIYA, SAM],
+    recurrence: {
+      pattern: { type: "weekly", interval: 1, daysOfWeek: [["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][now.getDay()]], firstDayOfWeek: "monday" },
+      range: { type: "noEnd", startDate: ymd(localAt(-7, 10, 0, now)) },
+    },
+  }));
+  for (const w of [-1, 0, 1]) {
+    events.push(makeEvent({ id: `evt-review-${w + 1}`, subject: "", start: localAt(7 * w, 10, 0, now), end: localAt(7 * w, 10, 30, now), seriesMasterId: "evt-review-series", bare: true }));
+  }
   // Moved after you accepted (see msg-update-*): new time, and Graph resets your response.
   events.push(makeEvent({
     id: "evt-update", subject: "Team health: conflict & commitment", start: localAt(3, 10, 0, now), end: localAt(3, 10, 45, now),
@@ -167,8 +179,14 @@ export function defaultCalendar(now = new Date()): GraphEvent[] {
     id: "evt-invite", subject: "Design review", start: localAt(0, 11, 0, now), end: localAt(0, 12, 0, now),
     location: "Room 4 / Teams", organizer: { name: "Calendar", address: "calendar-noreply@contoso.com" },
     attendees: [ME, SAM, PRIYA], response: "notResponded", join: true, showAs: "tentative",
-    body: '<p>Agenda:</p><ul><li>New onboarding mockups</li><li>Open questions</li></ul><p><a href="https://teams.example/join/evt-invite">Join on Teams</a></p>',
+    body: '<p>Agenda:</p><ul><li>New onboarding mockups</li><li>Open questions</li></ul><p><a href="https://teams.microsoft.com/l/meetup-join/evt-invite">Join on Teams</a></p>',
     reminder: 15, categories: ["Design"],
+  }));
+  // On right now, with its Teams link only in the location (an external invite, like the
+  // reported "National Helpdesk Team Meeting"): the app must find the join link itself.
+  events.push(makeEvent({
+    id: "evt-helpdesk", subject: "Helpdesk team meeting", start: new Date(now.getTime() - 5 * 60_000), end: new Date(now.getTime() + 25 * 60_000),
+    location: "https://teams.microsoft.com/meet/497178154226638?p=q8OarGuMU3YgdVWxcF", organizer: SAM, attendees: [ME],
   }));
   // All hands: a long guest list (collapsed in the popup).
   events.push(makeEvent({

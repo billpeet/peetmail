@@ -120,3 +120,24 @@ test("signing one account out takes its mail out of the inbox and keeps the othe
   await expect(page.getByTestId("footer-account")).toHaveCount(0);
   await expect(page.getByTestId("row-account")).toHaveCount(0);
 });
+
+test("reconnecting an account signs it in again in place; signing in as someone else is refused", async ({ inbox: page, pair }) => {
+  await addWorkAccount(page, pair);
+  await page.keyboard.press("Control+,");
+  const work = page.locator(`[data-testid=account-row][data-email="${WORK_ACCOUNT.mail}"]`);
+  // Wrong account picked in the browser: refused, nothing changes.
+  pair.signInAs("a");
+  await work.getByTestId("account-reconnect").click();
+  await expect(page.getByTestId("account-error")).toContainText(`not ${WORK_ACCOUNT.mail}`, { timeout: 15_000 });
+  // The right one: same account, mail kept, still syncing.
+  pair.signInAs("b");
+  await work.getByTestId("account-reconnect").click();
+  await expect(page.getByTestId("account-reconnecting")).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId("account-error")).toHaveCount(0);
+  await expect(page.getByTestId("account-row")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  await expect(row(page, "work-conv-contract")).toBeVisible();
+  await pair.second.control("deliver", { from: ["Ana Ruiz", "ana@work.example"], subject: "After reconnect", to: [[WORK_ACCOUNT.displayName, WORK_ACCOUNT.mail]] });
+  await syncNow(page, pair);
+  await expect(page.locator("[data-testid=thread-row]", { hasText: "After reconnect" })).toBeVisible();
+});

@@ -177,14 +177,20 @@ test("with two accounts, calendar events show whose they are, and details link t
   await expect(page.locator('[data-testid=cal-event][data-remote-id="gcal-dentist"]')).toBeVisible();
 });
 
-test("quick add asks which calendar when there are two, Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {
+test("quick add asks which calendar when there are two, Ctrl+Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {
   await addGmail(page);
   await page.keyboard.press("Shift+C");
   const picker = page.getByTestId("quick-add-account");
   await expect(picker).toContainText("Outlook calendar");
   await page.getByTestId("quick-add-input").fill("Climbing tomorrow 6pm");
-  await page.keyboard.press("Tab");
+  await expect(picker).toContainText("Ctrl Tab");
+  await page.keyboard.press("Control+Tab");
   await expect(picker).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await page.keyboard.press("Control+Shift+Tab");
+  await expect(picker).toContainText("Outlook calendar");
+  await page.keyboard.press("Control+Tab");
+  await expect(picker).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await expect(page.getByTestId("event-editor")).toHaveCount(0); // switching isn't "more options"
   await expect(page.getByTestId("quick-add-input")).toBeFocused();
   await page.keyboard.press("Enter");
   await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "create-event").length, { timeout: 10_000 }).toBe(1);
@@ -215,4 +221,32 @@ test("Google event details: the series pattern from its RRULE, description, remi
   await expect(page.locator("[data-testid=event-attendee-group][data-group=tentative]")).toContainText("Lee Wong");
   await expect(page.locator("[data-testid=event-attendee-group][data-group=tentative]")).toContainText("optional");
   await snap(page, testInfo, "google-event-details");
+});
+
+test("editing and deleting Google events: PATCH with only the changes; a guest removing tells no one", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await showCalendarPane(page);
+  await expect.poll(async () => (await gEvents(page)).length, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  await (await findInDayView(page, "gcal-dentist")).click();
+  await page.keyboard.press("e");
+  await expect(page.getByTestId("editor-title")).toHaveValue("Dentist");
+  // Rooms are a Microsoft 365 thing: none suggested here.
+  await page.getByTestId("editor-location").click();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId("editor-room-suggestions")).toHaveCount(0);
+  await page.getByTestId("editor-title").fill("Dentist (check-up)");
+  await page.getByTestId("editor-show-as").selectOption("oof");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "update-event"), { timeout: 10_000 }).toEqual([
+    { kind: "update-event", id: "gcal-dentist", sendUpdates: "all", body: { summary: "Dentist (check-up)", transparency: "opaque" } },
+  ]);
+
+  await (await findInDayView(page, "gcal-lunch")).click();
+  await page.keyboard.press("#");
+  await expect(page.getByTestId("event-delete-confirm")).toContainText("Remove this from your calendar?");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "delete-event"), { timeout: 10_000 }).toEqual([
+    { kind: "delete-event", id: "gcal-lunch", sendUpdates: "none" },
+  ]);
 });

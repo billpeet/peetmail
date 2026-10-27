@@ -1,10 +1,10 @@
 <script lang="ts">
+  import { api } from "$lib/api";
   // Sanitized HTML (an event description) in a sandboxed iframe: no scripts, no remote
   // loads (the page CSP), links open in the browser, keys keep working inside it.
   // Sized to its content and never scrolls itself, so the page around it has the only
   // scrollbar: fixed-width tables and blocks (Outlook signatures, Teams footers) are fitted
   // to the frame, and anything that still can't shrink scrolls sideways inside its own box.
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { keymap } from "$lib/keys.svelte";
 
   let { html, testid = "html-view" }: { html: string; testid?: string } = $props();
@@ -50,7 +50,7 @@
       if (!a) return;
       e.preventDefault();
       const href = a.getAttribute("href") ?? "";
-      if (/^(https?:|mailto:)/i.test(href)) openUrl(href);
+      if (/^(https?:|mailto:)/i.test(href)) api.openExternal(href);
     });
     doc.addEventListener("keydown", keymap.handle);
   }

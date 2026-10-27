@@ -103,6 +103,9 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Ctrl+Shift+Enter` | Send later, in the composer ("tomorrow 9am", "mon", "in 2 hours", or a preset) | ✓ |
 | `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
 | `Ctrl+Q` | Quit (closing the window keeps PeetMail in the tray) | ✓ |
+| `e` / `#` | In an event's details: edit / delete (a recurring event asks: this occurrence `o` or the series `s`) | ✓ |
+| `Tab` | In quick add: open the full event editor (guests, location, description) | ✓ |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | In quick add: next / previous calendar | ✓ |
 | `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
@@ -204,3 +207,12 @@ When you sign in, Google shows "Google hasn't verified this app": choose Advance
 - **WebView2 memory.** Expect roughly 100 to 150 MB. Watch it as features land, and keep the DOM small (the virtual list, collapsed messages).
 - **Single DB mutex.** Fine while queries take microseconds. If sync writes ever cause visible UI stalls, split into a writer connection and a read pool.
 - **Calendar scope.** Outlook-style calendars get feature-heavy fast. Hold the line on minimal.
+
+## Event details and editing (after Phase 3)
+
+- [x] Details popup: description (sanitized, in a sandboxed frame that never scrolls itself), repeat pattern in words, a banner on occurrences, calendar, location, join link (also found in the location or description: Teams, Zoom, Meet, Webex...), show-as, reminder, private, categories, organiser and guests grouped by answer (collapsed past 5), RSVP with this-occurrence/series scope. Join buttons on calendar blocks.
+- [x] Editor (create and edit): title, calendar, all day, start/end (length kept when the start moves), location, guests with suggestions, show-as, reminder, private, rich-text description (Tiptap). Only changed fields are sent (Graph PATCH / Google PATCH with sendUpdates=all). Recurring events: edit this occurrence or the whole series (the master), shown in a banner. Guests can change only their show-as and reminder. Delete: your own event, cancel a meeting you organise (guests told, optional message), or remove an invitation from your calendar; occurrence or series.
+- [x] Rooms (Microsoft 365): the location suggests the tenant's rooms (beta `/me/findRooms`, which needs only User.Read; v1.0 Places needs admin-consented Place.Read.All and is only a fallback). Picking one sets the location (`locationType: conferenceRoom` + its mailbox) and invites the room as a `resource` guest, which books it; choosing another swaps it, and typing over the location or removing the room chip un-books it. Personal accounts and Google calendars get no suggestions. Cached per account for 6 hours. Some tenants refuse findRooms with plain User.Read (403 Access is denied): the editor then offers to grant User.ReadBasic.All (user-consentable) by reconnecting the account, and if that's still refused, Place.Read.All (admin approval) for the Places API. Each account stores the scopes it signed in with (`TokenSet.scopes`), because Entra re-asks for them on every refresh and fails on any never granted. A refused lookup logs the token's `scp` claim.
+- [x] Reconnect (Settings > Accounts, and the room prompt): signs a known account in again in place (login_hint, same-account check), keeping its mail and settings; also the way back for a signed-out account.
+- [ ] Repeat editor (pattern, interval, weekdays, nth weekday, end) for creating and editing series.
+

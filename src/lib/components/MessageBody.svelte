@@ -27,7 +27,6 @@
   // loads (CSP inherited by srcdoc), no IPC access. The parent still handles link
   // clicks and forwards keystrokes so shortcuts keep working after clicking into mail.
   import { untrack } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { getBody, peekBody } from "$lib/bodies";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
@@ -102,7 +101,7 @@
       if (!a) return;
       e.preventDefault();
       const href = a.getAttribute("href") ?? "";
-      if (/^(https?:|mailto:)/i.test(href)) openUrl(href);
+      if (/^(https?:|mailto:)/i.test(href)) api.openExternal(href);
     });
     doc.addEventListener("keydown", keymap.handle);
   }

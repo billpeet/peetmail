@@ -4,6 +4,7 @@
   import { CalendarPlus } from "@lucide/svelte";
   import { api } from "$lib/api";
   import { calendar, localDate } from "$lib/calendar.svelte";
+  import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import { parseQuickEvent } from "$lib/quickAdd";
 
@@ -67,17 +68,54 @@
     }
   }
 
+  /** More than a title and a time: the full editor, prefilled with what's typed so far. */
+  function moreOptions() {
+    const ev = parsed?.ok ? parsed.event : null;
+    calendar.editing = {
+      mode: "create",
+      accountId: target?.id ?? null,
+      prefill: ev ? { subject: ev.title, start: ev.start, end: ev.end, allDay: ev.allDay, location: ev.location } : text.trim() ? { subject: text.trim(), ...nextSlot(), allDay: false, location: null } : undefined,
+      // Title and time understood: carry on from the location.
+      focus: ev ? "location" : "title",
+    };
+    mail.overlay = "editevent";
+  }
+
+  function nextSlot() {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() < 30 ? 30 : 60);
+    return { start, end: new Date(start.getTime() + 30 * 60_000) };
+  }
+
+  // The input handles its keys itself (the keymap ignores plain keys in text fields); the
+  // bindings below list them in the ? overlay and work if focus is elsewhere in the box.
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !e.ctrlKey) {
       e.preventDefault();
       create();
-    } else if (e.key === "Tab" && mail.accounts.length > 1) {
+    } else if (e.key === "Tab" && e.ctrlKey) {
+      // Ctrl+Tab: the next calendar (Ctrl+Shift+Tab: the previous one).
       e.preventDefault();
       cycleAccount(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Tab" && !e.shiftKey) {
+      // Tab moves on to the full form: guests, location, description...
+      e.preventDefault();
+      moreOptions();
+    } else if (e.key === "Tab") {
+      e.preventDefault(); // nowhere to go back to
     }
   }
 
-  onMount(() => input?.focus());
+  onMount(() => {
+    input?.focus();
+    const open = () => mail.overlay === "quickadd";
+    return keymap.register([
+      { id: "quickadd.create", keys: "Enter", label: "Create the event", group: "Quick add", when: open, run: create },
+      { id: "quickadd.more", keys: "Tab", label: "More options (the full editor)", group: "Quick add", when: open, run: moreOptions },
+      { id: "quickadd.calendar", keys: "ctrl+Tab", label: "Next calendar", group: "Quick add", when: () => open() && mail.accounts.length > 1, run: () => cycleAccount(1) },
+      { id: "quickadd.calendarPrev", keys: "ctrl+shift+Tab", label: "Previous calendar", group: "Quick add", when: () => open() && mail.accounts.length > 1, run: () => cycleAccount(-1) },
+    ]);
+  });
 </script>
 
 <div
@@ -115,17 +153,17 @@
         data-testid="quick-add-account"
         data-account-id={target.id}
         onclick={() => cycleAccount(1)}
-        title="Change calendar (Tab)"
+        title="Change calendar (Ctrl+Tab)"
         class="flex w-full items-center gap-2 border-t border-ink-800 px-4 py-2 text-left text-xs text-ink-300 hover:text-ink-100"
       >
         <span class="text-ink-500">Add to</span>
         <span class={["size-2 rounded-full", mail.accountColor(target.id)]}></span>
         <span>{target.provider === "google" ? "Google Calendar" : "Outlook calendar"} · {target.email}</span>
-        <span class="ml-auto text-ink-500"><kbd>Tab</kbd> change</span>
+        <span class="ml-auto text-ink-500"><kbd>Ctrl</kbd> <kbd>Tab</kbd> change</span>
       </button>
     {/if}
     <div class="flex items-center justify-between border-t border-ink-800 px-4 py-2 text-xs text-ink-500">
-      <span><kbd>Enter</kbd> create · <kbd>Esc</kbd> cancel</span>
+      <span><kbd>Enter</kbd> create · <button data-testid="quick-add-more" onclick={moreOptions} class="hover:text-ink-100"><kbd>Tab</kbd> more options</button> · <kbd>Esc</kbd> cancel</span>
       <span>Adds to your calendar; no invitations are sent.</span>
     </div>
   </div>

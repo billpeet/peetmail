@@ -4,8 +4,7 @@
   // fetched when it opens. Occurrences of a series say so up front, and answering one asks
   // whether you mean just it or the whole series. Esc or the backdrop closes it.
   import { onMount } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import { Bell, CalendarClock, Check, CircleHelp, Clock, ExternalLink, Lock, MapPin, Repeat, Tag, Users, Video, X } from "@lucide/svelte";
+  import { Bell, CalendarClock, Check, CircleHelp, Clock, ExternalLink, Lock, MapPin, Pencil, Repeat, Tag, Trash2, Users, Video, X } from "@lucide/svelte";
   import { api, type Attendee, type EventDetail, type Rsvp } from "$lib/api";
   import { calendar, eventTimes } from "$lib/calendar.svelte";
   import { keymap } from "$lib/keys.svelte";
@@ -28,6 +27,8 @@
     loadedFor = key;
     detail = null;
     showAllGuests = false;
+    pending = null;
+    deleting = null;
     detailError = null;
     // Placeholders for events still being created aren't on the server yet.
     if (e.remoteId.startsWith("local:")) return;
@@ -65,9 +66,12 @@
     return `${m} minutes before`;
   });
 
-  const joinLabel = $derived(
-    !e?.joinUrl ? "" : e.joinUrl.includes("meet.google.com") ? "Google Meet" : e.joinUrl.includes("teams") ? "Microsoft Teams meeting" : "Online meeting",
-  );
+  /** The event's join link, or one found in its description. */
+  const joinUrl = $derived(e?.joinUrl ?? detail?.joinUrl ?? null);
+  const joinLabel = $derived.by(() => {
+    const p = e?.joinUrl ? e.joinProvider : detail?.joinProvider;
+    return !joinUrl ? "" : p === "Google Meet" ? "Google Meet" : p && p !== "Online meeting" ? `${p} meeting` : "Online meeting";
+  });
 
   const SHOW_AS: Record<string, string> = { free: "Free", tentative: "Tentative", busy: "Busy", oof: "Out of office", workingElsewhere: "Working elsewhere" };
 
@@ -103,13 +107,66 @@
   // ----- answering -----
   const canRespond = $derived(!!e && !e.isOrganizer && !!e.response && !["organizer", "none"].includes(e.response) && !e.isCancelled);
   const RESPONSE: Record<string, string> = { accepted: "Accepted", tentativelyAccepted: "Tentative", declined: "Declined", notResponded: "Not answered yet" };
-  /** An answer waiting for "this occurrence or the series?". */
-  let pending = $state<Rsvp | null>(null);
+  /** Something waiting for "this occurrence or the series?". */
+  type Pending = { kind: "rsvp"; r: Rsvp } | { kind: "edit" } | { kind: "delete" };
+  let pending = $state<Pending | null>(null);
 
   function answer(r: Rsvp) {
     if (!canRespond) return;
-    if (inSeries) pending = r;
+    if (inSeries) pending = { kind: "rsvp", r };
     else void send(r, false);
+  }
+
+  /** Runs what was waiting, for one occurrence or the whole series. */
+  function resolve(series: boolean) {
+    const p = pending;
+    pending = null;
+    if (!p) return;
+    if (p.kind === "rsvp") void send(p.r, series);
+    else if (p.kind === "edit") startEdit(series);
+    else deleting = { series };
+  }
+
+  // ----- edit and delete -----
+  const canEdit = $derived(!!e && !e.remoteId.startsWith("local:"));
+  /** A delete waiting for confirmation (and, for meetings you organise, a message). */
+  let deleting = $state<{ series: boolean } | null>(null);
+  let deleteMessage = $state("");
+  /** Cancelling a meeting tells its guests; your own events and others' just go. */
+  const cancelsMeeting = $derived(!!e && e.isOrganizer && guests.length > 0);
+
+  function edit() {
+    if (!canEdit) return;
+    if (inSeries) pending = { kind: "edit" };
+    else startEdit(false);
+  }
+
+  function startEdit(series: boolean) {
+    if (!e) return;
+    calendar.editing = { mode: "edit", event: e, series };
+    mail.overlay = "editevent";
+  }
+
+  function askDelete() {
+    if (!e) return;
+    deleteMessage = "";
+    if (inSeries) pending = { kind: "delete" };
+    else deleting = { series: false };
+  }
+
+  async function confirmDelete() {
+    if (!e || !deleting) return;
+    const target = deleting.series ? (e.seriesMasterId ?? detail?.seriesMasterId ?? e.remoteId) : e.remoteId;
+    const what = deleting.series ? "series" : inSeries ? "occurrence" : "event";
+    try {
+      await api.deleteCalendarEvent(e.accountId, target, cancelsMeeting, cancelsMeeting ? deleteMessage : null);
+      mail.showToast({ text: cancelsMeeting ? `Cancelled the meeting${what === "event" ? "" : ` ${what}`}; guests are told` : `Deleted the ${what}` });
+      deleting = null;
+      close();
+      await calendar.refresh();
+    } catch (err) {
+      mail.showToast({ text: String(err), error: true });
+    }
   }
 
   async function send(r: Rsvp, series: boolean) {
@@ -137,9 +194,13 @@
       { id: "event.accept", keys: "y", label: "Accept", group: "Event", when: () => open() && canRespond, run: () => answer("accept") },
       { id: "event.maybe", keys: "m", label: "Maybe (tentative)", group: "Event", when: () => open() && canRespond, run: () => answer("tentative") },
       { id: "event.decline", keys: "n", label: "Decline", group: "Event", when: () => open() && canRespond, run: () => answer("decline") },
-      { id: "event.scope.one", keys: "o", label: "Answer this occurrence", group: "Event", when: () => open() && pending !== null, run: () => pending && send(pending, false) },
-      { id: "event.scope.series", keys: "s", label: "Answer the whole series", group: "Event", when: () => open() && pending !== null, run: () => pending && send(pending, true) },
-      { id: "event.join", keys: "j", label: "Join online meeting", group: "Event", when: () => open() && !!e?.joinUrl, run: () => e?.joinUrl && openUrl(e.joinUrl) },
+      { id: "event.scope.one", keys: "o", label: "This occurrence", group: "Event", when: () => open() && pending !== null, run: () => resolve(false) },
+      { id: "event.scope.series", keys: "s", label: "The whole series", group: "Event", when: () => open() && pending !== null, run: () => resolve(true) },
+      { id: "event.edit", keys: "e", label: "Edit event", group: "Event", when: () => open() && canEdit && !deleting, run: edit },
+      { id: "event.delete", keys: "#", label: "Delete event", group: "Event", when: () => open() && !deleting, run: askDelete },
+      { id: "event.delete.key", keys: "Delete", label: "Delete event", group: "Event", when: () => open() && !deleting, run: askDelete },
+      { id: "event.delete.confirm", keys: "ctrl+Enter", label: "Confirm delete", group: "Event", when: () => open() && !!deleting, run: confirmDelete },
+      { id: "event.join", keys: "j", label: "Join online meeting", group: "Event", when: () => open() && !!joinUrl, run: () => joinUrl && api.openExternal(joinUrl) },
     ]);
   });
 </script>
@@ -187,10 +248,10 @@
           {#if e.location}
             <div class="flex gap-3"><MapPin size={16} class="mt-0.5 shrink-0 text-ink-500" /><span data-testid="event-location" class="select-text">{e.location}</span></div>
           {/if}
-          {#if e.joinUrl}
+          {#if joinUrl}
             <div class="flex gap-3">
               <Video size={16} class="mt-0.5 shrink-0 text-ink-500" />
-              <button data-testid="event-join-link" onclick={() => openUrl(e.joinUrl!)} class="truncate text-left text-accent hover:underline">
+              <button data-testid="event-join-link" onclick={() => api.openExternal(joinUrl!)} class="truncate text-left text-accent hover:underline">
                 {joinLabel}
               </button>
             </div>
@@ -259,11 +320,11 @@
         {#if canRespond}
           <div data-testid="event-rsvp" class="mt-3 mb-1 space-y-2">
             <p data-testid="event-response" class="text-xs text-ink-500">Your response: {RESPONSE[e.response ?? ""] ?? e.response}</p>
-            {#if pending}
+            {#if pending?.kind === "rsvp"}
               <div data-testid="event-rsvp-scope" class="flex flex-wrap items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
-                <span class="text-ink-100">{{ accept: "Accept", tentative: "Maybe", decline: "Decline" }[pending]}:</span>
-                <button data-testid="rsvp-scope-one" onclick={() => pending && send(pending, false)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">This occurrence <kbd>o</kbd></button>
-                <button data-testid="rsvp-scope-series" onclick={() => pending && send(pending, true)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">The whole series <kbd>s</kbd></button>
+                <span class="text-ink-100">{{ accept: "Accept", tentative: "Maybe", decline: "Decline" }[pending.r]}:</span>
+                <button data-testid="rsvp-scope-one" onclick={() => resolve(false)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">This occurrence <kbd>o</kbd></button>
+                <button data-testid="rsvp-scope-series" onclick={() => resolve(true)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">The whole series <kbd>s</kbd></button>
                 <button onclick={() => (pending = null)} class="ml-auto text-xs text-ink-500 hover:text-ink-100">Cancel</button>
               </div>
             {:else}
@@ -283,17 +344,55 @@
         {/if}
       </div>
 
+      {#if pending && pending.kind !== "rsvp"}
+        <div data-testid="event-scope" class="mx-5 mb-3 flex flex-wrap items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+          <span class="text-ink-100">{pending.kind === "edit" ? "Edit" : "Delete"}:</span>
+          <button data-testid="scope-one" onclick={() => resolve(false)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">This occurrence <kbd>o</kbd></button>
+          <button data-testid="scope-series" onclick={() => resolve(true)} class="rounded border border-ink-700 px-2 py-1 hover:border-accent">The whole series <kbd>s</kbd></button>
+          <button onclick={() => (pending = null)} class="ml-auto text-xs text-ink-500 hover:text-ink-100">Cancel</button>
+        </div>
+      {/if}
+      {#if deleting}
+        <div data-testid="event-delete-confirm" class="mx-5 mb-3 space-y-2 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm">
+          <p class="text-ink-100">
+            {#if cancelsMeeting}
+              Cancel {deleting.series ? "every meeting in this series" : inSeries ? "this occurrence of the meeting" : "this meeting"}? Guests get a cancellation.
+            {:else if !e.isOrganizer && guests.length}
+              Remove {deleting.series ? "the whole series" : "this"} from your calendar? The organiser isn't told; decline instead to let them know.
+            {:else}
+              Delete {deleting.series ? "every event in this series" : inSeries ? "this occurrence" : "this event"}?
+            {/if}
+          </p>
+          {#if cancelsMeeting}
+            <textarea data-testid="event-delete-message" bind:value={deleteMessage} rows="2" placeholder="Message to guests (optional)" class="w-full rounded-md border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-accent"></textarea>
+          {/if}
+          <div class="flex items-center gap-2">
+            <button data-testid="event-delete-go" onclick={confirmDelete} class="rounded-md bg-red-500/90 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500">
+              {cancelsMeeting ? "Cancel meeting" : !e.isOrganizer && guests.length ? "Remove" : "Delete"} <kbd class="opacity-70">Ctrl</kbd> <kbd class="opacity-70">Enter</kbd>
+            </button>
+            <button data-testid="event-delete-back" onclick={() => (deleting = null)} class="text-xs text-ink-500 hover:text-ink-100">Keep it</button>
+          </div>
+        </div>
+      {/if}
       <div data-testid="event-actions" class="flex shrink-0 gap-2 border-t border-ink-800 p-5 pt-4">
-        {#if e.joinUrl}
-          <button data-testid="event-join" onclick={() => openUrl(e.joinUrl!)} class="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome">
+        {#if canEdit}
+          <button data-testid="event-edit" onclick={edit} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
+            <Pencil size={15} /> Edit <kbd>e</kbd>
+          </button>
+        {/if}
+        {#if joinUrl}
+          <button data-testid="event-join" onclick={() => api.openExternal(joinUrl!)} class="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome">
             <Video size={15} /> Join <kbd class="opacity-70">j</kbd>
           </button>
         {/if}
         {#if e.webLink}
-          <button data-testid="event-open" onclick={() => openUrl(e.webLink!)} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
+          <button data-testid="event-open" onclick={() => api.openExternal(e.webLink!)} class="flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">
             <ExternalLink size={15} /> {account?.provider === "google" ? "Open in Google Calendar" : "Open in Outlook"}
           </button>
         {/if}
+        <button data-testid="event-delete" onclick={askDelete} title="Delete (#)" class="ml-auto flex items-center gap-2 rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:border-red-900 hover:text-red-300">
+          <Trash2 size={15} /> {cancelsMeeting ? "Cancel meeting" : !e.isOrganizer && guests.length ? "Remove" : "Delete"}
+        </button>
       </div>
     </div>
   </div>
