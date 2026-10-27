@@ -177,14 +177,20 @@ test("with two accounts, calendar events show whose they are, and details link t
   await expect(page.locator('[data-testid=cal-event][data-remote-id="gcal-dentist"]')).toBeVisible();
 });
 
-test("quick add asks which calendar when there are two, Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {
+test("quick add asks which calendar when there are two, Ctrl+Tab switches, and it remembers", async ({ inbox: page, gmail, fake }) => {
   await addGmail(page);
   await page.keyboard.press("Shift+C");
   const picker = page.getByTestId("quick-add-account");
   await expect(picker).toContainText("Outlook calendar");
   await page.getByTestId("quick-add-input").fill("Climbing tomorrow 6pm");
-  await page.keyboard.press("Tab");
+  await expect(picker).toContainText("Ctrl Tab");
+  await page.keyboard.press("Control+Tab");
   await expect(picker).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await page.keyboard.press("Control+Shift+Tab");
+  await expect(picker).toContainText("Outlook calendar");
+  await page.keyboard.press("Control+Tab");
+  await expect(picker).toContainText(`Google Calendar · ${GMAIL_ACCOUNT.email}`);
+  await expect(page.getByTestId("event-editor")).toHaveCount(0); // switching isn't "more options"
   await expect(page.getByTestId("quick-add-input")).toBeFocused();
   await page.keyboard.press("Enter");
   await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "create-event").length, { timeout: 10_000 }).toBe(1);

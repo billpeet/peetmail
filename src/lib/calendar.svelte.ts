@@ -48,7 +48,13 @@ export function startOfWeek(d: Date, weekStartsOn = 1): Date {
 
 /** Open the editor: a new event (optionally prefilled from quick add) or an existing one. */
 export type EditRequest =
-  | { mode: "create"; accountId: number | null; prefill?: { subject: string; start: Date; end: Date; allDay: boolean; location: string | null } }
+  | {
+      mode: "create";
+      accountId: number | null;
+      prefill?: { subject: string; start: Date; end: Date; allDay: boolean; location: string | null };
+      /** Where the cursor starts: past what quick add already filled in. */
+      focus?: "title" | "location";
+    }
   | { mode: "edit"; event: CalendarEvent; series: boolean };
 
 class CalendarStore {

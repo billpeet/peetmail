@@ -104,7 +104,8 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `;name`, `Ctrl+;` | Insert a snippet, in the composer | ✓ |
 | `Ctrl+Q` | Quit (closing the window keeps PeetMail in the tray) | ✓ |
 | `e` / `#` | In an event's details: edit / delete (a recurring event asks: this occurrence `o` or the series `s`) | ✓ |
-| `Ctrl+Enter` | In quick add: open the full event editor | ✓ |
+| `Tab` | In quick add: open the full event editor (guests, location, description) | ✓ |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | In quick add: next / previous calendar | ✓ |
 | `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |

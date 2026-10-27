@@ -158,10 +158,10 @@ test("deleting: your own event, cancelling a meeting (one occurrence and the ser
   await expect.poll(() => sentOf(fake, "delete-event").map((s) => s.id), { timeout: 10_000 }).toEqual(["evt-own", "evt-invite"]);
 });
 
-test("quick add's Ctrl+Enter opens the full editor; a new meeting with guests, a description and privacy", async ({ inbox: page, fake }, testInfo) => {
+test("quick add's Tab opens the full editor; a new meeting with guests, a description and privacy", async ({ inbox: page, fake }, testInfo) => {
   await page.keyboard.press("Shift+C");
   await page.getByTestId("quick-add-input").fill("Design sync tomorrow 2pm");
-  await page.keyboard.press("Control+Enter");
+  await page.keyboard.press("Tab");
   await expect(page.getByTestId("event-editor")).toBeVisible();
   await expect(page.getByTestId("editor-mode")).toHaveText("New event");
   await expect(page.getByTestId("editor-title")).toHaveValue("Design sync");
@@ -172,7 +172,8 @@ test("quick add's Ctrl+Enter opens the full editor; a new meeting with guests, a
   await page.getByTestId("editor-private").check();
   await page.getByTestId("rich-editor").click();
   await page.keyboard.type("Agenda: mockups");
-  await expect(page.getByTestId("editor-save")).toHaveText("Send");
+  await expect(page.getByTestId("editor-save-label")).toHaveText("Send");
+  await expect(page.getByTestId("editor-save")).toContainText("CtrlEnter");
   await snap(page, testInfo, "editor-new");
   await page.keyboard.press("Control+Enter");
   await expect(page.getByTestId("toast")).toContainText("Sent “Design sync” to 1 guest");
@@ -204,7 +205,7 @@ test("Esc with unsaved changes asks first; nothing is sent", async ({ inbox: pag
 test("a Microsoft 365 location suggests rooms; picking one books it as a room guest", async ({ inbox: page, fake }, testInfo) => {
   await page.keyboard.press("Shift+C");
   await page.getByTestId("quick-add-input").fill("Planning tomorrow 10am");
-  await page.keyboard.press("Control+Enter");
+  await page.keyboard.press("Tab");
   await expect(page.getByTestId("event-editor")).toBeVisible();
   const loc = page.getByTestId("editor-location");
   await loc.click();
@@ -217,9 +218,10 @@ test("a Microsoft 365 location suggests rooms; picking one books it as a room gu
   await snap(page, testInfo, "editor-rooms");
   await loc.press("Enter");
   await expect(loc).toHaveValue("Boardroom");
-  await expect(page.getByTestId("editor-location-room")).toBeVisible();
-  const room = page.locator("[data-testid=editor-attendee][data-room=true]");
+  const room = page.getByTestId("editor-location-room");
   await expect(room).toHaveAttribute("data-address", "boardroom@contoso.com");
+  // Booked by inviting it, but it shows by the location, not as a guest.
+  await expect(page.getByTestId("editor-attendee")).toHaveCount(0);
 
   // Choosing another room swaps it, rather than booking both.
   await loc.fill("");
@@ -235,16 +237,16 @@ test("a Microsoft 365 location suggests rooms; picking one books it as a room gu
   expect(b.attendees).toEqual([{ emailAddress: { address: "room4@contoso.com", name: "Room 4" }, type: "resource" }]);
 });
 
-test("typing over a booked room, or removing its chip, un-books it", async ({ inbox: page, fake }) => {
+test("typing over a booked room, or its ×, un-books it", async ({ inbox: page, fake }) => {
   await openEditor(page, "evt-lunch");
   const loc = page.getByTestId("editor-location");
   await loc.fill("");
   await loc.pressSequentially("Huddle");
   await loc.press("Enter");
-  const room = page.locator("[data-testid=editor-attendee][data-room=true]");
+  const room = page.getByTestId("editor-location-room");
   await expect(room).toHaveCount(1);
-  // Removing the room chip clears the location it filled in.
-  await room.getByTestId("editor-attendee-remove").click();
+  // Un-booking the room clears the location it filled in.
+  await page.getByTestId("editor-location-room-remove").click();
   await expect(room).toHaveCount(0);
   await expect(loc).toHaveValue("");
   // Pick it again, then type something else: no room any more.
@@ -276,7 +278,7 @@ test("an event with a booked room reopens showing it as a room", async ({ inbox:
   await openEditor(page, "evt-lunch");
   await expect(page.getByTestId("editor-location")).toHaveValue("Boardroom");
   await expect(page.getByTestId("editor-location-room")).toBeVisible();
-  await expect(page.locator("[data-testid=editor-attendee][data-room=true]")).toHaveAttribute("data-address", "boardroom@contoso.com");
+  await expect(page.getByTestId("editor-location-room")).toHaveAttribute("data-address", "boardroom@contoso.com");
 });
 
 test("a tenant that refuses the room list: allowing it reconnects the account in place and the rooms appear", async ({ inbox: page, fake }, testInfo) => {
@@ -347,10 +349,52 @@ test("focusing a location that's already set lists every room, and Tab moves on 
   await expect(page.getByTestId("editor-room")).toHaveCount(3);
   await loc.press("Tab");
   await expect(loc).toHaveValue("Café Beetroot");
-  await expect(page.locator("[data-testid=editor-attendee][data-room=true]")).toHaveCount(0);
+  await expect(page.getByTestId("editor-location-room")).toHaveCount(0);
   // Arrowing in, then Enter, picks.
   await loc.click();
   await loc.press("ArrowDown");
   await loc.press("Enter");
   await expect(loc).toHaveValue("Boardroom");
+});
+
+test("Tab flow: quick add hands over at the location, then location → guests with nothing in between", async ({ inbox: page, fake }) => {
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Planning tomorrow 10am");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("event-editor")).toBeVisible();
+  // Title and time came from the text: the cursor starts at the location.
+  const loc = page.getByTestId("editor-location");
+  await expect(loc).toBeFocused();
+  // Empty location, Tab: straight on to guests, no room picked.
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("editor-attendee-input")).toBeFocused();
+  await expect(page.getByTestId("editor-location-room")).toHaveCount(0);
+  await expect(loc).toHaveValue("");
+  // Pick a room, add a guest, Tab from the location lands in guests again (no room chip to tab past).
+  await page.keyboard.press("Shift+Tab");
+  await expect(loc).toBeFocused();
+  await page.keyboard.type("Huddle");
+  await page.keyboard.press("Enter");
+  await expect(loc).toHaveValue("Huddle 1");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("editor-attendee-input")).toBeFocused();
+  await page.keyboard.type("sam@contoso.com");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("editor-attendee")).toHaveCount(1);
+  // Backspace removes the person, never the room.
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  await expect(page.getByTestId("editor-attendee")).toHaveCount(0);
+  await expect(page.getByTestId("editor-location-room")).toHaveAttribute("data-address", "huddle1@contoso.com");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOf(fake, "create-event").length, { timeout: 10_000 }).toBe(1);
+  expect(sentOf(fake, "create-event")[0].body.attendees).toEqual([{ emailAddress: { address: "huddle1@contoso.com", name: "Huddle 1" }, type: "resource" }]);
+});
+
+test("quick add without a time understood: Tab starts the editor at the title", async ({ inbox: page }) => {
+  await page.keyboard.press("Shift+C");
+  await page.getByTestId("quick-add-input").fill("Planning");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("editor-title")).toBeFocused();
+  await expect(page.getByTestId("editor-title")).toHaveValue("Planning");
 });

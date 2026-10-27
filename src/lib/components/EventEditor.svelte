@@ -136,7 +136,7 @@
         setTimes({ start, end: new Date(start.getTime() + 30 * 60_000), allDay: false });
       }
       lastStart = `${startDate}T${startTime}`;
-      queueMicrotask(() => titleInput?.focus());
+      queueMicrotask(() => (req.focus === "location" ? locationInput : titleInput)?.focus());
     } else {
       api.eventForEdit(req.event.accountId, req.event.remoteId, req.series).then(
         (ev) => {
@@ -215,6 +215,9 @@
     roomOpen = false;
   }
   let locationInput = $state<HTMLInputElement>();
+  /** The room booked as the location: shown by the location, not among the guests. */
+  const locationRoom = $derived(locationEmail ? attendees.find((a) => a.resource && a.address.toLowerCase() === locationEmail?.toLowerCase()) : undefined);
+  const guestChips = $derived(attendees.filter((a) => a !== locationRoom));
   const showRoomPermission = $derived(!guestMode && !rooms.length && !!roomsNeed && !notNow.includes(accountId) && (roomOpen || granting || !!grantError));
   /** Focusing shows every room; only what's typed since narrows them (not an existing location). */
   let typedSinceFocus = $state(false);
@@ -263,6 +266,11 @@
 
   function locationKeys(e: KeyboardEvent) {
     if (!roomList.length) return;
+    // Tab without picking: on to the next field, suggestions closed.
+    if (e.key === "Tab" && !(typedSinceFocus || roomArrowed) ) {
+      roomOpen = false;
+      return;
+    }
     // Enter/Tab pick only once you've typed or arrowed: tabbing past a location keeps it.
     const engaged = typedSinceFocus || roomArrowed;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -328,8 +336,8 @@
       e.preventDefault();
       e.stopPropagation();
       suggestions = [];
-    } else if (e.key === "Backspace" && !guestText && attendees.length) {
-      removeAttendee(attendees[attendees.length - 1]);
+    } else if (e.key === "Backspace" && !guestText && guestChips.length) {
+      removeAttendee(guestChips[guestChips.length - 1]);
     }
   }
 
@@ -545,7 +553,12 @@
                 class={[field, "flex-1"]}
               />
               {#if locationEmail}
-                <span data-testid="editor-location-room" class="flex shrink-0 items-center gap-1 text-xs text-ink-500"><DoorOpen size={13} /> Room booked</span>
+                <span data-testid="editor-location-room" data-address={locationEmail} class="flex shrink-0 items-center gap-1 text-xs text-ink-500" title="Booked: {locationEmail}">
+                  <DoorOpen size={13} /> Room booked
+                  {#if locationRoom && !guestMode}
+                    <button type="button" tabindex="-1" data-testid="editor-location-room-remove" title="Don't book this room" aria-label="Don't book this room" onclick={() => locationRoom && removeAttendee(locationRoom)} class="text-ink-500 hover:text-red-300">×</button>
+                  {/if}
+                </span>
               {/if}
             </div>
             {#if showRoomPermission && roomsNeed}
@@ -578,6 +591,7 @@
                   <li>
                     <button
                       type="button"
+                      tabindex="-1"
                       data-testid="editor-room"
                       data-address={r.address}
                       onmousedown={(e) => {
@@ -599,16 +613,16 @@
           <span class="self-start pt-1.5">Guests</span>
           <div class="relative">
             <div data-testid="editor-attendees" class={["flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-ink-700 bg-ink-950 px-2 py-1 focus-within:border-accent", guestMode && "opacity-50"]}>
-              {#each attendees as a, i (a.address)}
+              {#each guestChips as a (a.address)}
                 <span data-testid="editor-attendee" data-address={a.address} data-room={a.resource ? "true" : undefined} class="flex items-center gap-1 rounded bg-ink-800 px-2 py-0.5 text-xs text-ink-100">
                   {#if a.resource}<DoorOpen size={12} class="text-ink-500" />{/if}
                   {senderName(a.name, a.address)}
                   {#if a.resource}<span class="text-ink-500">room</span>{/if}
                   {#if !guestMode}
                     {#if !a.resource}
-                      <button type="button" data-testid="editor-attendee-optional" title="Required or optional" onclick={() => (attendees[i] = { ...a, optional: !a.optional })} class="text-ink-500 hover:text-ink-100">{a.optional ? "optional" : "required"}</button>
+                      <button type="button" tabindex="-1" data-testid="editor-attendee-optional" title="Required or optional" onclick={() => (attendees = attendees.map((x) => (x === a ? { ...a, optional: !a.optional } : x)))} class="text-ink-500 hover:text-ink-100">{a.optional ? "optional" : "required"}</button>
                     {/if}
-                    <button type="button" data-testid="editor-attendee-remove" title="Remove" aria-label="Remove {a.address}" onclick={() => removeAttendee(a)} class="text-ink-500 hover:text-red-300">×</button>
+                    <button type="button" tabindex="-1" data-testid="editor-attendee-remove" title="Remove" aria-label="Remove {a.address}" onclick={() => removeAttendee(a)} class="text-ink-500 hover:text-red-300">×</button>
                   {:else if a.optional}<span class="text-ink-500">optional</span>{/if}
                 </span>
               {/each}
@@ -630,7 +644,7 @@
               <ul data-testid="editor-attendee-suggestions" class="absolute top-full left-0 z-10 mt-1 w-80 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
                 {#each suggestions as s, i (s.address)}
                   <li>
-                    <button type="button" onmousedown={(e) => { e.preventDefault(); addGuest(s); }} class={["block w-full px-3 py-1.5 text-left text-sm", i === active ? "bg-ink-800 text-ink-100" : "text-ink-300"]}>
+                    <button type="button" tabindex="-1" onmousedown={(e) => { e.preventDefault(); addGuest(s); }} class={["block w-full px-3 py-1.5 text-left text-sm", i === active ? "bg-ink-800 text-ink-100" : "text-ink-300"]}>
                       {s.name ?? s.address} <span class="text-ink-500">{s.name ? s.address : ""}</span>
                     </button>
                   </li>
@@ -684,8 +698,15 @@
       {/if}
       <span class="ml-auto flex gap-2">
         <button data-testid="editor-cancel" onclick={close} class="rounded-md border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:text-ink-100">Cancel</button>
-        <button data-testid="editor-save" onclick={save} disabled={saving || loading || !!loadError} class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome disabled:opacity-50">
-          {creating && attendees.length ? "Send" : "Save"}
+        <button
+          data-testid="editor-save"
+          onclick={save}
+          disabled={saving || loading || !!loadError}
+          title="Ctrl+Enter"
+          class="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-chrome disabled:opacity-50"
+        >
+          <span data-testid="editor-save-label">{creating && attendees.length ? "Send" : "Save"}</span>
+          <span class="flex gap-0.5 text-[11px] font-normal opacity-70"><kbd class="!border-chrome/30 !bg-transparent !text-chrome">Ctrl</kbd><kbd class="!border-chrome/30 !bg-transparent !text-chrome">Enter</kbd></span>
         </button>
       </span>
     </div>
