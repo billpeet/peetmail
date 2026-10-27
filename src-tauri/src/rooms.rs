@@ -63,7 +63,7 @@ pub fn parse(v: &Value) -> Vec<Room> {
             Some(Room { name, address, capacity: r["capacity"].as_i64(), building: r["building"].as_str().filter(|b| !b.is_empty()).map(String::from) })
         })
         .collect();
-    rooms.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rooms.sort_by_key(|r| r.name.to_lowercase());
     rooms
 }
 
@@ -94,10 +94,10 @@ pub async fn list(state: &AppState, account_id: i64) -> Result<RoomList> {
     if state.db.with(|c| crate::db::account_provider(c, account_id))? != "microsoft" {
         return Ok(RoomList { rooms: vec![], needs: None });
     }
-    if let Some((at, list)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&account_id) {
-        if at.elapsed() < CACHE_FOR {
-            return Ok(list.clone());
-        }
+    if let Some((at, list)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&account_id)
+        && at.elapsed() < CACHE_FOR
+    {
+        return Ok(list.clone());
     }
     let base = crate::graph::base();
     let beta = base.replacen("/v1.0", "/beta", 1);
