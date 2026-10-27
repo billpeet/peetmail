@@ -242,26 +242,26 @@ function webview2Diagnostics(profile: string): string {
 }
 
 export async function connect(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  // Playwright attaches to existing targets asynchronously, and the page may still be on
-  // about:blank while WebView2 navigates, so poll. page.url() is what Playwright last heard,
-  // though: attached at the wrong moment (seen on a loaded CI runner) it misses the
-  // navigation and says about:blank for good. A fresh attach reads the page as it is now.
+  // The DevTools target list shows the app's URL as soon as WebView2 starts loading it;
+  // Playwright shows the page once that navigation commits. Locally that's well under a
+  // second; on a loaded CI runner it has taken over 15s (attaching again didn't help: the
+  // page really was still on about:blank). So wait, and say when it was slow.
   const isApp = (p: Page) => /tauri\.localhost|localhost:1420/.test(p.url());
-  const ATTEMPTS = 3;
-  let seen: string[] = [];
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const page = browser.contexts().flatMap((c) => c.pages()).find(isApp);
-      if (page) return { browser, page };
-      await new Promise((r) => setTimeout(r, 100));
+  const started = Date.now();
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+  const deadline = started + 45_000;
+  while (Date.now() < deadline) {
+    const page = browser.contexts().flatMap((c) => c.pages()).find(isApp);
+    if (page) {
+      const took = Date.now() - started;
+      if (took > 5_000) console.warn(`[harness] the app page took ${(took / 1000).toFixed(1)}s to load`);
+      return { browser, page };
     }
-    seen = browser.contexts().flatMap((c) => c.pages()).map((p) => p.url());
-    await browser.close().catch(() => {});
-    if (attempt < ATTEMPTS) console.warn(`[harness] app page not seen over CDP (pages: ${JSON.stringify(seen)}); attaching again`);
+    await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error(`PeetMail page not found over CDP after ${ATTEMPTS} attaches (pages: ${JSON.stringify(seen)})`);
+  const seen = browser.contexts().flatMap((c) => c.pages()).map((p) => p.url());
+  await browser.close().catch(() => {});
+  throw new Error(`PeetMail page not found over CDP within 45s (pages: ${JSON.stringify(seen)})`);
 }
 
 export function killTree(pid: number | undefined) {
