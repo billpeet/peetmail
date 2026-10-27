@@ -653,6 +653,19 @@
             {/if}
           </div>
 
+          <span class="self-start pt-2">Description</span>
+          <RichText
+            html={descriptionHtml}
+            placeholder="Add an agenda, notes or links"
+            disabled={guestMode}
+            onsubmit={save}
+            onchange={(h) => {
+              descriptionHtml = h;
+              descriptionDirty = true;
+              armedDiscard = false;
+            }}
+          />
+
           <span>Show as</span>
           <span class="flex flex-wrap items-center gap-4">
             <select data-testid="editor-show-as" bind:value={showAs} class={field}>
@@ -669,19 +682,6 @@
               <input data-testid="editor-private" type="checkbox" bind:checked={isPrivate} disabled={guestMode} class="accent-accent" /> Private
             </label>
           </span>
-
-          <span class="self-start pt-2">Description</span>
-          <RichText
-            html={descriptionHtml}
-            placeholder="Add an agenda, notes or links"
-            disabled={guestMode}
-            onsubmit={save}
-            onchange={(h) => {
-              descriptionHtml = h;
-              descriptionDirty = true;
-              armedDiscard = false;
-            }}
-          />
         </div>
       {/if}
     </div>

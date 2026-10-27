@@ -381,6 +381,15 @@ test("Tab flow: quick add hands over at the location, then location → guests w
   await page.keyboard.type("sam@contoso.com");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("editor-attendee")).toHaveCount(1);
+  // Guests → the description's text (not its formatting buttons) → show as.
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("rich-editor")).toBeFocused();
+  await page.keyboard.type("Agenda");
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("editor-show-as")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByTestId("editor-attendee-input")).toBeFocused();
   // Backspace removes the person, never the room.
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Backspace");
@@ -389,6 +398,7 @@ test("Tab flow: quick add hands over at the location, then location → guests w
   await page.keyboard.press("Control+Enter");
   await expect.poll(() => sentOf(fake, "create-event").length, { timeout: 10_000 }).toBe(1);
   expect(sentOf(fake, "create-event")[0].body.attendees).toEqual([{ emailAddress: { address: "huddle1@contoso.com", name: "Huddle 1" }, type: "resource" }]);
+  expect(sentOf(fake, "create-event")[0].body.body.content).toContain("Agenda");
 });
 
 test("quick add without a time understood: Tab starts the editor at the title", async ({ inbox: page }) => {

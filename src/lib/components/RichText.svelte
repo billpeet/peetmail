@@ -95,6 +95,7 @@
 
 <div data-testid="rich-text" class={["rounded-md border border-ink-700 bg-ink-950 focus-within:border-accent", disabled && "opacity-60"]}>
   {#if !disabled}
+    <!-- Out of the tab order: Tab goes straight into the text (Ctrl+B/I/U/K do the same). -->
     <div class="flex items-center gap-0.5 border-b border-ink-800 px-1 py-1">
       {#each buttons as b (b.id)}
         <button
@@ -103,6 +104,7 @@
           title={b.label}
           aria-label={b.label}
           aria-pressed={active(b.on)}
+          tabindex="-1"
           onmousedown={(e) => e.preventDefault()}
           onclick={b.run}
           class={["icon-btn size-7", active(b.on) && "bg-ink-800 text-ink-100"]}
