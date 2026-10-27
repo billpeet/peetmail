@@ -315,7 +315,7 @@ pub fn role_for(labels: &[&str], snooze_label: Option<&str>) -> Option<&'static 
     if has("SPAM") || (has("DRAFT") && !has("INBOX") && !has("SENT")) {
         return None;
     }
-    if snooze_label.is_some_and(&has) {
+    if snooze_label.is_some_and(has) {
         return Some("snoozed");
     }
     if has("INBOX") {

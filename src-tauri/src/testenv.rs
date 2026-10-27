@@ -25,6 +25,7 @@
 //! | PEETMAIL_OTLP_ENDPOINT        | Telemetry goes here (OTLP/HTTP JSON, e.g. the fake collector) |
 //! | PEETMAIL_OTLP_HEADERS         | Headers for it, `key=value,key=value`                     |
 //! | PEETMAIL_OTLP_METRIC_INTERVAL_MS | Metric export interval (default 30s)                   |
+//! | PEETMAIL_WEBVIEW2_ARGS        | WebView2 browser arguments, replacing Tauri's (DevTools port) |
 
 pub fn get(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {

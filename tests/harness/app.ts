@@ -3,7 +3,7 @@
 // Used by the Playwright fixtures (tests/e2e) and the drive CLI.
 
 import { spawn, spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, statSync, readdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -107,17 +107,31 @@ export function ensureBuilt({ force = false, log = console.log }: { force?: bool
   writeFileSync(STAMP, new Date().toISOString());
 }
 
+/**
+ * The page size tests see: the app window's own size (1280x820 less the frame), just wide
+ * enough for the right pane (shown from 1280px). Fixed rather than taken from the window,
+ * which Windows shrinks to fit a small screen (CI runners have 1024x768).
+ */
+export const TEST_VIEWPORT = { width: 1280, height: 792 };
+
 /** Headless unless PEETMAIL_HEADED=1 (or `headed: true`), so test windows never interrupt you. */
 export const DEFAULT_HEADED = process.env.PEETMAIL_HEADED === "1";
 
-// Off-screen windows count as occluded to Chromium, which then throttles rendering
-// and timers. Tauri's own feature flags are repeated because this env var replaces them.
+// The app passes these to WebView2 (PEETMAIL_WEBVIEW2_ARGS), replacing Tauri's own, so
+// those are repeated: no mini menu or SmartScreen, autoplay allowed.
+const TAURI_DEFAULT_FEATURES = "msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+const BASE_BROWSER_ARGS = "--autoplay-policy=no-user-gesture-required";
+// Off-screen windows count as occluded to Chromium, which then throttles rendering and timers.
 const HEADLESS_BROWSER_ARGS = [
-  "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
   "--disable-background-timer-throttling",
 ].join(" ");
+
+function browserArgs(cdpPort: number, headed: boolean): string {
+  const features = headed ? TAURI_DEFAULT_FEATURES : `${TAURI_DEFAULT_FEATURES},CalculateNativeWinOcclusion`;
+  return [`--remote-debugging-port=${cdpPort}`, `--disable-features=${features}`, BASE_BROWSER_ARGS, ...(headed ? [] : [HEADLESS_BROWSER_ARGS])].join(" ");
+}
 
 export function testEnv({
   fake,
@@ -143,7 +157,7 @@ export function testEnv({
     PEETMAIL_DOWNLOAD_DIR: join(dataDir, "downloads"),
     // Own WebView2 profile, so a running copy of the real app can't collide with tests.
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, "webview2"),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort}${headed ? "" : " " + HEADLESS_BROWSER_ARGS}`,
+    PEETMAIL_WEBVIEW2_ARGS: browserArgs(cdpPort, headed),
   };
 }
 
@@ -152,15 +166,79 @@ export async function waitForCdp(
   { timeoutMs = 30_000, proc }: { timeoutMs?: number; proc?: ReturnType<typeof spawnType> } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
+  // What the port last said, for the error: nothing listening, or which targets.
+  let seen = "nothing listening";
   while (Date.now() < deadline) {
     if (proc && proc.exitCode !== null) throw new Error(`app exited with code ${proc.exitCode} before WebView2 came up`);
     try {
       const targets: { type: string; url: string }[] = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
       if (targets.some((t) => t.type === "page" && /tauri\.localhost|localhost:1420/.test(t.url))) return;
+      seen = `targets: ${JSON.stringify(targets.map((t) => `${t.type} ${t.url}`))}`;
     } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`WebView2 DevTools endpoint on port ${port} did not come up within ${timeoutMs}ms`);
+  throw new Error(`WebView2 DevTools endpoint on port ${port} did not come up within ${timeoutMs}ms (${seen})`);
+}
+
+/** The end of a text file, or a note that it isn't there. */
+function tail(path: string, lines = 30): string {
+  try {
+    const all = readFileSync(path, "utf8").split(/\r?\n/);
+    // A Rust panic's message comes before a long backtrace: show it, not just the end.
+    const panic = all.findIndex((l) => l.includes("panicked at"));
+    const head = panic >= 0 && panic < all.length - lines ? [...all.slice(panic, panic + 4), "..."] : [];
+    return [...head, ...all.slice(-lines)].join("\n").trim() || "(empty)";
+  } catch {
+    return "(missing)";
+  }
+}
+
+/** Everything that might say why the app didn't come up (shown in the CI log). */
+function launchDiagnostics(dataDir: string, logPath: string, proc: ReturnType<typeof spawnType>): string {
+  const logsDir = join(dataDir, "logs");
+  const appLogs = existsSync(logsDir) ? readdirSync(logsDir).map((f) => `--- ${f}\n${tail(join(logsDir, f))}`).join("\n") : "(no logs dir)";
+  const profile = join(dataDir, "webview2");
+  return [
+    `exe: ${EXE} (exists: ${existsSync(EXE)}), pid ${proc.pid}, still running: ${proc.exitCode === null}`,
+    `WebView2 profile created: ${existsSync(profile)}`,
+    `--- stdout/stderr (${logPath})\n${tail(logPath)}`,
+    appLogs,
+    webview2Diagnostics(profile),
+  ].join("\n");
+}
+
+/**
+ * Whether WebView2 got (and honoured) --remote-debugging-port: the profile's contents, the
+ * port file it writes when debugging is on, the browser processes' command lines, and any
+ * Edge/WebView2 policies (a machine policy can switch remote debugging off).
+ */
+function webview2Diagnostics(profile: string): string {
+  const out: string[] = [];
+  const list = (dir: string, depth: number, indent = ""): void => {
+    if (depth < 0 || !existsSync(dir)) return;
+    for (const f of readdirSync(dir).slice(0, 25)) {
+      out.push(`${indent}${f}`);
+      try {
+        if (statSync(join(dir, f)).isDirectory()) list(join(dir, f), depth - 1, indent + "  ");
+      } catch {}
+    }
+  };
+  out.push("--- WebView2 profile");
+  list(profile, 1);
+  const portFile = join(profile, "EBWebView", "DevToolsActivePort");
+  out.push(`DevToolsActivePort: ${existsSync(portFile) ? readFileSync(portFile, "utf8").replace(/\s+/g, " ") : "(none: debugging not on)"}`);
+  const ps = (cmd: string) =>
+    spawnSync("powershell", ["-NoProfile", "-Command", cmd], { encoding: "utf8", timeout: 15_000 }).stdout?.trim() || "(none)";
+  const name = profile.replace(/'/g, "''");
+  out.push(
+    "--- msedgewebview2 processes for this profile",
+    ps(
+      `Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*${name}*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.CommandLine.Substring(0, [Math]::Min(1500, $_.CommandLine.Length)) }`,
+    ),
+    "--- Edge / WebView2 policies",
+    ps(`Get-ChildItem -Recurse 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge','HKCU:\\SOFTWARE\\Policies\\Microsoft\\Edge' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name; ($_ | Get-ItemProperty | Out-String).Trim() }`),
+  );
+  return out.join("\n");
 }
 
 export async function connect(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
@@ -251,10 +329,13 @@ export async function launchApp({ fake, dataDir, cdpPort, syncIntervalSecs, undo
   try {
     await waitForCdp(cdpPort, { timeoutMs: dev ? 300_000 : 30_000, proc: detached ? undefined : proc });
   } catch (e) {
+    const why = detached ? "" : `\n${launchDiagnostics(dataDir, logPath, proc)}`;
     killTree(proc.pid);
-    throw e;
+    throw new Error(`${e instanceof Error ? e.message : String(e)}${why}`);
   }
   const { browser, page } = await connect(cdpPort);
+  // A hidden test window: same layout on any screen. A visible one keeps its real size.
+  if (!(headed ?? DEFAULT_HEADED)) await page.setViewportSize(TEST_VIEWPORT);
   await page.waitForLoadState("domcontentloaded");
   await page.locator("body").waitFor();
   await waitForKeyboard(page);

@@ -134,6 +134,12 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         .decorations(false)
         .shadow(true)
         .background_color(tauri::window::Color(38, 38, 42, 255));
+    // Tests: WebView2's browser arguments (the DevTools port), set on the window itself.
+    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS can't be relied on: whether WebView2 lets it
+    // override the app's own arguments varies (on CI it never did).
+    if let Some(args) = testenv::get("PEETMAIL_WEBVIEW2_ARGS") {
+        builder = builder.additional_browser_args(&args);
+    }
     builder = if minimized && !headless {
         builder.visible(false).center()
     } else if headless {

@@ -92,3 +92,14 @@ test("sending without a recipient explains why", async ({ inbox: page }) => {
   await expect(page.getByTestId("toast")).toContainText("add at least one recipient");
   await expect(page.getByTestId("composer")).toBeVisible();
 });
+
+test("Ctrl+Enter sends even while address suggestions are showing", async ({ inbox: page, fake }) => {
+  await page.keyboard.press("c");
+  const to = page.getByTestId("compose-to");
+  await to.pressSequentially("priya@fabrikam.io");
+  await expect(page.getByTestId("contact-suggestions")).toBeVisible(); // the moment a quick Ctrl+Enter lands in
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByTestId("composer")).toHaveCount(0);
+  await expect.poll(() => sentOfKind(fake, "new").length, { timeout: 10_000 }).toBe(1);
+  expect(sentOfKind(fake, "new")[0].to).toEqual([{ emailAddress: { address: "priya@fabrikam.io" } }]);
+});
