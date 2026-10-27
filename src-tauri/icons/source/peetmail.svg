@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#35353c"/><stop offset="1" stop-color="#1c1c1f"/></linearGradient>
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bcc1ff"/><stop offset="1" stop-color="#8f97ff"/></linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <!-- Key depth under the bowl and the stem -->
+  <rect x="270" y="252" width="168" height="586" rx="84" fill="#5d64cc"/>
+  <rect x="270" y="252" width="498" height="384" rx="100" fill="#5d64cc"/>
+  <!-- Stem and bowl: a P whose bowl is a key with an envelope on it -->
+  <rect x="270" y="206" width="168" height="586" rx="84" fill="url(#cap)"/>
+  <rect x="270" y="206" width="498" height="384" rx="100" fill="url(#cap)"/>
+  <path d="M 356 304 L 530 432 L 704 304" fill="none" stroke="#1d1d22" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

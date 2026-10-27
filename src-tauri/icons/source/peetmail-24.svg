@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" shape-rendering="geometricPrecision">
+  <!-- Hand-tuned for 24 px: a 1 px key edge, 2 px flap. -->
+  <rect width="24" height="24" rx="5" fill="#2a2a30"/>
+  <rect x="5" y="5" width="4" height="15" rx="2" fill="#5d64cc"/>
+  <rect x="5" y="5" width="13" height="10" rx="2.5" fill="#5d64cc"/>
+  <rect x="5" y="4" width="4" height="15" rx="2" fill="#a9afff"/>
+  <rect x="5" y="4" width="13" height="10" rx="2.5" fill="#a9afff"/>
+  <path d="M8 7 L11.5 9.5 L15 7" fill="none" stroke="#1d1d22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

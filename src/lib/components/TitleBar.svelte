@@ -29,7 +29,18 @@
 
 <div data-testid="titlebar" data-tauri-drag-region class="flex h-9 shrink-0 items-center bg-chrome text-xs text-ink-500 select-none">
   <div data-tauri-drag-region class="flex w-40 items-center gap-2 pl-3">
-    <span class="grid size-5 place-items-center rounded bg-accent text-[11px] font-bold text-chrome">P</span>
+    <!-- The app's mark (src-tauri/icons/source/peetmail.svg without its tile). It ignores the
+         pointer so dragging from it still moves the window. -->
+    <svg data-testid="titlebar-mark" class="pointer-events-none size-5" viewBox="200 202 640 640" aria-hidden="true">
+      <defs>
+        <linearGradient id="titlebar-mark-cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bcc1ff" /><stop offset="1" stop-color="#8f97ff" /></linearGradient>
+      </defs>
+      <rect x="270" y="252" width="168" height="586" rx="84" fill="#5d64cc" />
+      <rect x="270" y="252" width="498" height="384" rx="100" fill="#5d64cc" />
+      <rect x="270" y="206" width="168" height="586" rx="84" fill="url(#titlebar-mark-cap)" />
+      <rect x="270" y="206" width="498" height="384" rx="100" fill="url(#titlebar-mark-cap)" />
+      <path d="M 356 304 L 530 432 L 704 304" fill="none" stroke="#1c1c1f" stroke-width="64" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
     <span data-tauri-drag-region class="text-ink-300">PeetMail</span>
   </div>
 

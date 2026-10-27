@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="geometricPrecision">
+  <!-- Hand-tuned for 16 px: solid colours, no key edge, flap on the pixel grid. -->
+  <rect width="16" height="16" rx="3.5" fill="#2a2a30"/>
+  <rect x="3" y="2" width="3" height="11" rx="1.5" fill="#a9afff"/>
+  <rect x="3" y="2" width="10" height="7" rx="2" fill="#a9afff"/>
+  <path d="M5.25 4.25 L8 6.25 L10.75 4.25" fill="none" stroke="#1d1d22" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

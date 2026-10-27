@@ -23,6 +23,7 @@
     "drive": "node tests/harness/drive.ts",
     "fake-graph": "node tests/harness/fake-graph.ts --verbose",
     "bench:open": "node tests/bench/open-large.ts",
+    "icons": "node scripts/icons.ts",
     "version:check": "node scripts/version.ts check",
     "version:set": "node scripts/version.ts set"
   },

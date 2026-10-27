@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="geometricPrecision">
+  <!-- Hand-tuned for 32 px: a 2 px key edge, 2 px flap. -->
+  <defs>
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bcc1ff"/><stop offset="1" stop-color="#959cff"/></linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="#2a2a30"/>
+  <rect x="7" y="7" width="5" height="19" rx="2.5" fill="#5d64cc"/>
+  <rect x="7" y="7" width="17" height="13" rx="3.5" fill="#5d64cc"/>
+  <rect x="7" y="5" width="5" height="19" rx="2.5" fill="url(#cap)"/>
+  <rect x="7" y="5" width="17" height="13" rx="3.5" fill="url(#cap)"/>
+  <path d="M10.5 9 L15.5 12.5 L20.5 9" fill="none" stroke="#1d1d22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

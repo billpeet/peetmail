@@ -47,6 +47,7 @@ Releases are built by GitHub Actions from a version tag; see [docs/RELEASING.md]
 | `src/lib/keys.svelte.ts` | Keymap registry, the source of truth for shortcuts |
 | `src/lib/mail.svelte.ts` | UI state: threads, selection, view |
 | `src/lib/components/` | Svelte components |
+| `src-tauri/icons/source/` | The app icon's sources: the master SVG and hand-tuned 16/24/32 px versions. `pnpm icons` regenerates `src-tauri/icons/` from them |
 
 App data lives in `%APPDATA%\com.peetsoftware.peetmail\peetmail.db`. Logs go to `%LOCALAPPDATA%\com.peetsoftware.peetmail\logs`. Before a schema migration the database is copied to `peetmail.db.v<schema>.bak` beside it (the last two are kept). Early dev builds used `com.boris.peetmail`; the first start of a current build moves that data across.
 

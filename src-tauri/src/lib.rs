@@ -115,8 +115,16 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
+    // The hand-tuned small icon (scripts/icons.ts): the window icon scaled down to tray size
+    // goes blurry.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+        Ok(icon) => tray = tray.icon(icon),
+        Err(e) => {
+            log::warn!("tray icon: {e}");
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+        }
     }
     tray.build(app)?;
     Ok(())
