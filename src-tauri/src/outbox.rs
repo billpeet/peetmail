@@ -247,8 +247,16 @@ pub fn status(conn: &Connection) -> Result<OutboxStatus> {
 fn take_due(conn: &Connection) -> Result<Option<Row>> {
     let row = conn
         .query_row(
-            "SELECT id, account_id, remote_id, op, attempts FROM outbox
+            // Ops on the same message go out in the order they were made: one waiting out a
+            // retry backoff holds back later ones (flag then unflag must not land reversed).
+            // Sends don't hold anything back: a reply scheduled for tomorrow carries its
+            // original's id, and mustn't stall archiving that message until then.
+            "SELECT id, account_id, remote_id, op, attempts FROM outbox o
              WHERE status = 'pending' AND not_before <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+               AND NOT EXISTS (
+                 SELECT 1 FROM outbox e
+                 WHERE e.account_id = o.account_id AND e.remote_id = o.remote_id AND e.id < o.id
+                   AND e.status IN ('pending', 'inflight') AND json_extract(e.op, '$.type') != 'send')
              ORDER BY id LIMIT 1",
             [],
             |r| Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?)),
@@ -592,6 +600,34 @@ mod tests {
 
             reset_inflight(c)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(now));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_op_in_backoff_holds_back_later_ops_on_the_same_message_but_a_scheduled_reply_does_not() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
+            let flag = enqueue(c, a, Some("m1"), &Op::SetFlag { value: true }, Duration::ZERO)?;
+            let unflag = enqueue(c, a, Some("m1"), &Op::SetFlag { value: false }, Duration::ZERO)?;
+            let other = enqueue(c, a, Some("m2"), &Op::SetRead { value: true }, Duration::ZERO)?;
+            // The flag failed and is waiting out its backoff.
+            c.execute("UPDATE outbox SET not_before = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+60 seconds') WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(other), "another message's op isn't held back");
+            assert!(take_due(c)?.is_none(), "the unflag waits for the flag");
+
+            c.execute("UPDATE outbox SET not_before = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(flag));
+            c.execute("DELETE FROM outbox WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(unflag));
+            c.execute("DELETE FROM outbox WHERE id = ?1", [unflag])?;
+
+            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            enqueue_at(c, a, Some("m3"), &Op::Send(reply), chrono::Utc::now() + chrono::Duration::days(1))?;
+            let archive = enqueue(c, a, Some("m3"), &Op::Move { destination: "archive".into() }, Duration::ZERO)?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(archive), "a reply scheduled for tomorrow doesn't hold up archiving its message");
             Ok(())
         })
         .unwrap();
