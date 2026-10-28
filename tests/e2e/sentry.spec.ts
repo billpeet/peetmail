@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, openSettings } from "./fixtures";
 import { hostname, userInfo } from "node:os";
 import type { Page } from "@playwright/test";
 import type { FakeSentry, SentryEvent } from "../harness/fake-sentry.ts";
@@ -37,7 +37,7 @@ function personal(): string[] {
 
 test("without a DSN nothing is sent, there's no notice, and the setting says so", async ({ inbox: page }) => {
   await expect(page.getByTestId("privacy-notice")).toHaveCount(0);
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "privacy");
   await expect(page.getByTestId("crash-reports")).toBeDisabled();
   await expect(page.getByTestId("crash-reports-off")).toBeVisible();
 });
@@ -80,7 +80,7 @@ test.describe("with crash reports going to a fake Sentry", () => {
   });
 
   test("turning crash reports off stops them straight away", async ({ inbox: page, sentry }) => {
-    await page.keyboard.press("Control+,");
+    await openSettings(page, "privacy");
     await expect(page.getByTestId("crash-reports")).toBeChecked();
     await page.getByTestId("crash-reports").uncheck();
     await page.keyboard.press("Escape");
@@ -92,7 +92,7 @@ test.describe("with crash reports going to a fake Sentry", () => {
     expect(sentry.events()).toEqual([]);
 
     // And back on.
-    await page.keyboard.press("Control+,");
+    await openSettings(page, "privacy");
     await page.getByTestId("crash-reports").check();
     await page.keyboard.press("Escape");
     await throwInWebview(page, "after opting back in");

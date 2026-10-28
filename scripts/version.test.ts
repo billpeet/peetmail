@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canaryVersion, problems, withVersion, type Texts } from "./version.ts";
+import { canaryVersion, changelogFor, problems, withVersion, type Texts } from "./version.ts";
 
 const texts = (v = "0.2.0"): Texts => ({
   packageJson: `{\n  "name": "peetmail",\n  "version": "${v}",\n  "devDependencies": { "x": "1.0.0" }\n}\n`,
@@ -65,5 +65,17 @@ describe("canary version", () => {
   it("rejects a bad run number", () => {
     expect(() => canaryVersion("0.2.0", 0)).toThrow();
     expect(() => canaryVersion("0.2.0", NaN)).toThrow();
+  });
+});
+
+describe("changelog on set", () => {
+  const md = "# What's new\n\n## Unreleased\n\n- A thing\n";
+
+  it("a release takes over the Unreleased lines", () => {
+    expect(changelogFor(md, "0.2.0", "2026-11-03")).toContain("## Unreleased\n\n## 0.2.0 — 2026-11-03\n\n- A thing");
+  });
+
+  it("a canary build leaves the changelog alone", () => {
+    expect(changelogFor(md, "0.2.1-canary.42", "2026-11-03")).toBe(md);
   });
 });

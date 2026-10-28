@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { localAt } from "../harness/calendar-fixtures.ts";
-import { test, expect, showCalendarPane, snap, syncNow } from "./fixtures";
+import { test, expect, showCalendarPane, snap, syncNow, openSettings } from "./fixtures";
 
 const event = (page: Page, remoteId: string) => page.locator(`[data-testid=cal-event][data-remote-id="${remoteId}"]`);
 
@@ -183,7 +183,7 @@ test("the first day of the week is a setting the week view follows", async ({ in
   await page.keyboard.press("2");
   expect(await firstDay()).toMatch(/^Mon/);
 
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "calendar");
   await page.getByTestId("week-start-select").selectOption("0");
   await snap(page, testInfo, "week-start-setting");
   await page.keyboard.press("Escape");

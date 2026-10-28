@@ -484,6 +484,50 @@ pub fn debug_flush_telemetry() -> Result<()> {
     Ok(())
 }
 
+/// Problems the startup health checks found (also sent as `health-changed`).
+#[tauri::command]
+pub fn health_issues() -> Vec<crate::health::Issue> {
+    crate::health::current()
+}
+
+/// What Help → Report a problem can do in this build.
+#[tauri::command]
+pub fn feedback_options() -> crate::support::FeedbackOptions {
+    crate::support::feedback_options()
+}
+
+/// Saves the diagnostics zip to Downloads and shows it. Returns where it went.
+#[tauri::command]
+pub async fn export_diagnostics(app: AppHandle) -> Result<String> {
+    let path = tauri::async_runtime::spawn_blocking(move || crate::support::export_diagnostics(&app))
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))??;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Sends feedback to the developers, with the diagnostics zip if asked.
+#[tauri::command]
+pub async fn send_feedback(app: AppHandle, message: String, email: Option<String>, include_diagnostics: bool) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || crate::support::send_feedback(&app, &message, email.as_deref(), include_diagnostics))
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+const KEY_CHANGELOG_SEEN: &str = "changelog_seen";
+
+/// Changelog lines already shown ("What's new"), by id; None before the first run records them.
+#[tauri::command]
+pub fn changelog_seen(state: State<'_, AppState>) -> Result<Option<Vec<String>>> {
+    let raw = state.db.with(|c| db::get_setting(c, KEY_CHANGELOG_SEEN))?;
+    Ok(raw.map(|r| serde_json::from_str(&r).unwrap_or_default()))
+}
+
+#[tauri::command]
+pub fn set_changelog_seen(state: State<'_, AppState>, ids: Vec<String>) -> Result<()> {
+    let ids: Vec<String> = ids.into_iter().filter(|i| i.len() <= 16 && i.chars().all(|c| c.is_ascii_hexdigit())).collect();
+    state.db.with(|c| db::set_setting(c, KEY_CHANGELOG_SEEN, &serde_json::to_string(&ids)?))
+}
+
 #[tauri::command]
 pub fn dismiss_privacy_notice(state: State<'_, AppState>) -> Result<()> {
     state.db.with(|c| db::set_setting(c, KEY_PRIVACY_NOTICE, "1"))

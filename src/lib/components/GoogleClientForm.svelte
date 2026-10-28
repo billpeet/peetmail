@@ -51,6 +51,6 @@
   {#if error}<p data-testid="google-client-error" class="text-xs text-red-300">{error}</p>{/if}
   <p class="text-xs text-ink-500">
     From a <b>Desktop app</b> OAuth client in Google Cloud with the Gmail API enabled. Google says a desktop client's secret isn't
-    confidential; it's stored on this PC only. Setup steps: docs/PLAN.md, "Google Cloud setup".
+    confidential; it's stored on this PC only. <button type="button" data-testid="google-client-help" onclick={() => mail.openHelp("your-own-app")} class="text-accent hover:underline">How to set one up</button>.
   </p>
 </form>

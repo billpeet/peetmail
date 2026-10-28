@@ -1,5 +1,5 @@
 import { signIn } from "../harness/app.ts";
-import { test, expect, DEFAULT_CONVERSATIONS, snap, waitForSyncIdle } from "./fixtures";
+import { test, expect, DEFAULT_CONVERSATIONS, snap, waitForSyncIdle, openSettings } from "./fixtures";
 
 const WRONG_ID = "99999999-8888-7777-6666-555555555555";
 
@@ -44,7 +44,7 @@ test("a wrong client ID can be cancelled and corrected from the sign-in screen",
 });
 
 test("changing the client ID in settings signs out but keeps the cache", async ({ inbox: page, fake }, testInfo) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "apps");
   const input = page.getByTestId("settings").getByTestId("client-id-input");
   await input.fill(WRONG_ID);
   await expect(page.getByTestId("settings")).toContainText("signs you out");

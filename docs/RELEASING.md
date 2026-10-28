@@ -31,6 +31,7 @@ And these **variables** (Settings → Secrets and variables → Actions → Vari
 | Variable | What |
 |---|---|
 | `PEETMAIL_SENTRY_DSN` | The Sentry project's DSN, compiled into release builds. Unset: no crash reports |
+| `PEETMAIL_FEEDBACK_EMAIL` | Where Help → Report a problem's "Write an email" goes. Unset: the option is hidden |
 | `SENTRY_ORG` / `SENTRY_PROJECT` | Where uploads go. Default `metroid` / `peetmail` |
 | `PEETMAIL_OTLP_ENDPOINT` | The OTLP/HTTP gateway's base URL (the app adds `/v1/traces` etc.). Unset: no usage telemetry |
 
@@ -40,13 +41,7 @@ The gateway is `https://otlp.biap.cc`: Traefik basic auth in front of Alloy's OT
 
 ### The updater signing key
 
-The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); every installed copy only accepts updates signed by the private half. The key was generated with:
-
-```sh
-pnpm tauri signer generate -w %USERPROFILE%\.peetmail-release\updater.key -p <password>
-```
-
-**Keep the private key and password in a password manager as well as in GitHub.** GitHub secrets can't be read back. If the key is lost, no installed copy can ever update again; everyone would have to reinstall by hand. If it leaks, someone could sign an update, so rotate it: generate a new pair, ship one release signed with the old key that carries the new public key, then switch the secret.
+The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); every installed copy only accepts updates signed by the private half. The private key and its password live in the GitHub secrets and in the password manager, nowhere else. If both were lost, no installed copy could update again. Rotation, and every other credential: [docs/SECRETS.md](SECRETS.md).
 
 ## Canary
 
@@ -60,12 +55,32 @@ Nothing is committed: the canary version only exists in the build.
 
 ## Stable
 
-1. Pick the version (semver) and set it everywhere:
+### Is the canary ready?
+
+A stable release is a canary build that has proved itself. Promote the commit when all of these hold:
+
+- [ ] **Soaked**: it (or a canary with the same changes) has been on the Canary channel for **at least two days**, used daily by you and at least one other tester. A schema migration or a sign-in or sync change wants a week.
+- [ ] **No new crashes**: Sentry (`metroid/peetmail`) has no unresolved issues first seen on canary in that time: search `is:unresolved environment:canary age:-7d`. Anything there is fixed, or understood and judged harmless and resolved with a note.
+- [ ] **No unanswered feedback**: Sentry's **User Feedback** has nothing from canary testers still waiting on a fix meant for this release.
+- [ ] **Telemetry looks normal** in Grafana against the last stable week (metric names as sent; Prometheus shows dots as underscores and adds `_total` to counters):
+  - `http.request.duration` by `http.response.status_code`: no new run of 4xx/5xx for any `url.template`.
+  - `peetmail.update.checks` with `peetmail.outcome="error"`: near zero; and canary installs moved to the new build (the release's `service.version` shows up in fresh data).
+  - `peetmail.health.issues` by `peetmail.health.check`: no new `db_integrity`, and nothing out of line for the rest.
+  - `app.startup.duration`: no step up.
+- [ ] **Updates work**: at least one canary install updated itself to this build ("Restart to update" in the footer) and came back signed in with its mail.
+- [ ] **Migrations** (if `src-tauri/migrations/` changed since the last tag, `git diff --stat v<last>.. -- src-tauri/migrations`): install the last stable release in Windows Sandbox, sign in and sync, then install this build over it. No "mail cache may be damaged" warning, and `peetmail.db.v<n>.bak` sits next to the database.
+- [ ] **Changelog**: every line under `## Unreleased` is true of this build, written for users, and nothing a user would notice is missing. Compare against `git log --oneline v<last>..`.
+- [ ] **Help**: `docs/user/` still describes what the app does (open Help in the canary and skim anything the changelog touches).
+
+Then:
+
+1. Check `CHANGELOG.md`: everything users will notice is under `## Unreleased`, worded for them. Then set the version everywhere:
    ```sh
    pnpm version:set 0.2.0
    git commit -am "Release 0.2.0"
    git push
    ```
+   For a release (not a canary), this also turns the Unreleased lines into `## 0.2.0 — <date>`. That section becomes the GitHub release notes; a tag without one fails.
    This push also builds a canary (`0.2.1-canary.N`), which is expected.
 2. Tag and push the tag:
    ```sh
@@ -73,7 +88,7 @@ Nothing is committed: the canary version only exists in the build.
    git push origin v0.2.0
    ```
    The workflow fails early if the tag doesn't match `package.json`.
-3. When it finishes, the summary links a **draft** release with the installer, `.sig`, symbols, `latest.json` and checksums, and notes generated from the commits since the last tag.
+3. When it finishes, the summary links a **draft** release with the installer, `.sig`, symbols, `latest.json` and checksums. Its notes are the version's changelog section, followed by GitHub's list of commits since the last tag.
 4. Smoke-test the installer (below), edit the notes if you like, and click **Publish release**. Publishing makes it the repo's latest release, which is where the Stable channel reads `releases/latest/download/latest.json`. Within a few hours every stable install offers it.
 
 A tag with a pre-release suffix (`v0.3.0-beta.1`) is drafted as a GitHub pre-release. It's never "latest", so the Stable channel ignores it; share its installer link directly.
@@ -94,5 +109,8 @@ Windows Sandbox (built into Windows 11 Pro: *Turn Windows features on or off →
 - [ ] Open, archive and undo a conversation; send a message to yourself.
 - [ ] Settings → Updates shows the right version and channel.
 - [ ] Update from the previous release: install the previous version, check for updates, restart to update. PeetMail closes, the installer runs without asking, the new version starts, and mail and sign-ins are intact.
+- [ ] No warning banners at the top of the window on a healthy machine.
+- [ ] Help (**F1**) opens; What's new lists this version's changes.
+- [ ] Help → Report a problem: **Send** reaches Sentry's User Feedback with the diagnostics attached, **Write an email** is addressed to the feedback address, and **Export** saves a zip with no addresses or subjects in it.
 - [ ] Close to tray, reopen from the tray, quit with `Ctrl+Q`.
 - [ ] Uninstall from *Settings → Apps*. Data in `%APPDATA%\com.peetsoftware.peetmail` stays unless you tick the option to delete app data.

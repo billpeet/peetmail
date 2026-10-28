@@ -1,4 +1,4 @@
-import { test, expect, snap } from "./fixtures";
+import { test, expect, snap, openSettings } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
@@ -11,7 +11,7 @@ async function addSnippet(page: Page, name: string, body: string) {
 }
 
 async function saveSnippets(page: Page, list: [string, string][]) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   for (const [name, body] of list) await addSnippet(page, name, body);
   await page.getByTestId("snippet-save").click();
   await expect(page.getByTestId("snippet-editor")).toContainText("Saved");
@@ -19,7 +19,7 @@ async function saveSnippets(page: Page, list: [string, string][]) {
 }
 
 test("snippets are made in Settings; duplicate names are refused", async ({ inbox: page }, testInfo) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await addSnippet(page, "thanks", "Thanks!");
   await addSnippet(page, "Thanks", "Again");
   await page.getByTestId("snippet-save").click();
@@ -31,7 +31,7 @@ test("snippets are made in Settings; duplicate names are refused", async ({ inbo
 
   // Saved for good: they're there after reopening Settings.
   await page.keyboard.press("Escape");
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await expect(page.getByTestId("snippet-name")).toHaveCount(2);
   await expect(page.getByTestId("snippet-name").first()).toHaveValue("thanks");
 });

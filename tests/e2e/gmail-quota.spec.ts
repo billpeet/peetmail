@@ -1,16 +1,17 @@
 // Gmail's per-user quota (the fake enforces Google's 250 units/s and 15,000/min, with
 // Google's 403 "Quota exceeded" error).
-import { test, expect, messageBody, row, waitForSyncIdle } from "./fixtures";
+import { test, expect, messageBody, row, waitForSyncIdle, openSettings, showSettingsPage } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { GMAIL_ACCOUNT, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from "../harness/fake-gmail.ts";
 
 test.use({ withGmail: true });
 
 async function startAddingGmail(page: Page) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "apps");
   await page.getByTestId("google-client-id").fill(GOOGLE_CLIENT_ID);
   await page.getByTestId("google-client-secret").fill(GOOGLE_CLIENT_SECRET);
   await page.getByTestId("google-client-save").click();
+  await showSettingsPage(page, "accounts");
   await page.getByTestId("account-add-google").click();
   await expect(page.locator(`[data-testid=account-row][data-email="${GMAIL_ACCOUNT.email}"]`)).toBeVisible({ timeout: 15_000 });
   await page.keyboard.press("Escape");

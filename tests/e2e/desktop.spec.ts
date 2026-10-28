@@ -1,4 +1,4 @@
-import { test, expect, syncNow } from "./fixtures";
+import { test, expect, syncNow, openSettings } from "./fixtures";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
@@ -12,7 +12,7 @@ async function toasts(app: App): Promise<{ title: string; body: string }[]> {
 }
 
 async function setNotify(page: Page, value: string) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "notifications");
   await page.getByTestId("notify-select").selectOption(value);
   await page.keyboard.press("Escape");
 }
@@ -63,7 +63,7 @@ test("closing the window keeps PeetMail running; with that turned off, closing q
   expect(exited(app)).toBe(false);
   await expect(page.getByTestId("sync-status")).toBeAttached(); // the page is still alive
 
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "notifications");
   await page.getByTestId("close-to-tray").uncheck();
   await page.keyboard.press("Escape");
   await page.evaluate(() => (window as any).__TAURI_INTERNALS__.invoke("plugin:window|close", { label: "main" })).catch(() => {});
@@ -71,17 +71,18 @@ test("closing the window keeps PeetMail running; with that turned off, closing q
 });
 
 test("Ctrl+Q quits", async ({ inbox: page, app }) => {
-  await page.keyboard.press("Control+q");
+  // The app can be gone before the key is released, which fails the press itself.
+  await page.keyboard.press("Control+q").catch(() => {});
   await expect.poll(() => exited(app), { timeout: 10_000 }).toBe(true);
 });
 
 test("start with Windows is a setting (kept out of the real registry in tests)", async ({ inbox: page }) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "notifications");
   const box = page.getByTestId("autostart");
   await expect(box).not.toBeChecked();
   await box.check();
   await page.keyboard.press("Escape");
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "notifications");
   await expect(page.getByTestId("autostart")).toBeChecked();
 });
 

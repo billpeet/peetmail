@@ -30,9 +30,13 @@ type App = Awaited<ReturnType<typeof launchApp>>;
 /** The fake update server, plus the file the app writes instead of running an installer. */
 type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp; builtinApps: boolean }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp; builtinApps: boolean; feedbackEmail: string | null; appEnv: Record<string, string> }>({
   /** Act as a release build with PeetMail's own apps built in (the fakes' client IDs). */
   builtinApps: [false, { option: true }],
+  /** The address Help → Report a problem offers to email (`PEETMAIL_FEEDBACK_EMAIL`). */
+  feedbackEmail: [null, { option: true }],
+  /** Any other test knobs for the app (`PEETMAIL_*`, see testenv.rs). */
+  appEnv: [{}, { option: true }],
   /** Send usage telemetry to a fake OTLP collector (`test.use({ withTelemetry: true })`), as `telemetry`. */
   withTelemetry: [false, { option: true }],
   telemetry: async ({ withTelemetry }, use) => {
@@ -92,7 +96,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry, builtinApps }, use, testInfo) => {
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry, builtinApps, feedbackEmail, appEnv }, use, testInfo) => {
     const extraEnv: Record<string, string> = {
       ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
       ...(updates
@@ -103,6 +107,8 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
           }
         : {}),
       ...(sentry ? { PEETMAIL_SENTRY_DSN: sentry.dsn } : {}),
+      ...(feedbackEmail ? { PEETMAIL_FEEDBACK_EMAIL: feedbackEmail } : {}),
+      ...appEnv,
       ...(builtinApps
         ? {
             PEETMAIL_BUILTIN_MS_CLIENT_ID: CLIENT_ID,
@@ -165,6 +171,18 @@ export function inboxConversations(pred: (m: ReturnType<typeof defaultMailbox>[n
 
 /** What the default view (the built-in Inbox tab: everything the default Other split doesn't claim) shows after a fresh sync. */
 export const DEFAULT_CONVERSATIONS = inboxConversations((m) => m.inferenceClassification === "focused");
+
+/** Opens Settings at a page ("accounts", "mail", "calendar", "notifications", "storage", "updates", "privacy", "apps"). */
+export async function openSettings(page: Page, section: string) {
+  await page.keyboard.press("Control+,");
+  await showSettingsPage(page, section);
+}
+
+/** Switches the open Settings dialog to a page. */
+export async function showSettingsPage(page: Page, section: string) {
+  await page.getByTestId(`settings-nav-${section}`).click();
+  await expect(page.getByTestId("settings")).toHaveAttribute("data-page", section);
+}
 
 export async function waitForSyncIdle(page: Page) {
   await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });

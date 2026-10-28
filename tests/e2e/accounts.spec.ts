@@ -1,4 +1,4 @@
-import { test, expect, row, snap, syncNow, waitForSyncIdle } from "./fixtures";
+import { test, expect, row, snap, syncNow, waitForSyncIdle, openSettings } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { WORK_ACCOUNT } from "../harness/fake-pair.ts";
 
@@ -8,7 +8,7 @@ type Pair = Parameters<Parameters<typeof test>[2]>[0]["pair"];
 
 async function addWorkAccount(page: Page, pair: Pair) {
   pair.signInAs("b");
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "accounts");
   await page.getByTestId("account-add").click();
   await expect(page.locator(`[data-testid=account-row][data-email="${WORK_ACCOUNT.mail}"]`)).toBeVisible({ timeout: 15_000 });
   await page.keyboard.press("Escape");
@@ -111,7 +111,7 @@ test("triage acts on the right mailbox, and sync pulls new mail into both", asyn
 
 test("signing one account out takes its mail out of the inbox and keeps the other", async ({ inbox: page, pair }) => {
   await addWorkAccount(page, pair);
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "accounts");
   await page.locator(`[data-testid=account-row][data-email="${WORK_ACCOUNT.mail}"]`).getByTestId("account-signout").click();
   await expect(page.getByTestId("account-row")).toHaveCount(1);
   await page.keyboard.press("Escape");
@@ -123,7 +123,7 @@ test("signing one account out takes its mail out of the inbox and keeps the othe
 
 test("reconnecting an account signs it in again in place; signing in as someone else is refused", async ({ inbox: page, pair }) => {
   await addWorkAccount(page, pair);
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "accounts");
   const work = page.locator(`[data-testid=account-row][data-email="${WORK_ACCOUNT.mail}"]`);
   // Wrong account picked in the browser: refused, nothing changes.
   pair.signInAs("a");

@@ -38,7 +38,9 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tiptap/core": "^3.32.0",
     "@tiptap/extension-placeholder": "^3.32.0",
-    "@tiptap/starter-kit": "^3.32.0"
+    "@tiptap/starter-kit": "^3.32.0",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

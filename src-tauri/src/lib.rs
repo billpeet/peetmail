@@ -11,6 +11,7 @@ mod gcal;
 mod gmail;
 mod gmail_send;
 mod graph;
+mod health;
 mod mail;
 mod meeting_links;
 mod notify;
@@ -22,6 +23,7 @@ mod sanitize;
 mod scrub;
 mod secure;
 mod state;
+mod support;
 mod telemetry;
 mod testenv;
 mod update;
@@ -240,6 +242,7 @@ pub fn run() {
             }
             app.manage(state::AppState::new(db));
             update::init(app.handle());
+            health::start(app.handle());
             create_main_window(app)?;
             telemetry::record_ms("app.startup", started.elapsed().as_secs_f64() * 1000.0, &[]);
             telemetry::start_sampling(app.handle().clone());
@@ -342,6 +345,12 @@ pub fn run() {
             commands::privacy,
             commands::set_crash_reports,
             commands::dismiss_privacy_notice,
+            commands::changelog_seen,
+            commands::set_changelog_seen,
+            commands::feedback_options,
+            commands::health_issues,
+            commands::export_diagnostics,
+            commands::send_feedback,
             commands::report_error,
             commands::set_usage_data,
             commands::ui_events,

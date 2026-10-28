@@ -5,6 +5,11 @@
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import { updates } from "$lib/updates.svelte";
+  import { whatsNew } from "$lib/whatsnew.svelte";
+  import { health } from "$lib/health.svelte";
+  import HealthBanner from "$lib/components/HealthBanner.svelte";
+  import WhatsNew from "$lib/components/WhatsNew.svelte";
+  import Help from "$lib/components/Help.svelte";
   import Setup from "$lib/components/Setup.svelte";
   import ThreadList from "$lib/components/ThreadList.svelte";
   import Reader from "$lib/components/Reader.svelte";
@@ -48,6 +53,16 @@
   // Crash reports are on by default; say so once, with the way to turn them off.
   let privacyNotice = $state(false);
   api.privacy().then((p) => (privacyNotice = (p.configured || p.usageConfigured) && !p.noticeSeen)).catch(() => {});
+  // After an update: the changelog lines not seen yet, once, when nothing else is open.
+  whatsNew.init().catch(() => {});
+  let whatsNewShown = false;
+  $effect(() => {
+    if (!whatsNewShown && mail.account && whatsNew.seen !== null && mail.overlay === null && !mail.composer && whatsNew.fresh.length) {
+      whatsNewShown = true;
+      mail.overlay = "whatsnew";
+    }
+  });
+
   // Which view an action happened in, for its timing (read by the keymap hook in +layout).
   $effect(() => {
     document.body.dataset.view = mail.overlay ?? mail.view;
@@ -55,7 +70,7 @@
   function dismissPrivacyNotice(openSettings: boolean) {
     privacyNotice = false;
     api.dismissPrivacyNotice().catch(() => {});
-    if (openSettings) mail.overlay = "settings";
+    if (openSettings) mail.openSettings("privacy");
   }
 
   function focusSearch() {
@@ -95,6 +110,7 @@
       onSyncStatus((s) => (mail.sync = s)),
       onCalendarChanged(() => calendar.refresh()),
       updates.init(),
+      health.init(),
       onScheduledChanged(() => mail.refreshScheduled()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
@@ -152,9 +168,13 @@
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
+      { id: "app.help.docs", keys: "F1", label: "Help", group: "App", when: () => !mail.composer && mail.overlay !== "docs", run: () => mail.openHelp() },
+      { id: "app.health.dismiss", keys: "", label: "Dismiss warnings", group: "App", when: () => health.visible.length > 0, run: () => health.dismiss() },
+      { id: "app.feedback", keys: "", label: "Report a problem", group: "App", when: () => !mail.composer, run: () => mail.openHelp("report") },
+      { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
-      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
+      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => mail.openSettings() },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
       // The event editor handles Esc itself (it asks before discarding changes).
       { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null && mail.overlay !== "editevent", run: () => {
@@ -338,7 +358,7 @@
             {mail.account.email}
           {/if}
         </span>
-        <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => (mail.overlay = "settings")} class="icon-btn size-6"><SettingsIcon size={14} /></button>
+        <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => mail.openSettings()} class="icon-btn size-6"><SettingsIcon size={14} /></button>
       </span>
     </footer>
   {/if}
@@ -356,7 +376,7 @@
     </div>
   {/if}
 
-  {#if mail.account && privacyNotice}
+  {#if mail.account && privacyNotice && mail.overlay === null}
     <div data-testid="privacy-notice" role="status" class="fixed bottom-10 left-4 z-30 max-w-sm space-y-2 rounded-lg border border-ink-700 bg-ink-900 p-4 text-sm text-ink-300 shadow-xl">
       <p>PeetMail sends crash reports and usage and performance data so problems get found and fixed. Mail, addresses, names and sign-in details are never included.</p>
       <div class="flex justify-end gap-2">
@@ -365,6 +385,8 @@
       </div>
     </div>
   {/if}
+
+  {#if mail.overlay === null && !mail.composer}<HealthBanner />{/if}
 
   {#if mail.error}
     <div data-testid="app-error" class="fixed right-4 bottom-10 max-w-md rounded-md border border-red-900/60 bg-red-950/80 px-3 py-2 text-sm text-red-200 select-text">
@@ -375,6 +397,9 @@
 
 {#if mail.composer}<Composer />{/if}
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
+{#if mail.overlay === "docs"}<Help />{/if}
+{#if mail.overlay === "whatsnew"}<WhatsNew mode="new" />{/if}
+{#if mail.overlay === "changelog"}<WhatsNew mode="all" />{/if}
 {#if mail.overlay === "settings"}<Settings />{/if}
 {#if mail.overlay === "palette"}<Palette />{/if}
 {#if mail.overlay === "event"}<EventDetails />{/if}

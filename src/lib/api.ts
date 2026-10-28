@@ -266,6 +266,8 @@ export const api = {
   privacy: () => invoke<Privacy>("privacy"),
   setCrashReports: (enabled: boolean) => invoke<void>("set_crash_reports", { enabled }),
   dismissPrivacyNotice: () => invoke<void>("dismiss_privacy_notice"),
+  changelogSeen: () => invoke<string[] | null>("changelog_seen"),
+  setChangelogSeen: (ids: string[]) => invoke<void>("set_changelog_seen", { ids }),
   setUsageData: (enabled: boolean) => invoke<void>("set_usage_data", { enabled }),
   uiEvents: (events: import("./perf").UiEvent[]) => invoke<void>("ui_events", { events }),
   reportError: (name: string, message: string, stack: string | null, mechanism: string) =>
@@ -276,7 +278,32 @@ export const api = {
   setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
+  healthIssues: () => invoke<HealthIssue[]>("health_issues"),
+  feedbackOptions: () => invoke<FeedbackOptions>("feedback_options"),
+  /** Saves the diagnostics zip to Downloads; returns its path. */
+  exportDiagnostics: () => invoke<string>("export_diagnostics"),
+  sendFeedback: (message: string, email: string | null, includeDiagnostics: boolean) =>
+    invoke<void>("send_feedback", { message, email, includeDiagnostics }),
 };
+
+/** Something outside PeetMail the startup health checks found (health.rs). */
+export interface HealthIssue {
+  id: "db_integrity" | "disk_space" | "data_dir" | "clock" | "webview";
+  severity: "error" | "warning";
+  title: string;
+  detail: string;
+}
+
+export const onHealthChanged = (cb: (issues: HealthIssue[]) => void): Promise<UnlistenFn> =>
+  listen<HealthIssue[]>("health-changed", (e) => cb(e.payload));
+
+/** What Help → Report a problem can do in this build. */
+export interface FeedbackOptions {
+  /** Feedback can be sent to the developers from the app. */
+  sentry: boolean;
+  /** The address "Prefer email?" writes to, if this build has one. */
+  email: string | null;
+}
 
 export const onMailChanged = (cb: (p: { accountId: number; folderId: number }) => void): Promise<UnlistenFn> =>
   listen<{ accountId: number; folderId: number }>("mail-changed", (e) => cb(e.payload));

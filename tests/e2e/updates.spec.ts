@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, openSettings } from "./fixtures";
 import { readFile } from "node:fs/promises";
 import { SIGNED_VERSION } from "../harness/fake-update.ts";
 import type { Page } from "@playwright/test";
@@ -8,7 +8,7 @@ const installed = (path: string) =>
   readFile(path, "utf8").then((t) => JSON.parse(t) as { version: string; bytes: number }, () => null);
 
 async function openUpdates(page: Page) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "updates");
   await expect(page.getByTestId("update-status")).toBeVisible();
 }
 

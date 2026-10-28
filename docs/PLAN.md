@@ -171,35 +171,9 @@ Deferred from Phase 1:
   - [x] Slice 2: send, reply, reply all, forward. PeetMail builds the RFC 2822 message (encoded headers, plain text + HTML, multipart/related for the quoted original's inline images, multipart/mixed for forwarded attachments); replies carry In-Reply-To/References and Gmail's threadId, forwards start a new thread; messages over 4 MB go through the upload endpoint. Undo send and scheduled send work as for Microsoft (same outbox).
   - [x] Slice 3: Google Calendar (primary calendar). Windowed first sync with singleEvents=true, then the nextSyncToken (410: full resync); recurring masters stored but not listed, instances shown. RSVP patches your attendee entry with sendUpdates=all; quick add creates events through the outbox; Gmail invitations get the RSVP card via the UID in their text/calendar part (looked up with iCalUID, cached per message in `message_invites`). Accounts that signed in before calendar access was requested get a "sign in again" message.
 
-## Entra app registration
+## Your own Entra or Google app
 
-Release builds sign in with PeetMail's own app, so most people never need this. It's for local builds (which have no app built in) and for organisations that block PeetMail's app: register your own and use it from the setup screen ("Use your own app") or Settings → Advanced. It takes about five minutes.
-
-1. Open the [Entra admin center](https://entra.microsoft.com) and go to **App registrations → New registration**.
-   - Name: `PeetMail`
-   - Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**
-   - Redirect URI: platform **Public client/native (mobile & desktop)**, value `http://localhost`. On an existing app, this is **Authentication → Add a platform → Mobile and desktop applications → Custom redirect URIs**. Use exactly `http://localhost`, with no port or path, and don't also register it under Web or SPA.
-2. Under **API permissions**, add these Microsoft Graph delegated permissions: `offline_access`, `openid`, `profile`, `email`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`. PeetMail requests them all at first sign-in, so later phases don't prompt again.
-3. Copy the **Application (client) ID** from the Overview page and paste it into PeetMail's setup screen. You can also bake it in at build time with the env var `PEETMAIL_MS_CLIENT_ID`. To change it later, press `c` on the sign-in screen or open Settings (`Ctrl+,`). Changing it signs you out, because refresh tokens only work with the client ID that issued them. Cached mail is kept.
-
-Things that can trip you up:
-- If you sign in to Entra with only an outlook.com account, it may ask you to create a tenant first. A free tenant works.
-- If your M365 tenant blocks user consent for third-party apps, an admin has to approve the app once.
-- Entra accepts any port on a registered `http://localhost` redirect for desktop apps. PeetMail picks a random free port each time.
-- `AADSTS7000218` (asks for a client secret) means the redirect is registered under Web. `AADSTS9002327` means it's registered under SPA. Move it to Mobile and desktop applications.
-- If the client ID is wrong, the browser shows an error and never redirects back. Press `Esc` in PeetMail to cancel, then `c` to fix the ID.
-
-## Google Cloud setup (Gmail)
-
-As with Entra, release builds have PeetMail's own Google client built in; this is for local builds and for using your own. PeetMail asks for `gmail.modify` (read, label and send; no permanent delete), `calendar.events` (read and write events) and your name and address. A Google account added before calendar support needs signing in again (Settings → Accounts → Add Google account) to grant calendar access.
-
-1. In the [Google Cloud console](https://console.cloud.google.com), create a project (e.g. `PeetMail`).
-2. **APIs & Services → Library**: enable the **Gmail API** and the **Google Calendar API**.
-3. **Google Auth Platform** (the OAuth consent screen): give it a name and your email under Branding; under Audience choose **External** and add your Gmail address as a test user; under Data Access add the scopes `https://www.googleapis.com/auth/gmail.modify` and `https://www.googleapis.com/auth/calendar.events`.
-4. **Publish the app** (Audience → Publish app → In production). Leave it unverified: personal use is exempt from verification. While an app is in Testing, Google expires its refresh tokens after 7 days, so you'd have to sign in again every week.
-5. **Clients → Create client → Desktop app**. Copy the Client ID and Client secret into PeetMail (Settings → Google app, or the setup screen's Gmail option). The secret of a desktop client isn't confidential (Google says so); it stays on this PC.
-
-When you sign in, Google shows "Google hasn't verified this app": choose Advanced → Go to PeetMail. If sign-in starts failing with `invalid_grant` after about a week, the app is still in Testing.
+Release builds sign in with PeetMail's own apps. Registering your own (for local builds, which have none built in, or when an organisation blocks PeetMail's) is described for users in [docs/user/your-own-app.md](user/your-own-app.md), which the app also shows under Help.
 
 ## Risks and open questions
 

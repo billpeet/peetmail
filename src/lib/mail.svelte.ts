@@ -16,6 +16,7 @@ import {
   type QueuedSend,
   type SnoozedThread,
 } from "./api";
+import type { HelpPage } from "./docs";
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
 import { calendar } from "./calendar.svelte";
@@ -31,7 +32,10 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed" | "editevent";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed" | "editevent" | "whatsnew" | "changelog" | "docs";
+
+/** The pages of Settings, in sidebar order. */
+export type SettingsPage = "accounts" | "mail" | "calendar" | "notifications" | "storage" | "updates" | "privacy" | "apps";
 
 export type ComposerState = {
   /** The account it's sent from. */
@@ -115,6 +119,10 @@ class MailStore {
 
   view = $state<View>("list");
   overlay = $state<Overlay>(null);
+  /** The Settings page showing (kept between openings, so Ctrl+, returns to it). */
+  settingsPage = $state<SettingsPage>("accounts");
+  /** The Help page showing (kept between openings, like Settings). */
+  helpPage = $state<HelpPage>("getting-started");
   thread = $state.raw<MessageRow[]>([]);
   /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
   threadFor = $state<string | null>(null);
@@ -183,6 +191,18 @@ class MailStore {
     if (this.search !== null) return { folderId: null, query: this.search, split: null };
     // No folder: the unified inbox of every signed-in account.
     return { folderId: null, query: "", split: this.splitIndex };
+  }
+
+  /** Opens Help (the user docs), at `page` if given. */
+  openHelp(page?: HelpPage) {
+    if (page) this.helpPage = page;
+    this.overlay = "docs";
+  }
+
+  /** Opens Settings, at `page` if given (else where it was last left). */
+  openSettings(page?: SettingsPage) {
+    if (page) this.settingsPage = page;
+    this.overlay = "settings";
   }
 
   async init() {
@@ -625,9 +645,9 @@ class MailStore {
 
   // ---------- compose ----------
 
-  compose() {
+  compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: "", cc: "", subject: "", body: "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */

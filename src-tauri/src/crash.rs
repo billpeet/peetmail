@@ -97,7 +97,7 @@ pub fn release() -> String {
     format!("peetmail@{}", env!("CARGO_PKG_VERSION"))
 }
 
-fn environment() -> &'static str {
+pub fn environment() -> &'static str {
     option_env!("PEETMAIL_CHANNEL").filter(|c| !c.is_empty()).unwrap_or("dev")
 }
 

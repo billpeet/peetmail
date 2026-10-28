@@ -67,7 +67,8 @@
     <p class="text-xs text-amber-300">Changing the client ID signs you out. Cached mail is kept and comes back when you sign in again.</p>
   {:else}
     <p class="text-xs text-ink-500">
-      Overview page of the app in Entra. Setup steps are in docs/PLAN.md under "Entra app registration".
+      Overview page of the app in Entra.
+      <button type="button" data-testid="client-id-help" onclick={() => mail.openHelp("your-own-app")} class="text-accent hover:underline">How to register one</button>.
       {#if oncancel}<kbd>Esc</kbd> to cancel.{/if}
     </p>
   {/if}
