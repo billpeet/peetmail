@@ -23,6 +23,10 @@ const MIGRATIONS: &[&str] = &[
 
 pub struct Db {
     conn: Mutex<Connection>,
+    /// The file, for checks that use their own connection (None in memory).
+    path: Option<std::path::PathBuf>,
+    /// The schema this run migrated from, if it migrated (health.rs checks the result).
+    migrated_from: Option<i64>,
 }
 
 /// Pre-migration backups kept next to the database (`peetmail.db.v<schema>.bak`).
@@ -42,10 +46,22 @@ impl Db {
                  Install the latest PeetMail to open it."
             )));
         }
-        if version > 0 && version < known {
+        let migrating = version > 0 && version < known;
+        if migrating {
             backup_before_migrating(&conn, path, version);
         }
-        Self::init(conn)
+        let mut db = Self::init(conn)?;
+        db.path = Some(path.to_path_buf());
+        db.migrated_from = migrating.then_some(version);
+        Ok(db)
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn migrated_from(&self) -> Option<i64> {
+        self.migrated_from
     }
 
     #[cfg(test)]
@@ -61,7 +77,7 @@ impl Db {
              PRAGMA temp_store = MEMORY;",
         )?;
         migrate(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), path: None, migrated_from: None })
     }
 
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
@@ -933,6 +949,7 @@ mod tests {
         }
 
         let db = Db::open(&path).unwrap();
+        assert_eq!(db.migrated_from(), Some(3), "the health check looks at migrated databases");
         drop(db);
 
         assert_eq!(user_version(&path), MIGRATIONS.len() as i64);
@@ -946,8 +963,8 @@ mod tests {
     fn new_and_current_databases_are_not_backed_up() {
         let tmp = TempDir::new("current");
         let path = tmp.0.join("peetmail.db");
-        drop(Db::open(&path).unwrap());
-        drop(Db::open(&path).unwrap());
+        assert_eq!(Db::open(&path).unwrap().migrated_from(), None, "a new database isn't a migration");
+        assert_eq!(Db::open(&path).unwrap().migrated_from(), None);
         assert!(backups(&tmp.0).is_empty());
     }
 

@@ -278,12 +278,24 @@ export const api = {
   setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
+  healthIssues: () => invoke<HealthIssue[]>("health_issues"),
   feedbackOptions: () => invoke<FeedbackOptions>("feedback_options"),
   /** Saves the diagnostics zip to Downloads; returns its path. */
   exportDiagnostics: () => invoke<string>("export_diagnostics"),
   sendFeedback: (message: string, email: string | null, includeDiagnostics: boolean) =>
     invoke<void>("send_feedback", { message, email, includeDiagnostics }),
 };
+
+/** Something outside PeetMail the startup health checks found (health.rs). */
+export interface HealthIssue {
+  id: "db_integrity" | "disk_space" | "data_dir" | "clock" | "webview";
+  severity: "error" | "warning";
+  title: string;
+  detail: string;
+}
+
+export const onHealthChanged = (cb: (issues: HealthIssue[]) => void): Promise<UnlistenFn> =>
+  listen<HealthIssue[]>("health-changed", (e) => cb(e.payload));
 
 /** What Help → Report a problem can do in this build. */
 export interface FeedbackOptions {

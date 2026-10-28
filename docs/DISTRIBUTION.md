@@ -12,7 +12,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
 | 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
 | 5 Built-in sign-in apps | Microsoft done (app registered, secret set); Google waits for its client ID and secret |
-| 6 Support and upkeep | In progress: secrets inventory, Dependabot, changelog and What's new, user docs done; the rest planned below |
+| 6 Support and upkeep | Done: secrets inventory, Dependabot, changelog and What's new, user docs and Help, diagnostics and feedback, startup health checks, release checklist |
 
 ## Decisions
 
@@ -174,7 +174,7 @@ Planned items still open: per-account correlation (`account.ref`) isn't needed, 
 
 Tests: Rust for the migration and for signing out only one app's accounts; E2E with a debug-only stand-in for the built-in IDs (`PEETMAIL_BUILTIN_*`): local builds still ask for a client ID; with built-in apps, Microsoft and Gmail sign in with no setup; your own app lives under Advanced and saving it signs nobody out; and with short-lived tokens, a refresh after setting a different own-app ID still uses the account's built-in app (the fake rejects any other ID, so the old global client would fail it).
 
-## Stage 6: support and upkeep (in progress)
+## Stage 6: support and upkeep (done)
 
 Agreed plan, in order. The first-run privacy notice is already done (Stages 3 and 4).
 
@@ -184,8 +184,8 @@ Agreed plan, in order. The first-run privacy notice is already done (Stages 3 an
 4. **User docs** (done; Help is `Help.svelte`, opened with F1; Settings was restructured into pages alongside it) in `docs/user/` (getting started incl. SmartScreen, updates and channels, privacy, your own sign-in app, troubleshooting), rendered by GitHub and compiled into the app's Help view, so they match the installed version and work offline. Markdown is rendered through a sanitiser. AGENTS.md: docs change in the same commit as the behaviour. Keyboard shortcuts stay in the `?` overlay (generated from the keymap).
 5. **Diagnostics export** (done; `src-tauri/src/support.rs`): Help → Report a problem → Export writes `PeetMail-diagnostics-<version>-<time>.zip` to Downloads: `summary.json` (app version, channel, install ID, Windows version from the registry, WebView2 version, update and privacy status, DB schema version, size, `quick_check`, row counts per table, accounts as provider/app/signed-in only, outbox counts by op kind and state, settings with values only for plain switches and numbers, `[set]` for the rest) and the newest log files scrubbed by `scrub.rs`, 2 MB at most. Rust tests check the summary has no addresses, names, split queries or secrets; E2E unzips a real export and checks the mailbox's addresses, names and subjects aren't in it.
 6. **Feedback** (done): Help → Report a problem (also in the palette). The form sends a Sentry `feedback` envelope item (the Rust SDK has no type for it, so `support::feedback_envelope` writes it) through a client made just for it, so it works with crash reports off and the user's words aren't scrubbed (the form says so). It carries the install ID, release and channel, an optional reply address, and the diagnostics zip as an attachment unless unticked. It isn't tied to breadcrumbs; the install ID finds the same install's crash reports. "Prefer email?" opens a draft in PeetMail (or the default mail app with no account) to `PEETMAIL_FEEDBACK_EMAIL` with the version and install ID; builds without the variable hide it, and builds with neither say to export diagnostics and send them to whoever gave you PeetMail. E2E covers all three against the fake Sentry.
-7. **Startup health checks**, each a clear banner plus a telemetry count: DB integrity after a migration, low disk space, data folder not writable, clock badly wrong (sign-ins fail confusingly), WebView2 too old.
-8. **Release checklist** additions in `docs/RELEASING.md`: when a canary is ready to promote to stable (e.g. two days on canary with no new Sentry issues and healthy telemetry), and checking the changelog section and docs before tagging.
+7. **Startup health checks** (done; `src-tauri/src/health.rs`, `HealthBanner.svelte`): at startup and every 6 hours, in the background. The database's `quick_check` after a migration (its own read-only connection, so a big file doesn't stall the app), free space under 500 MB, a write probe in the data folder, the clock against Microsoft Graph's `Date` header (over 5 minutes off; offline means no verdict), and WebView2 older than 120. Each problem is a banner (red for errors, amber for warnings) saying what to do, with Help → Troubleshooting covering each one; dismissing hides it for the session ("Dismiss warnings" in the palette hides them all). Each finding counts `peetmail.health.issues` with `peetmail.health.check`. Measuring and deciding are separate: Rust tests cover the decisions and the real measurements; E2E runs the real checks (the clock against the fake Graph) and, through the debug-only `PEETMAIL_FAKE_HEALTH`, every banner and the telemetry count.
+8. **Release checklist** (done): "Is the canary ready?" in `docs/RELEASING.md`: two days on canary (a week for migrations, sign-in or sync changes), no new Sentry issues or open feedback from canary, telemetry against the last stable week, a canary self-update, the migration path from the last stable in Sandbox, and the changelog and Help read through. The smoke test also covers health banners, Help, What's new and Report a problem.
 
 ## Suggested order
 

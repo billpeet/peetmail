@@ -11,7 +11,8 @@ type Attrs = Record<string, string | number | boolean>;
 
 export type Span = { name: string; traceId: string; spanId: string; parentSpanId?: string; attrs: Attrs; resource: Attrs; durationMs: number };
 export type LogRecord = { body: string; severity: string; traceId?: string; target?: string; resource: Attrs };
-export type Metric = { name: string; unit?: string; resource: Attrs };
+/** `points`: each data point's attributes. */
+export type Metric = { name: string; unit?: string; resource: Attrs; points: Attrs[] };
 
 const plain = (v: AnyValue): string | number | boolean =>
   v.stringValue ?? (v.intValue !== undefined ? Number(v.intValue) : (v.boolValue ?? v.doubleValue ?? ""));
@@ -78,7 +79,12 @@ export async function startFakeOtlp() {
     metrics: (): Metric[] =>
       of("metrics").flatMap((r) =>
         (r.body.resourceMetrics ?? []).flatMap((rm: any) =>
-          (rm.scopeMetrics ?? []).flatMap((sm: any) => (sm.metrics ?? []).map((x: any) => ({ name: x.name, unit: x.unit, resource: attrs(rm.resource?.attributes) }))),
+          (rm.scopeMetrics ?? []).flatMap((sm: any) => (sm.metrics ?? []).map((x: any) => ({
+            name: x.name,
+            unit: x.unit,
+            resource: attrs(rm.resource?.attributes),
+            points: [...(x.sum?.dataPoints ?? []), ...(x.gauge?.dataPoints ?? []), ...(x.histogram?.dataPoints ?? [])].map((p: any) => attrs(p.attributes)),
+          }))),
         ),
       ),
     /** Everything received, as text, for "this must not appear anywhere" checks. */

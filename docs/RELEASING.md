@@ -55,6 +55,25 @@ Nothing is committed: the canary version only exists in the build.
 
 ## Stable
 
+### Is the canary ready?
+
+A stable release is a canary build that has proved itself. Promote the commit when all of these hold:
+
+- [ ] **Soaked**: it (or a canary with the same changes) has been on the Canary channel for **at least two days**, used daily by you and at least one other tester. A schema migration or a sign-in or sync change wants a week.
+- [ ] **No new crashes**: Sentry (`metroid/peetmail`) has no unresolved issues first seen on canary in that time: search `is:unresolved environment:canary age:-7d`. Anything there is fixed, or understood and judged harmless and resolved with a note.
+- [ ] **No unanswered feedback**: Sentry's **User Feedback** has nothing from canary testers still waiting on a fix meant for this release.
+- [ ] **Telemetry looks normal** in Grafana against the last stable week (metric names as sent; Prometheus shows dots as underscores and adds `_total` to counters):
+  - `http.request.duration` by `http.response.status_code`: no new run of 4xx/5xx for any `url.template`.
+  - `peetmail.update.checks` with `peetmail.outcome="error"`: near zero; and canary installs moved to the new build (the release's `service.version` shows up in fresh data).
+  - `peetmail.health.issues` by `peetmail.health.check`: no new `db_integrity`, and nothing out of line for the rest.
+  - `app.startup.duration`: no step up.
+- [ ] **Updates work**: at least one canary install updated itself to this build ("Restart to update" in the footer) and came back signed in with its mail.
+- [ ] **Migrations** (if `src-tauri/migrations/` changed since the last tag, `git diff --stat v<last>.. -- src-tauri/migrations`): install the last stable release in Windows Sandbox, sign in and sync, then install this build over it. No "mail cache may be damaged" warning, and `peetmail.db.v<n>.bak` sits next to the database.
+- [ ] **Changelog**: every line under `## Unreleased` is true of this build, written for users, and nothing a user would notice is missing. Compare against `git log --oneline v<last>..`.
+- [ ] **Help**: `docs/user/` still describes what the app does (open Help in the canary and skim anything the changelog touches).
+
+Then:
+
 1. Check `CHANGELOG.md`: everything users will notice is under `## Unreleased`, worded for them. Then set the version everywhere:
    ```sh
    pnpm version:set 0.2.0
@@ -90,5 +109,8 @@ Windows Sandbox (built into Windows 11 Pro: *Turn Windows features on or off →
 - [ ] Open, archive and undo a conversation; send a message to yourself.
 - [ ] Settings → Updates shows the right version and channel.
 - [ ] Update from the previous release: install the previous version, check for updates, restart to update. PeetMail closes, the installer runs without asking, the new version starts, and mail and sign-ins are intact.
+- [ ] No warning banners at the top of the window on a healthy machine.
+- [ ] Help (**F1**) opens; What's new lists this version's changes.
+- [ ] Help → Report a problem: **Send** reaches Sentry's User Feedback with the diagnostics attached, **Write an email** is addressed to the feedback address, and **Export** saves a zip with no addresses or subjects in it.
 - [ ] Close to tray, reopen from the tray, quit with `Ctrl+Q`.
 - [ ] Uninstall from *Settings → Apps*. Data in `%APPDATA%\com.peetsoftware.peetmail` stays unless you tick the option to delete app data.

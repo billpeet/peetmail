@@ -14,6 +14,7 @@
 //! | PEETMAIL_SYNC_INTERVAL_SECS   | Background sync interval (default 60)                    |
 //! | PEETMAIL_HEADLESS=1           | Window hidden, no taskbar entry, never takes focus       |
 //! | PEETMAIL_DOWNLOAD_DIR         | Attachments and diagnostics save here; Explorer isn't opened |
+//! | PEETMAIL_FAKE_HEALTH          | Health check stand-ins: `disk_free_mb=50;clock_skew_secs=3600;webview=100.0;db_check=…;readonly=1` |
 //! | PEETMAIL_FEEDBACK_EMAIL       | Report a problem's "Prefer email?" address               |
 //! | PEETMAIL_UNDO_SEND_SECS       | Default undo-send delay (a saved setting still wins)     |
 //! | PEETMAIL_OPEN_LOG             | Links the UI opens are appended here, not opened         |

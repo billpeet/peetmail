@@ -64,6 +64,7 @@ pub enum Key {
     View,
     Channel,
     Code,
+    Check,
 }
 
 impl Key {
@@ -90,6 +91,7 @@ impl Key {
             Key::View => "peetmail.view",
             Key::Channel => "peetmail.channel",
             Key::Code => "peetmail.code",
+            Key::Check => "peetmail.health.check",
         }
     }
 }

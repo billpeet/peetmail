@@ -484,6 +484,12 @@ pub fn debug_flush_telemetry() -> Result<()> {
     Ok(())
 }
 
+/// Problems the startup health checks found (also sent as `health-changed`).
+#[tauri::command]
+pub fn health_issues() -> Vec<crate::health::Issue> {
+    crate::health::current()
+}
+
 /// What Help → Report a problem can do in this build.
 #[tauri::command]
 pub fn feedback_options() -> crate::support::FeedbackOptions {

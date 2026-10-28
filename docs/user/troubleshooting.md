@@ -21,6 +21,16 @@
 - **"Windows protected your PC"** when installing: choose **More info → Run anyway**. The installer isn't signed yet.
 - **An update won't install**: **Settings → Updates → Check now** shows what went wrong. Installing the latest from the releases page over the top always works and keeps your data.
 
+## Warnings at the top of the window
+
+PeetMail checks a few things outside itself when it starts, and every few hours after. Each warning says what's wrong; **×** hides it until PeetMail next starts.
+
+- **Your disk is almost full**: PeetMail needs room to save new mail. Free up space (Windows' **Settings → System → Storage** shows what's using it), or keep fewer days of mail under PeetMail's **Settings → Storage**.
+- **Your PC's clock is … slow / fast**: Microsoft and Google turn sign-ins away when the clock is more than a few minutes off, and meeting times look wrong. Turn on **Settings → Time & language → Date & time → Set time automatically** in Windows, then press **Ctrl+R** to sync.
+- **PeetMail can't save to its data folder**: something is stopping PeetMail writing to `%APPDATA%\com.peetsoftware.peetmail`. Antivirus with ransomware protection ("Controlled folder access") is the usual cause: allow PeetMail in it. Otherwise check the folder isn't read-only.
+- **Microsoft Edge WebView2 is out of date**: PeetMail draws its window with WebView2, which normally updates itself. Run Windows Update, or install the **Evergreen** WebView2 Runtime from Microsoft's website. Your IT team may be holding it back.
+- **PeetMail's mail cache may be damaged**: a check after an update found a problem in PeetMail's local copy of your mail. Your mail is safe on the server. First send a report (below) so it can be looked into. To start afresh: quit PeetMail (right-click the tray icon → **Quit PeetMail**), open `%APPDATA%\com.peetsoftware.peetmail`, move every file whose name starts with `peetmail.db` into a new folder there (say, `old`), and start PeetMail again. You'll sign in again and your mail downloads; settings start from scratch. Keep the `old` folder until you're sure: it has a copy from before the update (`peetmail.db.v<number>.bak`).
+
 ## Reporting a problem
 
 Open **Help → Report a problem** (or **Report a problem** in the command palette, **Ctrl+K**). Say what happened and what you expected, and press **Send**. It goes straight to the developers, with your version and install ID; add your email if you'd like a reply. Leave **Include diagnostics** ticked unless you'd rather not: it adds the file described below.

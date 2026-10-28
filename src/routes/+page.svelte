@@ -6,6 +6,8 @@
   import { mail } from "$lib/mail.svelte";
   import { updates } from "$lib/updates.svelte";
   import { whatsNew } from "$lib/whatsnew.svelte";
+  import { health } from "$lib/health.svelte";
+  import HealthBanner from "$lib/components/HealthBanner.svelte";
   import WhatsNew from "$lib/components/WhatsNew.svelte";
   import Help from "$lib/components/Help.svelte";
   import Setup from "$lib/components/Setup.svelte";
@@ -108,6 +110,7 @@
       onSyncStatus((s) => (mail.sync = s)),
       onCalendarChanged(() => calendar.refresh()),
       updates.init(),
+      health.init(),
       onScheduledChanged(() => mail.refreshScheduled()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
@@ -166,6 +169,7 @@
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
       { id: "app.help.docs", keys: "F1", label: "Help", group: "App", when: () => !mail.composer && mail.overlay !== "docs", run: () => mail.openHelp() },
+      { id: "app.health.dismiss", keys: "", label: "Dismiss warnings", group: "App", when: () => health.visible.length > 0, run: () => health.dismiss() },
       { id: "app.feedback", keys: "", label: "Report a problem", group: "App", when: () => !mail.composer, run: () => mail.openHelp("report") },
       { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
@@ -381,6 +385,8 @@
       </div>
     </div>
   {/if}
+
+  {#if mail.overlay === null && !mail.composer}<HealthBanner />{/if}
 
   {#if mail.error}
     <div data-testid="app-error" class="fixed right-4 bottom-10 max-w-md rounded-md border border-red-900/60 bg-red-950/80 px-3 py-2 text-sm text-red-200 select-text">
