@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- In the event editor, room and guest suggestions no longer close under you when you click back into the field straight after removing a room or guest.
 - A message whose send hits a brief network hiccup goes out a second later, instead of waiting up to a minute. Quick changes to one message (flag, then unflag) still reach the server in the order you made them when a connection drops.
 - Snoozed (**g h**) and Scheduled (**g s**) open as lists in the main window instead of pop-ups. In Snoozed, **e** and **#** archive and delete too.
 - The left sidebar lists your mailboxes: Inbox, Done, Sent, Snoozed, Scheduled, All mail and Trash, across all your accounts. **g e**, **g t**, **g a** and **g #** open Done, Sent, All mail and Trash. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it.

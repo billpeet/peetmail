@@ -249,8 +249,10 @@ test("typing over a booked room, or its ×, un-books it", async ({ inbox: page, 
   await page.getByTestId("editor-location-room-remove").click();
   await expect(room).toHaveCount(0);
   await expect(loc).toHaveValue("");
-  // Pick it again, then type something else: no room any more.
+  // Pick it again, then type something else: no room any more. Typing straight after the ×
+  // click, then pausing, used to let the × click's blur close the list under you.
   await loc.pressSequentially("Huddle");
+  await page.waitForTimeout(300);
   await loc.press("Enter");
   await expect(room).toHaveCount(1);
   await loc.press("End");

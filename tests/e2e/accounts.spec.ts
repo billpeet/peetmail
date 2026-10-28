@@ -102,10 +102,10 @@ test("triage acts on the right mailbox, and sync pulls new mail into both", asyn
   await expect(row(page, "work-conv-offsite")).toHaveCount(0);
   await expect.poll(async () => (await pair.second.control("message?id=work-3")).parentFolderId, { timeout: 10_000 }).toBe("AAMkAGI2-archive");
 
-  await pair.second.control("deliver", { from: ["Ana Ruiz", "ana@work.example"], subject: "Lunch Friday?", to: [[WORK_ACCOUNT.displayName, WORK_ACCOUNT.mail]] });
+  await pair.second.control("deliver", { from: ["Ana Ruiz", "ana@work.example"], subject: "Work drinks on Thursday", to: [[WORK_ACCOUNT.displayName, WORK_ACCOUNT.mail]] });
   await pair.control("deliver", { subject: "Home news" });
   await syncNow(page, pair);
-  await expect(page.locator("[data-testid=thread-row]", { hasText: "Lunch Friday?" })).toBeVisible();
+  await expect(page.locator("[data-testid=thread-row]", { hasText: "Work drinks on Thursday" })).toBeVisible();
   await expect(page.locator("[data-testid=thread-row]", { hasText: "Home news" })).toBeVisible();
 });
 
