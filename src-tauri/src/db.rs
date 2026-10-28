@@ -672,13 +672,25 @@ pub fn set_folder(conn: &Connection, id: i64, folder_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Remote id prefix of a local placeholder folder.
+pub const PLACEHOLDER_PREFIX: &str = "wk:";
+
 /// Folder row for a well-known role, creating a local placeholder if it was never synced.
 /// Placeholders use `wk:<role>` as remote id; moves address Graph by well-known name anyway.
 pub fn ensure_local_folder(conn: &Connection, account_id: i64, role: &str, name: &str) -> Result<Folder> {
     if let Some(f) = folder_by_role(conn, account_id, role)? {
         return Ok(f);
     }
-    insert_folder(conn, account_id, &format!("wk:{role}"), role, name)
+    insert_folder(conn, account_id, &format!("{PLACEHOLDER_PREFIX}{role}"), role, name)
+}
+
+/// Gives a placeholder folder its server id once sync finds it, keeping its row (and mail).
+pub fn resolve_placeholder(conn: &Connection, folder_id: i64, remote_id: &str, name: &str) -> Result<Folder> {
+    conn.execute(
+        "UPDATE folders SET remote_id = ?2, name = ?3, delta_link = NULL WHERE id = ?1",
+        params![folder_id, remote_id, name],
+    )?;
+    Ok(conn.query_row(&format!("SELECT {FOLDER_COLS} FROM folders WHERE id = ?1"), [folder_id], folder_from_row)?)
 }
 
 // ---------- recent opens ----------
@@ -1178,6 +1190,24 @@ mod tests {
             assert!(get_body(c, 2)?.is_none());
             assert!(get_body(c, 1)?.is_some());
             assert!(get_body(c, 3)?.is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_placeholder_folder_gets_its_server_id_and_keeps_its_mail() {
+        let (db, a, _) = seed();
+        db.with(|c| {
+            let archive = ensure_local_folder(c, a, "archive", "Archive")?;
+            assert!(archive.remote_id.starts_with(PLACEHOLDER_PREFIX));
+            upsert_message(c, a, archive.id, &msg("m1", "c1", "2026-10-01T10:00:00Z", true))?;
+            set_delta_link(c, archive.id, Some("stale"))?;
+
+            let real = resolve_placeholder(c, archive.id, "AAMk-archive", "Archive")?;
+            assert_eq!((real.id, real.remote_id.as_str(), real.delta_link.as_deref()), (archive.id, "AAMk-archive", None));
+            assert_eq!(folder_by_role(c, a, "archive")?.unwrap().remote_id, "AAMk-archive");
+            assert_eq!(list_threads(c, Scope::Folder(archive.id), &crate::query::compile(""), None, 10)?.len(), 1);
             Ok(())
         })
         .unwrap();

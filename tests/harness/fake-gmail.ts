@@ -2,7 +2,7 @@
 //
 //   /oauth/authorize, /oauth/token      Google-style OAuth (PKCE; secret checked if set)
 //   GET  /gmail/v1/users/me/profile
-//   GET  .../messages?labelIds=&q=after:N&maxResults=&pageToken=
+//   GET  .../messages?labelIds=&q=after:N in:x -in:x&includeSpamTrash=&maxResults=&pageToken=
 //   GET  .../messages/{id}?format=metadata|full
 //   GET  .../messages/{id}/attachments/{attachmentId}
 //   POST .../messages/{id}/modify | trash | untrash
@@ -117,6 +117,8 @@ export function defaultGmail(now = Date.now()): FakeGmailMessage[] {
     { id: "g-6", threadId: "g-thread-trip", labelIds: ["SENT"], internalDate: now - 45 * 60_000, from: me, to: "Kim Park <kim@friends.example>", subject: "Re: Ski trip in January", snippet: "Yes! Send me the link.", text: "Yes! Send me the link." },
     { id: "g-7", threadId: "g-thread-old-archived", labelIds: ["CATEGORY_PERSONAL"], internalDate: now - 20 * h, from: "Bank <no-reply@bank.example>", to: me, subject: "Statement ready", snippet: "Your statement is ready", text: "Your statement is ready" },
     { id: "g-9", threadId: "g-thread-invite", labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL"], internalDate: now - 2 * h, from: "Kim Park <kim@friends.example>", to: me, subject: "Invitation: Team lunch", snippet: "You have been invited to Team lunch", html: "<p>You have been invited to <b>Team lunch</b>.</p>", ics: inviteIcs("lunch-123@google.com") },
+    { id: "g-10", threadId: "g-thread-trashed", labelIds: ["TRASH", "CATEGORY_PERSONAL"], internalDate: now - 22 * h, from: "Bank <no-reply@bank.example>", to: me, subject: "Old offer", snippet: "Limited time", text: "Limited time" },
+    { id: "g-11", threadId: "g-thread-spam", labelIds: ["SPAM"], internalDate: now - 21 * h, from: "Prize <win@spam.example>", to: me, subject: "You won", snippet: "Claim now", text: "Claim now" },
     { id: "g-8", threadId: "g-thread-ancient", labelIds: ["INBOX"], internalDate: now - 400 * 24 * h, from: "Old Friend <old@friends.example>", to: me, subject: "Long ago", snippet: "Remember this?", text: "Remember this?" },
   ];
 }
@@ -361,10 +363,18 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
 
     if (rest === "/messages" && method === "GET") {
       const label = url.searchParams.get("labelIds");
-      const after = Number((url.searchParams.get("q") ?? "").match(/after:(\d+)/)?.[1] ?? 0) * 1000;
+      const q = url.searchParams.get("q") ?? "";
+      const after = Number(q.match(/after:(\d+)/)?.[1] ?? 0) * 1000;
+      // in:/-in: terms, like Gmail's search (in:drafts is the DRAFT label).
+      const inLabel = (name: string) => (name === "drafts" ? "DRAFT" : name.toUpperCase());
+      const terms = [...q.matchAll(/(-?)in:(\w+)/g)].map((t) => ({ not: t[1] === "-", label: inLabel(t[2]) }));
+      // Spam and trash only show when asked for (or named), like Gmail.
+      const spamTrash = url.searchParams.get("includeSpamTrash") === "true" || label === "SPAM" || label === "TRASH";
       const size = Math.min(Number(url.searchParams.get("maxResults") ?? 100), state.config.pageSize);
       const all = [...state.messages.values()]
         .filter((m) => (!label || m.labelIds.includes(label)) && m.internalDate > after)
+        .filter((m) => terms.every((t) => m.labelIds.includes(t.label) !== t.not))
+        .filter((m) => spamTrash || !m.labelIds.some((l) => l === "SPAM" || l === "TRASH"))
         .sort((a, b) => b.internalDate - a.internalDate);
       const start = Number(url.searchParams.get("pageToken") ?? 0);
       const page = all.slice(start, start + size);

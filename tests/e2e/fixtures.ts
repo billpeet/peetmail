@@ -184,6 +184,24 @@ export async function showSettingsPage(page: Page, section: string) {
   await expect(page.getByTestId("settings")).toHaveAttribute("data-page", section);
 }
 
+/**
+ * Conversation ids cached in a folder (by role: inbox, archive, deleteditems...), across
+ * accounts or for the one with `email`. Straight from the app's cache, for folders that
+ * have no view yet.
+ */
+export async function folderConversations(page: Page, role: string, email?: string): Promise<string[]> {
+  return page.evaluate(async ({ role, email }) => {
+    const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+    const boot = await invoke("bootstrap");
+    const out: string[] = [];
+    for (const a of boot.accounts.filter((a: any) => !email || a.email === email)) {
+      const f = (await invoke("list_folders", { accountId: a.id })).find((f: any) => f.role === role);
+      if (f) out.push(...(await invoke("list_threads", { folderId: f.id, limit: 1000 })).map((t: any) => t.conversationId));
+    }
+    return out.sort();
+  }, { role, email });
+}
+
 export async function waitForSyncIdle(page: Page) {
   await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });
 }

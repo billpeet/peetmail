@@ -9,10 +9,10 @@
 //! | SENT                             | sentitems         |
 //! | anything else                    | archive           |
 //!
-//! Sync: the first run lists inbox and sent mail inside the cache window; after that the
-//! History API returns what changed since the last historyId, and each changed message's
-//! metadata is fetched again (its labels say where it now lives). Threads are Gmail's own
-//! threadId. Triage ops become label changes (archive = remove INBOX).
+//! Sync: the first run lists inbox, sent, archived and trashed mail inside the cache window;
+//! after that the History API returns what changed since the last historyId, and each
+//! changed message's metadata is fetched again (its labels say where it now lives). Threads
+//! are Gmail's own threadId. Triage ops become label changes (archive = remove INBOX).
 
 use std::collections::{HashMap, HashSet};
 
@@ -549,19 +549,89 @@ fn snooze_label_key(account_id: i64) -> String {
     format!("gmail_snooze_label:{account_id}")
 }
 
+/// Set once archived and trashed mail has been listed. Accounts that first synced before
+/// PeetMail kept those get them listed once (`backfill`), then history keeps them current.
+fn all_folders_key(account_id: i64) -> String {
+    format!("gmail_all_folders:{account_id}")
+}
+
+/// Archived, trashed and snoozed mail: everything with a folder that isn't inbox or sent
+/// (spam and drafts aren't kept).
+const ARCHIVE_AND_TRASH: &str = "includeSpamTrash=true&q=-in:inbox -in:sent -in:spam -in:drafts";
+/// What a full sync lists, each inside the cache window. Inbox first, so it fills in first.
+const LISTINGS: &[&str] = &["labelIds=INBOX", "labelIds=SENT", ARCHIVE_AND_TRASH];
+
 pub async fn sync_account(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> {
     let start = state.db.with(|c| db::get_setting(c, &history_key(account_id)))?;
-    match start {
-        Some(h) => match incremental(app, state, account_id, &h).await {
-            // Too old (Gmail keeps about a week of history): start over.
-            Err(AppError::Graph { status: 404, .. }) => {
-                log::warn!("gmail history {h} expired for account {account_id}, resyncing");
-                full(app, state, account_id).await
-            }
-            other => other,
-        },
-        None => full(app, state, account_id).await,
+    let Some(h) = start else { return full(app, state, account_id).await };
+    match incremental(app, state, account_id, &h).await {
+        // Too old (Gmail keeps about a week of history): start over.
+        Err(AppError::Graph { status: 404, .. }) => {
+            log::warn!("gmail history {h} expired for account {account_id}, resyncing");
+            return full(app, state, account_id).await;
+        }
+        other => other?,
     }
+    if state.db.with(|c| db::get_setting(c, &all_folders_key(account_id)))?.is_none() {
+        backfill(app, state, account_id).await?;
+    }
+    Ok(())
+}
+
+/// Ids of the messages one listing returns inside the cache window, newest first.
+async fn list_ids(state: &AppState, account_id: i64, listing: &str, after: i64) -> Result<Vec<String>> {
+    // The listing's own q (if any) and the window share one q parameter.
+    let (params, q) = match listing.split_once("q=") {
+        Some((p, q)) => (p.trim_end_matches('&').to_string(), format!("{q} after:{after}")),
+        None => (listing.to_string(), format!("after:{after}")),
+    };
+    let mut ids = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut url = format!("{}/messages?{params}&q={}&maxResults=500", base(), urlencode(&q));
+        if let Some(t) = &token {
+            url.push_str(&format!("&pageToken={}", urlencode(t)));
+        }
+        let page = get(state, account_id, &url).await?;
+        ids.extend(page["messages"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)));
+        match page["nextPageToken"].as_str() {
+            Some(t) => token = Some(t.to_string()),
+            None => return Ok(ids),
+        }
+    }
+}
+
+/// Fetches and stores messages in small chunks, in order, so lists fill in as it goes.
+/// Returns how many fetches failed.
+async fn fetch_and_store(app: &AppHandle, state: &AppState, account_id: i64, ids: &[String]) -> Result<usize> {
+    let mut failed = 0;
+    for chunk in ids.chunks(50) {
+        let fetched = fetch_many(app, account_id, chunk.to_vec()).await;
+        let (changed, f) = store(state, account_id, &fetched)?;
+        failed += f;
+        if changed {
+            changed_event(app, account_id);
+        }
+    }
+    Ok(failed)
+}
+
+/// Lists archived and trashed mail once, for accounts synced before PeetMail kept them.
+async fn backfill(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> {
+    let after = (Utc::now() - Duration::days(state.cache_limits()?.cache_days)).timestamp();
+    let ids = list_ids(state, account_id, ARCHIVE_AND_TRASH, after).await?;
+    let known: HashSet<String> = state.db.with(|c| {
+        let mut stmt = c.prepare("SELECT remote_id FROM messages WHERE account_id = ?1")?;
+        let rows = stmt.query_map([account_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    })?;
+    let new: Vec<String> = ids.into_iter().filter(|id| !known.contains(id)).collect();
+    let failed = fetch_and_store(app, state, account_id, &new).await?;
+    if failed > 0 {
+        return Err(incomplete(failed));
+    }
+    state.db.with(|c| db::set_setting(c, &all_folders_key(account_id), "1"))?;
+    prune(app, state, account_id)
 }
 
 /// Fetches message resources, a few at a time. Missing messages come back as Err(404).
@@ -596,10 +666,10 @@ async fn fetch_many(app: &AppHandle, account_id: i64, ids: Vec<String>) -> Vec<(
 /// A fetched message parsed (its folder role and row), or why its fetch failed.
 type ParsedMessage<'a> = std::result::Result<(Option<&'static str>, MessageUpsert), &'a AppError>;
 
-/// Writes fetched messages into their folders. `only_known_archive`: an archived message
-/// is only stored if it's already local (history also reports label changes on old mail).
+/// Writes fetched messages into their folders. Mail older than the window (history reports
+/// label changes on old mail too) goes again in the prune that ends each sync.
 /// Returns (anything changed, how many fetches failed).
-fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)], only_known_archive: bool) -> Result<(bool, usize)> {
+fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)]) -> Result<(bool, usize)> {
     let snooze = state.db.with(|c| db::get_setting(c, &snooze_label_key(account_id)))?;
     // Parse before taking the database lock: no parsing bug can hold (or poison) it.
     let parsed: Vec<(&String, ParsedMessage<'_>)> =
@@ -625,7 +695,6 @@ fn store(state: &AppState, account_id: i64, fetched: &[(String, Result<Value>)],
                                 changed = true;
                             }
                         }
-                        Some("archive") if only_known_archive && !known => {}
                         Some(role) => {
                             let folder = db::ensure_local_folder(&tx, account_id, role, folder_name(role))?;
                             db::upsert_message(&tx, account_id, folder.id, &m)?;
@@ -666,53 +735,32 @@ async fn full(app: &AppHandle, state: &AppState, account_id: i64) -> Result<()> 
 
     let mut seen: Vec<String> = Vec::new();
     let mut seen_set = HashSet::new();
-    for label in ["INBOX", "SENT"] {
-        let mut token: Option<String> = None;
-        loop {
-            let mut url = format!("{}/messages?labelIds={label}&q=after:{after}&maxResults=500", base());
-            if let Some(t) = &token {
-                url.push_str(&format!("&pageToken={}", urlencode(t)));
-            }
-            let page = get(state, account_id, &url).await?;
-            for m in page["messages"].as_array().into_iter().flatten() {
-                if let Some(id) = m["id"].as_str()
-                    && seen_set.insert(id.to_string()) {
-                    seen.push(id.to_string());
-                }
-            }
-            match page["nextPageToken"].as_str() {
-                Some(t) => token = Some(t.to_string()),
-                None => break,
+    for listing in LISTINGS {
+        for id in list_ids(state, account_id, listing, after).await? {
+            if seen_set.insert(id.clone()) {
+                seen.push(id);
             }
         }
     }
-
-    // Small chunks, newest first, so the inbox fills in as it goes.
-    let mut failed = 0;
-    for chunk in seen.chunks(50) {
-        let fetched = fetch_many(app, account_id, chunk.to_vec()).await;
-        let (changed, f) = store(state, account_id, &fetched, false)?;
-        failed += f;
-        if changed {
-            changed_event(app, account_id);
-        }
-    }
+    let failed = fetch_and_store(app, state, account_id, &seen).await?;
     if failed > 0 {
         return Err(incomplete(failed));
     }
 
-    // A resync after expired history: drop local inbox/sent mail the server no longer has there.
+    // A resync after expired history: drop local mail the server no longer has in the window
+    // (snoozed mail is left to the snooze bookkeeping).
     state.db.with(|c| {
         let busy = outbox::busy_remote_ids(c, account_id)?;
         let mut stmt = c.prepare(
             "SELECT m.remote_id FROM messages m JOIN folders f ON f.id = m.folder_id
-             WHERE m.account_id = ?1 AND f.role IN ('inbox', 'sentitems')",
+             WHERE m.account_id = ?1 AND f.role IN ('inbox', 'sentitems', 'archive', 'deleteditems')",
         )?;
         let local: Vec<String> = stmt.query_map([account_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
         for id in local.iter().filter(|id| !seen_set.contains(*id) && !busy.contains(*id)) {
             c.execute("DELETE FROM messages WHERE account_id = ?1 AND remote_id = ?2", rusqlite::params![account_id, id])?;
         }
-        db::set_setting(c, &history_key(account_id), &history)
+        db::set_setting(c, &history_key(account_id), &history)?;
+        db::set_setting(c, &all_folders_key(account_id), "1")
     })?;
     prune(app, state, account_id)?;
     Ok(())
@@ -769,7 +817,7 @@ async fn incremental(app: &AppHandle, state: &AppState, account_id: i64, start: 
     let mut failed = 0;
     for chunk in to_fetch.chunks(50) {
         let fetched = fetch_many(app, account_id, chunk.to_vec()).await;
-        let (changed, f) = store(state, account_id, &fetched, true)?;
+        let (changed, f) = store(state, account_id, &fetched)?;
         any |= changed;
         failed += f;
     }

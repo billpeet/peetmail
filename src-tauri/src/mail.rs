@@ -155,9 +155,12 @@ pub async fn prefetch_bodies(app: AppHandle) {
     while tasks.join_next().await.is_some() {}
 }
 
-/// Folders kept in sync. Sent is synced so threads show your replies; Archive and
-/// Deleted Items only exist locally as move targets.
-const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sent Items")];
+/// Folders kept in sync, inside the mail window. Sent is synced so threads show your
+/// replies; Archive and Deleted Items back the Done and Trash views.
+const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sent Items"), ("archive", "Archive"), ("deleteditems", "Deleted Items")];
+
+/// Folders a mailbox may not have (some Exchange mailboxes have no Archive): a 404 skips them.
+const OPTIONAL_FOLDERS: &[&str] = &["archive"];
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
     use crate::telemetry::{attr, traced, Key};
@@ -171,7 +174,14 @@ async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> R
         return Ok(());
     }
     for (role, name) in SYNCED_FOLDERS {
-        let folder = ensure_folder(state, account.id, role, name).await?;
+        let folder = match ensure_folder(state, account.id, role, name).await {
+            Ok(f) => f,
+            Err(AppError::Graph { status: 404, .. }) if OPTIONAL_FOLDERS.contains(role) => {
+                log::info!("no {role} folder for account {}, not syncing it", account.id);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let attrs = vec![crate::telemetry::attr(crate::telemetry::Key::Folder, *role)];
         crate::telemetry::traced("sync.folder", attrs, sync_folder(app, state, account.id, &folder)).await?;
     }
@@ -182,10 +192,14 @@ async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> R
     Ok(())
 }
 
-/// The folder row for a well-known Graph folder, fetching its id on first use.
+/// The folder row for a well-known Graph folder, fetching its id on first use. A local
+/// placeholder (`wk:<role>`, made when mail was archived or deleted before the folder was
+/// synced) gets its real id in place, so the mail already in it stays put.
 async fn ensure_folder(state: &AppState, account_id: i64, role: &str, default_name: &str) -> Result<Folder> {
-    if let Some(f) = state.db.with(|c| db::folder_by_role(c, account_id, role))? {
-        return Ok(f);
+    let existing = state.db.with(|c| db::folder_by_role(c, account_id, role))?;
+    if let Some(f) = &existing
+        && !f.remote_id.starts_with(db::PLACEHOLDER_PREFIX) {
+        return Ok(f.clone());
     }
     let f = graph_get(
         state,
@@ -196,7 +210,10 @@ async fn ensure_folder(state: &AppState, account_id: i64, role: &str, default_na
     .await?;
     let remote_id = f["id"].as_str().ok_or_else(|| AppError::Other(format!("{role} folder has no id")))?;
     let name = f["displayName"].as_str().unwrap_or(default_name);
-    state.db.with(|c| db::insert_folder(c, account_id, remote_id, role, name))
+    state.db.with(|c| match &existing {
+        Some(placeholder) => db::resolve_placeholder(c, placeholder.id, remote_id, name),
+        None => db::insert_folder(c, account_id, remote_id, role, name),
+    })
 }
 
 fn initial_delta_url(folder: &Folder, since: Option<&str>, meeting_field: bool) -> String {
