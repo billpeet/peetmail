@@ -1,7 +1,7 @@
 <script lang="ts">
   // Every keyboard shortcut, by group, straight from the keymap registry (so it can't
   // drift from what the keys do). Used by the ? overlay and Help.
-  import { keymap, displayKeys } from "$lib/keys.svelte";
+  import { keymap, displayKeys } from "#lib/keys.svelte.js";
 
   let { columns = 2 }: { columns?: 1 | 2 } = $props();
 

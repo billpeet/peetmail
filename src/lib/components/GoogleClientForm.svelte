@@ -1,7 +1,7 @@
 <script lang="ts">
   // Google OAuth client (a "Desktop app" client in Google Cloud), shared by Setup and Settings.
-  import { api } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
+  import { api } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let { onsaved }: { onsaved?: () => void } = $props();
 

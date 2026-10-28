@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import { api } from "$lib/api";
+  import { api } from "#lib/api.js";
 
   /** Last measured content height per message, so reopening reserves the right space at once. */
   const measured = new Map<number, number>();
@@ -27,9 +27,9 @@
   // loads (CSP inherited by srcdoc), no IPC access. The parent still handles link
   // clicks and forwards keystrokes so shortcuts keep working after clicking into mail.
   import { untrack } from "svelte";
-  import { getBody, peekBody } from "$lib/bodies";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { getBody, peekBody } from "#lib/bodies.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   // `images`: fetch remote images through Rust and inline them (press i in the reader).
   let { messageId, images = false }: { messageId: number; images?: boolean } = $props();

@@ -5,12 +5,12 @@
   // whether you mean just it or the whole series. Esc or the backdrop closes it.
   import { onMount } from "svelte";
   import { Bell, CalendarClock, Check, CircleHelp, Clock, ExternalLink, Lock, MapPin, Pencil, Repeat, Tag, Trash2, Users, Video, X } from "@lucide/svelte";
-  import { api, type Attendee, type EventDetail, type Rsvp } from "$lib/api";
-  import { calendar, eventTimes } from "$lib/calendar.svelte";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
-  import { senderName } from "$lib/format";
-  import { describeRecurrence } from "$lib/recurrence";
+  import { api, type Attendee, type EventDetail, type Rsvp } from "#lib/api.js";
+  import { calendar, eventTimes } from "#lib/calendar.svelte.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import { senderName } from "#lib/format.js";
+  import { describeRecurrence } from "#lib/recurrence.js";
   import HtmlView from "./HtmlView.svelte";
 
   const e = $derived(calendar.selected);

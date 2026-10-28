@@ -3,11 +3,11 @@
   // they change; the offline cache has a Save button, because widening it resyncs.
   import { onMount } from "svelte";
   import { Bell, CalendarDays, HardDrive, KeyRound, Mail, RefreshCw, ShieldCheck, Users } from "@lucide/svelte";
-  import { api } from "$lib/api";
-  import type { Privacy, UpdateChannel } from "$lib/api";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail, type SettingsPage } from "$lib/mail.svelte";
-  import { updates, updateText } from "$lib/updates.svelte";
+  import { api } from "#lib/api.js";
+  import type { Privacy, UpdateChannel } from "#lib/api.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail, type SettingsPage } from "#lib/mail.svelte.js";
+  import { updates, updateText } from "#lib/updates.svelte.js";
   import AccountsSection from "./AccountsSection.svelte";
   import ClientIdForm from "./ClientIdForm.svelte";
   import GoogleClientForm from "./GoogleClientForm.svelte";

@@ -2,8 +2,8 @@
   // Messages scheduled to send later (g s), in the main area like a mailbox. Enter reopens
   // one to edit (it stops being scheduled until you send or schedule it again); # cancels it.
   import { onMount } from "svelte";
-  import { keymap } from "$lib/keys.svelte";
-  import { formatSendAt, mail } from "$lib/mail.svelte";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { formatSendAt, mail } from "#lib/mail.svelte.js";
 
   let active = $state(0);
   const items = $derived(mail.scheduled);

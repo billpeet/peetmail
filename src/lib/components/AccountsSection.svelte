@@ -1,7 +1,7 @@
 <script lang="ts">
   // Settings > Accounts: every mailbox in the unified inbox, add another, sign one out.
-  import { api, type Provider } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
+  import { api, type Provider } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let busy = $state(false);
   let error = $state<string | null>(null);

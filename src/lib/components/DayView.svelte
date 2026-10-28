@@ -3,12 +3,12 @@
   // and a now-line. Scrolls to the working part of the day.
   import { onMount, tick } from "svelte";
   import { ChevronLeft, ChevronRight, Plus } from "@lucide/svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { mail } from "#lib/mail.svelte.js";
   import JoinChip from "./JoinChip.svelte";
-  import { calendar, eventTimes } from "$lib/calendar.svelte";
-  import { layoutDay } from "$lib/eventLayout";
-  import { eventTone, TONE_CLASSES } from "$lib/eventTone";
-  import type { CalendarEvent } from "$lib/api";
+  import { calendar, eventTimes } from "#lib/calendar.svelte.js";
+  import { layoutDay } from "#lib/eventLayout.js";
+  import { eventTone, TONE_CLASSES } from "#lib/eventTone.js";
+  import type { CalendarEvent } from "#lib/api.js";
 
   let { onselect }: { onselect?: (e: CalendarEvent) => void } = $props();
 

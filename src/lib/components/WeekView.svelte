@@ -3,12 +3,12 @@
   // and a now-line in today's column. ←/→ change week, t jumps to today, Esc goes back.
   import { onMount, tick } from "svelte";
   import { ArrowLeft, ChevronLeft, ChevronRight, Plus } from "@lucide/svelte";
-  import { addDays, calendar, eventTimes, startOfDay } from "$lib/calendar.svelte";
-  import { layoutDay } from "$lib/eventLayout";
-  import { eventTone, TONE_CLASSES } from "$lib/eventTone";
-  import { mail } from "$lib/mail.svelte";
+  import { addDays, calendar, eventTimes, startOfDay } from "#lib/calendar.svelte.js";
+  import { layoutDay } from "#lib/eventLayout.js";
+  import { eventTone, TONE_CLASSES } from "#lib/eventTone.js";
+  import { mail } from "#lib/mail.svelte.js";
   import JoinChip from "./JoinChip.svelte";
-  import type { CalendarEvent } from "$lib/api";
+  import type { CalendarEvent } from "#lib/api.js";
 
   const HOUR = 48;
   let scroller: HTMLDivElement | undefined = $state();

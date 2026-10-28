@@ -2,9 +2,9 @@
   // "What's new": the changelog lines not seen yet (after an update), or the whole changelog
   // (palette, Settings → Updates). Either way, closing it marks every line as seen.
   import { onDestroy, untrack } from "svelte";
-  import { mail } from "$lib/mail.svelte";
-  import { openLinksExternally, renderMarkdown } from "$lib/markdown";
-  import { sectionLabel, whatsNew } from "$lib/whatsnew.svelte";
+  import { mail } from "#lib/mail.svelte.js";
+  import { openLinksExternally, renderMarkdown } from "#lib/markdown.js";
+  import { sectionLabel, whatsNew } from "#lib/whatsnew.svelte.js";
 
   let { mode }: { mode: "new" | "all" } = $props();
 

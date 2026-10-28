@@ -1,8 +1,8 @@
 <script lang="ts">
   // Split inboxes are named queries over the inbox (same language as search). The built-in
   // Inbox tab isn't listed: it holds whatever no split claims.
-  import { api, type Split } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
+  import { api, type Split } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let rows = $state<Split[]>(mail.splits.filter((s) => !s.builtin).map(({ name, query }) => ({ name, query })));
   let saved = $state(false);

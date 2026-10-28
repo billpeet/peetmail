@@ -1,12 +1,12 @@
 <script lang="ts">
   // Right-hand pane with two tabs, like Superhuman: Recent Opens (conversations you opened,
   // newest first; click to reopen, even if archived) and Calendar (today's day view).
-  import { mail } from "$lib/mail.svelte";
-  import { recentGroup, recentTime, senderName } from "$lib/format";
-  import type { RecentOpen } from "$lib/api";
+  import { mail } from "#lib/mail.svelte.js";
+  import { recentGroup, recentTime, senderName } from "#lib/format.js";
+  import type { RecentOpen } from "#lib/api.js";
   import ResizeHandle from "./ResizeHandle.svelte";
   import DayView from "./DayView.svelte";
-  import { calendar } from "$lib/calendar.svelte";
+  import { calendar } from "#lib/calendar.svelte.js";
 
   // An open invite shows the calendar (its day, event highlighted) without changing the
   // saved tab; closing the invite returns to it.

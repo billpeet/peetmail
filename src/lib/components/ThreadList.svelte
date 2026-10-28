@@ -1,9 +1,9 @@
 <script lang="ts">
   // Fixed-height virtual list: only the visible rows (plus overscan) are in the DOM,
   // so a 50k-thread inbox costs the same to render as a 50-thread one.
-  import { formatSendAt, mail } from "$lib/mail.svelte";
-  import { listDate, senderName } from "$lib/format";
-  import type { ThreadRow } from "$lib/api";
+  import { formatSendAt, mail } from "#lib/mail.svelte.js";
+  import { listDate, senderName } from "#lib/format.js";
+  import type { ThreadRow } from "#lib/api.js";
 
   /** In Snoozed, rows show when they come back instead of when they arrived. */
   const until = (t: ThreadRow): string | null => ("until" in t && typeof t.until === "string" ? t.until : null);

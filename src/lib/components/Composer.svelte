@@ -5,16 +5,16 @@
   // `inline`: a reply or forward written in the reader, under the conversation it answers
   // (like Outlook). Otherwise it's a dialog over everything.
   import { onMount } from "svelte";
-  import { api, type Contact } from "$lib/api";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { api, type Contact } from "#lib/api.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
   import { X } from "@lucide/svelte";
-  import { latestOnly, STALE } from "$lib/latest";
-  import { narrow } from "$lib/contacts";
-  import { parseSendTime } from "$lib/quickAdd";
-  import { formatSendAt } from "$lib/mail.svelte";
-  import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "$lib/snippets";
-  import { caretCoords } from "$lib/caret";
+  import { latestOnly, STALE } from "#lib/latest.js";
+  import { narrow } from "#lib/contacts.js";
+  import { parseSendTime } from "#lib/quickAdd.js";
+  import { formatSendAt } from "#lib/mail.svelte.js";
+  import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "#lib/snippets.js";
+  import { caretCoords } from "#lib/caret.js";
 
   let { inline = false }: { inline?: boolean } = $props();
 

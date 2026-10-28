@@ -1,8 +1,8 @@
 <script lang="ts">
   // Command palette over the keymap registry: every action, searchable by name.
   import { onMount } from "svelte";
-  import { displayKeys, keymap, type Binding } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { displayKeys, keymap, type Binding } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let query = $state("");
   let active = $state(0);

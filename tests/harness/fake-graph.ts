@@ -68,6 +68,8 @@ export type FakeConfig = {
   failBody: boolean;
   /** Every write (PATCH, move, send) fails with this status; 0 = off. */
   failWrites: number;
+  /** The next N writes get their connection cut with no response, like a dropped socket. */
+  dropWrites: number;
   /** Next calendar delta-link request returns 410 (one-shot). */
   expireCalendarDelta: boolean;
   /** Message delta leaves out "@odata.type" (the app must rely on meetingMessageType). */
@@ -104,7 +106,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     authorizations: [] as Record<string, string>[],
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
-    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
+    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, dropWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
     requests: [] as RequestRecord[],
     events: new Map<string, GraphEvent>(),
     eventSeq: 0,
@@ -288,6 +290,12 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     const p = url.pathname.replace(/^\/v1\.0/, "");
     const method = req.method ?? "GET";
     const isWrite = method !== "GET";
+    if (isWrite && state.config.dropWrites > 0) {
+      state.config.dropWrites--;
+      record(req, url, 0);
+      req.socket.destroy();
+      return;
+    }
     if (isWrite && state.config.failWrites) {
       return graphError(reply, state.config.failWrites, "ErrorInternalServerError", "Write failed (test)");
     }
@@ -732,7 +740,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
             "POST /_test/remove {id}",
             "POST /_test/throttle {count?=1, status?=429, retryAfter?=1}",
             "POST /_test/move {id, folder: inbox|archive|deleteditems|sentitems}",
-            "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status}",
+            "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status, dropWrites?: count}",
             "GET  /_test/sent   (writes the app made: send, reply, move, patch, rsvp, event)",
             "POST /_test/event {id, subject?, start?, end? (ISO), allDay?, location?, response?, attendees?: [[name, address]]}   POST /_test/event-remove {id}   GET /_test/event?id=",
             "GET  /_test/message?id=...",

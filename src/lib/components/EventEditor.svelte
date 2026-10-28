@@ -7,14 +7,14 @@
   // when there are unsaved changes).
   import { onMount } from "svelte";
   import { DoorOpen, Repeat, Users } from "@lucide/svelte";
-  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes, type Room, type RoomList } from "$lib/api";
-  import { calendar, localDate } from "$lib/calendar.svelte";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
-  import { describeRecurrence, recurrenceProblem, sameRecurrence, type Recurrence } from "$lib/recurrence";
-  import { senderName } from "$lib/format";
-  import { narrow } from "$lib/contacts";
-  import { latestOnly, STALE } from "$lib/latest";
+  import { api, type Contact, type EditAttendee, type EditableEvent, type EventChanges, type EventTimes, type Room, type RoomList } from "#lib/api.js";
+  import { calendar, localDate } from "#lib/calendar.svelte.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import { describeRecurrence, recurrenceProblem, sameRecurrence, type Recurrence } from "#lib/recurrence.js";
+  import { senderName } from "#lib/format.js";
+  import { narrow } from "#lib/contacts.js";
+  import { latestOnly, STALE } from "#lib/latest.js";
   import RichText from "./RichText.svelte";
   import RepeatEditor from "./RepeatEditor.svelte";
 

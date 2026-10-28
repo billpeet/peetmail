@@ -1,8 +1,8 @@
 <script lang="ts">
   // Snippets: reusable text for the composer. Type ;name there (or Ctrl+;) to insert one.
-  import { api } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
-  import type { Snippet } from "$lib/snippets";
+  import { api } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import type { Snippet } from "#lib/snippets.js";
 
   let rows = $state<Snippet[]>(mail.snippets.map((s) => ({ ...s })));
   let saved = $state(false);

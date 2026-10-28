@@ -244,12 +244,25 @@ pub fn status(conn: &Connection) -> Result<OutboxStatus> {
     )?)
 }
 
+/// SQL condition on outbox row `o`: no earlier op on the same message is still waiting.
+/// Changes to one message go out in the order they were made, so one waiting out a retry
+/// backoff holds back later ones (flag then unflag must not land reversed). Sends are out of
+/// it both ways: their order against a flag or read change doesn't matter, and a reply
+/// scheduled for tomorrow carries its original's id and mustn't stall archiving it until then.
+const NOT_HELD_BACK: &str = "(json_extract(o.op, '$.type') = 'send' OR NOT EXISTS (
+    SELECT 1 FROM outbox e
+    WHERE e.account_id = o.account_id AND e.remote_id = o.remote_id AND e.id < o.id
+      AND e.status IN ('pending', 'inflight') AND json_extract(e.op, '$.type') != 'send'))";
+
 fn take_due(conn: &Connection) -> Result<Option<Row>> {
     let row = conn
         .query_row(
-            "SELECT id, account_id, remote_id, op, attempts FROM outbox
-             WHERE status = 'pending' AND not_before <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             ORDER BY id LIMIT 1",
+            &format!(
+                "SELECT id, account_id, remote_id, op, attempts FROM outbox o
+                 WHERE status = 'pending' AND not_before <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                   AND {NOT_HELD_BACK}
+                 ORDER BY id LIMIT 1"
+            ),
             [],
             |r| Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?, r.get(4)?)),
         )
@@ -259,9 +272,11 @@ fn take_due(conn: &Connection) -> Result<Option<Row>> {
     Ok(Some(Row { id, account_id, remote_id, op: serde_json::from_str(&op)?, attempts }))
 }
 
+/// How long until `take_due` has something. Held-back ops don't count (their own time may be
+/// long past); the op holding them back is pending too, and its time is the one to wake for.
 fn next_due_in(conn: &Connection) -> Result<Option<Duration>> {
     let next: Option<String> = conn
-        .query_row("SELECT MIN(not_before) FROM outbox WHERE status = 'pending'", [], |r| r.get(0))
+        .query_row(&format!("SELECT MIN(not_before) FROM outbox o WHERE status = 'pending' AND {NOT_HELD_BACK}"), [], |r| r.get(0))
         .optional()?
         .flatten();
     Ok(next.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| {
@@ -354,8 +369,14 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
             let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, json!({ "accountId": row.account_id }));
         }
         emit_status(app, state);
-        if result.is_err() && !is_permanent(result.as_ref().unwrap_err()) {
-            // Transient failure: stop for now; the next kick or sync tick retries.
+        if result.as_ref().is_err_and(|e| !is_permanent(e)) {
+            // A first failure is often a blip (a dropped or stale connection): stay and retry
+            // once its short backoff is up, rather than leaving a send waiting for the next sync.
+            // Anything that keeps failing is likely an outage; the next kick or sync tick
+            // retries it, which keeps the attempts spread out while offline.
+            if row.attempts == 0 {
+                continue;
+            }
             break;
         }
     }
@@ -586,6 +607,40 @@ mod tests {
 
             reset_inflight(c)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(now));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_op_in_backoff_holds_back_later_changes_to_its_message_but_not_sends() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
+            let flag = enqueue(c, a, Some("m1"), &Op::SetFlag { value: true }, Duration::ZERO)?;
+            let unflag = enqueue(c, a, Some("m1"), &Op::SetFlag { value: false }, Duration::ZERO)?;
+            let other = enqueue(c, a, Some("m2"), &Op::SetRead { value: true }, Duration::ZERO)?;
+            // The flag failed and is waiting out its backoff.
+            c.execute("UPDATE outbox SET not_before = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+60 seconds') WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(other), "another message's op isn't held back");
+            assert!(take_due(c)?.is_none(), "the unflag waits for the flag");
+            let wait = next_due_in(c)?.expect("the flag is still pending");
+            assert!(wait > Duration::from_secs(50), "the drain naps until the flag's backoff, not on the held-back unflag: {wait:?}");
+            let reply_now = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            let reply_now = enqueue(c, a, Some("m1"), &Op::Send(reply_now), Duration::ZERO)?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(reply_now), "a reply isn't held back by a flag on its message");
+            c.execute("DELETE FROM outbox WHERE id = ?1", [reply_now])?;
+
+            c.execute("UPDATE outbox SET not_before = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(flag));
+            c.execute("DELETE FROM outbox WHERE id = ?1", [flag])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(unflag));
+            c.execute("DELETE FROM outbox WHERE id = ?1", [unflag])?;
+
+            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            enqueue_at(c, a, Some("m3"), &Op::Send(reply), chrono::Utc::now() + chrono::Duration::days(1))?;
+            let archive = enqueue(c, a, Some("m3"), &Op::Move { destination: "archive".into() }, Duration::ZERO)?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(archive), "a reply scheduled for tomorrow doesn't hold up archiving its message");
             Ok(())
         })
         .unwrap();

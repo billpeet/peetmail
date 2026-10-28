@@ -1,9 +1,9 @@
 <script lang="ts">
   // RSVP card shown above a conversation containing a meeting invite. y / m / n answer it.
   import { CalendarClock, Check, HelpCircle, MapPin, X } from "@lucide/svelte";
-  import { calendar, eventTimes } from "$lib/calendar.svelte";
-  import { mail } from "$lib/mail.svelte";
-  import type { Invite, Rsvp } from "$lib/api";
+  import { calendar, eventTimes } from "#lib/calendar.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import type { Invite, Rsvp } from "#lib/api.js";
 
   let { invite }: { invite: Invite } = $props();
 

@@ -4,12 +4,12 @@
   // a problem.
   import { onMount } from "svelte";
   import { BookOpen, Keyboard, KeyRound, LifeBuoy, MessageSquareWarning, RefreshCw, ShieldCheck, Sparkles } from "@lucide/svelte";
-  import { api } from "$lib/api";
-  import { DOC_SLUGS, parseDoc, resolveLink, type Doc, type HelpPage } from "$lib/docs";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
-  import { renderMarkdown } from "$lib/markdown";
-  import { sectionLabel, whatsNew } from "$lib/whatsnew.svelte";
+  import { api } from "#lib/api.js";
+  import { DOC_SLUGS, parseDoc, resolveLink, type Doc, type HelpPage } from "#lib/docs.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import { renderMarkdown } from "#lib/markdown.js";
+  import { sectionLabel, whatsNew } from "#lib/whatsnew.svelte.js";
   import ReportProblem from "./ReportProblem.svelte";
   import ShortcutList from "./ShortcutList.svelte";
   import SidebarDialog, { type SidebarPage } from "./SidebarDialog.svelte";

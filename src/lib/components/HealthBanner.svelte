@@ -2,8 +2,8 @@
   // Problems outside PeetMail that make it misbehave (low disk, wrong clock...), found by
   // the startup health checks, each with what to do about it.
   import { CircleAlert, TriangleAlert, X } from "@lucide/svelte";
-  import { health } from "$lib/health.svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { health } from "#lib/health.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
 </script>
 
 {#if health.visible.length}
