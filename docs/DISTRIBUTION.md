@@ -12,7 +12,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
 | 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
 | 5 Built-in sign-in apps | Microsoft done (app registered, secret set); Google waits for its client ID and secret |
-| 6 | Not started |
+| 6 Support and upkeep | In progress: Dependabot on; the rest planned below |
 
 ## Decisions
 
@@ -174,17 +174,18 @@ Planned items still open: per-account correlation (`account.ref`) isn't needed, 
 
 Tests: Rust for the migration and for signing out only one app's accounts; E2E with a debug-only stand-in for the built-in IDs (`PEETMAIL_BUILTIN_*`): local builds still ask for a client ID; with built-in apps, Microsoft and Gmail sign in with no setup; your own app lives under Advanced and saving it signs nobody out; and with short-lived tokens, a refresh after setting a different own-app ID still uses the account's built-in app (the fake rejects any other ID, so the old global client would fail it).
 
-## Stage 6: the rest of what a distributed app needs
+## Stage 6: support and upkeep (in progress)
 
-- **Diagnostics export.** Palette command "Export diagnostics": zips the last few log files (scrubbed), app/WebView2/OS versions, settings minus secrets, DB stats (row counts, sizes, `user_version`), outbox state. Saves to Downloads. For when telemetry is off or the problem is "it won't start".
-- **Feedback.** A binding that opens a small form and sends it as Sentry User Feedback with the install ID and current trace ID attached. Cheaper than a separate channel for a small group.
-- **What's new.** After an update, show the release notes once (from the release body cached at download time).
-- **First-run notice.** One screen covering what's sent (crash reports, usage and performance data), what's never sent (mail content, addresses), and where to turn it off.
-- **Health checks at startup.** WebView2 version below a minimum, DB integrity (`PRAGMA quick_check` on version change), disk space low; each a clear message rather than a blank window.
-- **Dependency hygiene.** Renovate or Dependabot for cargo, pnpm and GitHub Actions, grouped weekly. Pin actions by SHA in the release workflow, since it holds signing keys.
-- **Secrets inventory.** Updater signing key (and its password), Sentry auth token (CI only) and DSN, OTLP endpoint and ingest token, Microsoft client ID, Google client ID and secret. Store the updater private key outside GitHub as well: losing it means no installed copy can ever auto-update again.
-- **Release checklist** (`docs/RELEASING.md`): bump version, tag, wait for the draft, smoke-test the installer on a clean VM (install, sign in with both providers, update from the previous version, uninstall), publish.
-- **Docs.** A short user-facing README for the internal group: install, what the warning screens mean, how to report a problem.
+Agreed plan, in order. The first-run privacy notice is already done (Stages 3 and 4).
+
+1. **Secrets inventory** (`docs/SECRETS.md`, no values): every credential the app and its releases depend on, where the live copy is, where the backup is, what breaks if it's lost or leaks, and how to rotate it. The urgent part is the updater signing key: it has to be in a password manager as well as GitHub, because losing it means no installed copy can update again.
+2. **Dependabot** (done): weekly, minor and patch grouped per ecosystem (cargo, npm, GitHub Actions), majors as their own PRs; vulnerability alerts and security updates on.
+3. **Changelog and "What's new".** `CHANGELOG.md` with `## Unreleased` and one section per version, written for users. AGENTS.md: every user-visible change adds a line in the same commit. `pnpm version:set` turns Unreleased into the version's section; a stable release fails without one and uses it as the release notes and the update's notes. The changelog is compiled into the app: Help shows it, and after an update a "What's new" panel shows the lines not seen yet (tracked per line, so it works for canary, stable and skipped versions alike).
+4. **User docs** in `docs/user/` (getting started incl. SmartScreen, updates and channels, privacy, your own sign-in app, troubleshooting), rendered by GitHub and compiled into the app's Help view, so they match the installed version and work offline. Markdown is rendered through a sanitiser. AGENTS.md: docs change in the same commit as the behaviour. Keyboard shortcuts stay in the `?` overlay (generated from the keymap).
+5. **Diagnostics export**: a palette command writes a zip to Downloads with scrubbed recent logs, app/WebView2/Windows versions, settings without secrets, DB schema version, table sizes and integrity check, outbox op kinds and states, and update status.
+6. **Feedback**: Sentry user feedback from a form in the app (the text is the user's own words and isn't scrubbed; the form says it goes to the developers), linked to the install ID and recent breadcrumbs, optionally with the diagnostics zip. A "prefer email?" link opens a draft to the address in the `PEETMAIL_FEEDBACK_EMAIL` repo variable (compiled in; set to martin.w@metroid.net.au) with the version and install ID filled in. Builds without the variable hide it.
+7. **Startup health checks**, each a clear banner plus a telemetry count: DB integrity after a migration, low disk space, data folder not writable, clock badly wrong (sign-ins fail confusingly), WebView2 too old.
+8. **Release checklist** additions in `docs/RELEASING.md`: when a canary is ready to promote to stable (e.g. two days on canary with no new Sentry issues and healthy telemetry), and checking the changelog section and docs before tagging.
 
 ## Suggested order
 

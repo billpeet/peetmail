@@ -1,0 +1,40 @@
+# Weekly dependency updates. Minor and patch versions are grouped per ecosystem (one PR
+# each); a major version gets its own PR, since it can need code changes. Every PR runs the
+# full CI. Security updates are separate and immediate (enabled in the repo settings).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "Deps (Rust)"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      npm:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "Deps (npm)"
+
+  # Actions are pinned by commit SHA; Dependabot moves the pin and the version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "Deps (Actions)"
