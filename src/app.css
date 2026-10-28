@@ -41,3 +41,48 @@ kbd {
 .icon-btn {
   @apply inline-flex size-8 items-center justify-center rounded-md text-ink-500 transition-colors hover:bg-ink-800 hover:text-ink-100;
 }
+
+/* Rendered Markdown in Help (docs/user, the changelog). */
+.doc {
+  @apply max-w-[64ch] text-sm leading-relaxed text-ink-300 select-text;
+}
+.doc h2 {
+  @apply mt-7 mb-2 text-base font-semibold text-ink-100;
+}
+.doc h3 {
+  @apply mt-5 mb-1.5 text-sm font-semibold text-ink-100;
+}
+.doc p,
+.doc ul,
+.doc ol,
+.doc table {
+  @apply my-3;
+}
+.doc ul {
+  @apply list-disc space-y-1.5 pl-5;
+}
+.doc ol {
+  @apply list-decimal space-y-1.5 pl-5;
+}
+.doc li > ul {
+  @apply my-1.5;
+}
+.doc strong {
+  @apply font-semibold text-ink-100;
+}
+.doc a {
+  @apply text-accent underline underline-offset-2 hover:text-ink-100;
+}
+.doc code {
+  @apply rounded bg-ink-800 px-1 py-0.5 font-mono text-[12px] text-ink-100;
+}
+.doc table {
+  @apply w-full border-collapse text-left;
+}
+.doc th,
+.doc td {
+  @apply border-b border-ink-800 py-1.5 pr-4 align-top;
+}
+.doc th {
+  @apply text-xs font-medium tracking-wide text-ink-500 uppercase;
+}

@@ -5,7 +5,8 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { api } from "./api";
 
-const SAFE_URL = /^(https?:|mailto:|#)/i;
+/** Web and mail links, in-page anchors, and relative links to other docs (`privacy.md`). */
+const SAFE_URL = /^(?:https?:|mailto:|#|(?:\.{1,2}\/)*[\w-]+\.md(?:#[\w-]*)?$)/i;
 
 export function renderMarkdown(md: string, { inline = false } = {}): string {
   const html = (inline ? marked.parseInline(md, { async: false }) : marked.parse(md, { async: false, gfm: true })) as string;

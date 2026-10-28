@@ -16,6 +16,7 @@ import {
   type QueuedSend,
   type SnoozedThread,
 } from "./api";
+import type { HelpPage } from "./docs";
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
 import { calendar } from "./calendar.svelte";
@@ -120,6 +121,8 @@ class MailStore {
   overlay = $state<Overlay>(null);
   /** The Settings page showing (kept between openings, so Ctrl+, returns to it). */
   settingsPage = $state<SettingsPage>("accounts");
+  /** The Help page showing (kept between openings, like Settings). */
+  helpPage = $state<HelpPage>("getting-started");
   thread = $state.raw<MessageRow[]>([]);
   /** Conversation that `thread` belongs to; lags `current` while a thread loads. */
   threadFor = $state<string | null>(null);
@@ -188,6 +191,12 @@ class MailStore {
     if (this.search !== null) return { folderId: null, query: this.search, split: null };
     // No folder: the unified inbox of every signed-in account.
     return { folderId: null, query: "", split: this.splitIndex };
+  }
+
+  /** Opens Help (the user docs), at `page` if given. */
+  openHelp(page?: HelpPage) {
+    if (page) this.helpPage = page;
+    this.overlay = "docs";
   }
 
   /** Opens Settings, at `page` if given (else where it was last left). */

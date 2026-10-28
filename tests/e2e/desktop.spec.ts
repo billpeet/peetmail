@@ -71,7 +71,8 @@ test("closing the window keeps PeetMail running; with that turned off, closing q
 });
 
 test("Ctrl+Q quits", async ({ inbox: page, app }) => {
-  await page.keyboard.press("Control+q");
+  // The app can be gone before the key is released, which fails the press itself.
+  await page.keyboard.press("Control+q").catch(() => {});
   await expect.poll(() => exited(app), { timeout: 10_000 }).toBe(true);
 });
 

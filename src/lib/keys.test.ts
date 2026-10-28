@@ -83,6 +83,8 @@ describe("displayKeys", () => {
     expect(displayKeys("g i")).toEqual([["g"], ["i"]]);
     expect(displayKeys("ctrl+r")).toEqual([["Ctrl", "r"]]);
     expect(displayKeys("ctrl+shift+u")).toEqual([["Ctrl", "Shift", "u"]]);
+    expect(displayKeys("ArrowLeft")).toEqual([["←"]]);
+    expect(displayKeys("ctrl+PageDown")).toEqual([["Ctrl", "PgDn"]]);
   });
 
   it("shows nothing for a palette-only command", () => {

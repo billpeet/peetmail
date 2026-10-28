@@ -9,7 +9,7 @@ Plan, architecture and roadmap are in [docs/PLAN.md](docs/PLAN.md).
 - Node 22+ and pnpm
 - Rust (stable, MSVC toolchain) and the Visual Studio C++ build tools
 - WebView2 runtime (preinstalled on Windows 11)
-- For local builds, an Entra app registration (release builds have PeetMail's own built in), see [docs/PLAN.md#entra-app-registration](docs/PLAN.md#entra-app-registration). To build with one built in, set `PEETMAIL_MS_CLIENT_ID` (and `PEETMAIL_GOOGLE_CLIENT_ID`/`_SECRET`) before building.
+- For local builds, an Entra app registration (release builds have PeetMail's own built in), see [docs/user/your-own-app.md](docs/user/your-own-app.md). To build with one built in, set `PEETMAIL_MS_CLIENT_ID` (and `PEETMAIL_GOOGLE_CLIENT_ID`/`_SECRET`) before building.
 
 ## Develop
 
@@ -47,6 +47,7 @@ Releases are built by GitHub Actions from a version tag; see [docs/RELEASING.md]
 | `src/lib/keys.svelte.ts` | Keymap registry, the source of truth for shortcuts |
 | `src/lib/mail.svelte.ts` | UI state: threads, selection, view |
 | `src/lib/components/` | Svelte components |
+| `docs/user/` | Help for people using PeetMail, also shown in the app (F1). `CHANGELOG.md` is its What's new |
 | `src-tauri/icons/source/` | The app icon's sources: the master SVG and hand-tuned 16/24/32 px versions. `pnpm icons` regenerates `src-tauri/icons/` from them |
 
 App data lives in `%APPDATA%\com.peetsoftware.peetmail\peetmail.db`. Logs go to `%LOCALAPPDATA%\com.peetsoftware.peetmail\logs`. Before a schema migration the database is copied to `peetmail.db.v<schema>.bak` beside it (the last two are kept). Early dev builds used `com.boris.peetmail`; the first start of a current build moves that data across.
