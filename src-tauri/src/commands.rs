@@ -6,7 +6,7 @@ use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::actions::{self, Action, ActionOutcome};
-use crate::db::{self, Account, Contact, Cursor, Folder, MessageRow, RecentOpen, Scope, ThreadRow};
+use crate::db::{self, Account, Contact, Cursor, Folder, Mailbox, MessageRow, RecentOpen, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
 use crate::state::{AppState, CacheLimits, Preferences, KEY_BODY_CACHE_MB, KEY_CACHE_DAYS, KEY_CLIENT_ID, KEY_SPLITS};
@@ -209,13 +209,15 @@ pub fn list_folders(state: State<'_, AppState>, account_id: i64) -> Result<Vec<F
     state.db.with(|c| db::list_folders(c, account_id))
 }
 
-/// Threads for a folder or, with no folder, all mail (search). `split` selects a tab of the
-/// split inbox (0 = Inbox, see `list_splits`) and takes precedence over `query`, which uses
-/// the query language in query.rs.
+/// Threads in one folder, a mailbox (Done, Sent... across accounts) or, with neither, all
+/// mail (search). `split` selects a tab of the split inbox (0 = Inbox, see `list_splits`)
+/// and takes precedence over `mailbox` and `query`, which uses the query language in query.rs.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn list_threads(
     state: State<'_, AppState>,
     folder_id: Option<i64>,
+    mailbox: Option<db::Mailbox>,
     query: Option<String>,
     split: Option<usize>,
     cursor: Option<Cursor>,
@@ -232,11 +234,11 @@ pub fn list_threads(
     };
     // Accounts toggled off in the footer.
     let filter = query::exclude_accounts(filter, hidden.as_deref().unwrap_or_default());
-    // No folder: a split tab means the unified inbox, plain search means all mail.
-    let scope = match (folder_id, split) {
-        (Some(f), _) => Scope::Folder(f),
-        (None, Some(_)) => Scope::Inboxes,
-        (None, None) => Scope::AllMail,
+    let scope = match (folder_id, split, mailbox) {
+        (Some(f), _, _) => Scope::Folder(f),
+        (None, Some(_), _) => Mailbox::Inbox.scope(),
+        (None, None, Some(m)) => m.scope(),
+        (None, None, None) => Scope::AllMail,
     };
     let rows = state.db.with(|c| db::list_threads(c, scope, &filter, cursor.as_ref(), limit))?;
     // Searches only (not every list load), and only their shape: never the words.
@@ -250,8 +252,8 @@ pub fn list_threads(
 }
 
 #[tauri::command]
-pub fn get_thread(state: State<'_, AppState>, account_id: i64, conversation_id: String) -> Result<Vec<MessageRow>> {
-    state.db.with(|c| db::get_thread(c, account_id, &conversation_id))
+pub fn get_thread(state: State<'_, AppState>, account_id: i64, conversation_id: String, with_trash: Option<bool>) -> Result<Vec<MessageRow>> {
+    state.db.with(|c| db::get_thread(c, account_id, &conversation_id, with_trash.unwrap_or(false)))
 }
 
 #[tauri::command]
@@ -766,7 +768,7 @@ pub fn list_splits(state: State<'_, AppState>, folder_id: Option<i64>, hidden: O
     state.db.with(|c| {
         tabs.enumerate()
             .map(|(i, (name, query, builtin))| {
-                let scope = folder_id.map(Scope::Folder).unwrap_or(Scope::Inboxes);
+                let scope = folder_id.map(Scope::Folder).unwrap_or(Mailbox::Inbox.scope());
                 let filter = query::exclude_accounts(query::split_filter(&queries, i), &hidden);
                 let (count, unread) = db::count_threads(c, scope, &filter)?;
                 Ok(SplitInfo { name, query, builtin, count, unread })

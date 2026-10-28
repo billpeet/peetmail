@@ -77,6 +77,9 @@ export type MessageRow = {
 export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
 export type ActionOutcome = { label: string | null; changed: number };
 export type DraftKind = "new" | "reply" | "replyAll" | "forward";
+
+/** The mail views the sidebar lists, each across signed-in accounts. */
+export type Mailbox = "inbox" | "done" | "sent" | "snoozed" | "all" | "trash";
 export type SendInput = {
   accountId: number;
   kind: DraftKind;
@@ -209,14 +212,15 @@ export const api = {
   signOut: (accountId: number) => invoke<void>("sign_out", { accountId }),
   listFolders: (accountId: number) => invoke<Folder[]>("list_folders", { accountId }),
   /**
-   * `folderId` null searches all mail. `split` picks a split-inbox tab (0 = Inbox) and wins over
-   * `query`, which uses the query language (src-tauri/src/query.rs).
+   * Conversations in `mailbox` (null: all mail, for search). `split` picks a split-inbox tab
+   * (0 = Inbox) and wins over both; `query` uses the query language (src-tauri/src/query.rs).
+   * `hidden`: accounts toggled off in the footer legend.
    */
-  /** `hidden`: accounts toggled off in the footer legend. */
-  listThreads: (folderId: number | null, query: string, split: number | null, cursor: Cursor | null, limit: number, hidden: number[] = []) =>
-    invoke<ThreadRow[]>("list_threads", { folderId, query, split, cursor, limit, hidden }),
-  getThread: (accountId: number, conversationId: string) =>
-    invoke<MessageRow[]>("get_thread", { accountId, conversationId }),
+  listThreads: (mailbox: Mailbox | null, query: string, split: number | null, cursor: Cursor | null, limit: number, hidden: number[] = []) =>
+    invoke<ThreadRow[]>("list_threads", { mailbox, query, split, cursor, limit, hidden }),
+  /** `withTrash`: include messages in Deleted Items (the Trash view). */
+  getThread: (accountId: number, conversationId: string, withTrash = false) =>
+    invoke<MessageRow[]>("get_thread", { accountId, conversationId, withTrash }),
   getMessageBody: (messageId: number) => invoke<string>("get_message_body", { messageId }),
   syncNow: () => invoke<void>("sync_now"),
   setCacheLimits: (limits: CacheLimits) => invoke<void>("set_cache_limits", { limits }),

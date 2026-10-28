@@ -62,6 +62,22 @@ test("mail archived in PeetMail stays in Done once the Archive folder syncs", as
   expect(await folderConversations(page, "inbox")).not.toContain("conv-plain");
 });
 
+test("each mailbox lists its conversations, and Trash's reader shows deleted mail", async ({ inbox: page }) => {
+  const invoke = (cmd: string, args: object) => page.evaluate(([c, a]) => (window as any).__TAURI_INTERNALS__.invoke(c, a), [cmd, args] as const);
+  const convs = async (mailbox: string) =>
+    ((await invoke("list_threads", { mailbox, query: "", limit: 1000 })) as { conversationId: string }[]).map((t) => t.conversationId);
+  await expect.poll(() => convs("done")).toEqual(["conv-archived"]);
+  expect(await convs("trash")).toEqual(["conv-deleted"]);
+  expect(await convs("sent")).toContain("conv-sent-0");
+  expect(await convs("inbox")).not.toContain("conv-archived");
+  const all = await convs("all");
+  expect(all).toEqual(expect.arrayContaining(["conv-archived", "conv-plain", "conv-sent-0"]));
+  expect(all).not.toContain("conv-deleted");
+
+  expect(await invoke("get_thread", { accountId: 1, conversationId: "conv-deleted" })).toEqual([]);
+  expect(await invoke("get_thread", { accountId: 1, conversationId: "conv-deleted", withTrash: true })).toHaveLength(1);
+});
+
 test("429 throttling is retried after Retry-After", async ({ inbox: page, fake }) => {
   await fake.control("throttle", { count: 1, retryAfter: 1 });
   await fake.control("deliver", { subject: "Worth the wait" });

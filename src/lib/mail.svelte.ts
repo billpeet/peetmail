@@ -4,6 +4,7 @@ import {
   type Bootstrap,
   type DraftKind,
   type Folder,
+  type Mailbox,
   type MessageRow,
   type OutboxStatus,
   type Preferences,
@@ -206,10 +207,11 @@ class MailStore {
   }
 
   /** Query and scope behind the current list. */
-  get listQuery(): { folderId: number | null; query: string; split: number | null } {
-    if (this.search !== null) return { folderId: null, query: this.search, split: null };
-    // No folder: the unified inbox of every signed-in account.
-    return { folderId: null, query: "", split: this.splitIndex };
+  get listQuery(): { mailbox: Mailbox | null; query: string; split: number | null } {
+    // Search covers all mail.
+    if (this.search !== null) return { mailbox: null, query: this.search, split: null };
+    // The unified inbox of every signed-in account, by split tab.
+    return { mailbox: "inbox", query: "", split: this.splitIndex };
   }
 
   /** Opens Help (the user docs), at `page` if given. */
@@ -291,11 +293,11 @@ class MailStore {
     if (!this.account) return;
     const seq = ++this.#listSeq;
     const folderForSplits = null; // split tabs count the unified inbox
-    const { folderId, query, split } = this.listQuery;
+    const { mailbox, query, split } = this.listQuery;
     const count = Math.max(PAGE, this.threads.length);
     const [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits, this.hiddenIds),
-      api.listThreads(folderId, query, split, null, count, this.hiddenIds),
+      api.listThreads(mailbox, query, split, null, count, this.hiddenIds),
       api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
@@ -334,8 +336,8 @@ class MailStore {
     this.#loadingMore = true;
     const seq = this.#listSeq;
     try {
-      const { folderId, query, split } = this.listQuery;
-      const rows = await api.listThreads(folderId, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
+      const { mailbox, query, split } = this.listQuery;
+      const rows = await api.listThreads(mailbox, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
       if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
