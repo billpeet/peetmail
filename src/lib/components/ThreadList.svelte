@@ -36,7 +36,10 @@
 <div bind:this={viewport} bind:clientHeight={height} onscroll={onScroll} data-testid="thread-list" class="h-full overflow-y-auto">
   {#if mail.threads.length === 0}
     <div data-testid="thread-list-empty" class="grid h-full place-items-center text-sm text-ink-500">
-      {mail.sync.state === "syncing" ? "Syncing your inbox…" : "Inbox zero."}
+      {#if mail.search !== null}No matches.
+      {:else if mail.sync.state === "syncing"}Syncing your mail…
+      {:else}{({ inbox: "Inbox zero.", done: "Nothing archived yet.", sent: "Nothing sent yet.", snoozed: "Nothing snoozed.", all: "No mail.", trash: "Trash is empty." })[mail.mailbox]}
+      {/if}
     </div>
   {:else}
     <div style:height="{mail.threads.length * ROW}px" class="relative">

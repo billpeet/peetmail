@@ -85,6 +85,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Esc` | Back to list, close dialog | ✓ |
 | `g g` / `G` | Top / bottom of list | ✓ |
 | `g i` | Go to inbox | ✓ |
+| `g e` / `g t` / `g a` / `g #` | Done / Sent / All mail / Trash (`e` in Done and `#` in Trash: back to the inbox) | ✓ |
 | `Ctrl+R` | Sync now | ✓ |
 | `Ctrl+,` | Settings | ✓ |
 | `?` | Shortcut overlay | ✓ |
@@ -209,6 +210,6 @@ Slices:
 
 1. [x] **Sync Archive and Deleted Items** in the mail window. Microsoft: add both to `SYNCED_FOLDERS` (one more delta request per folder per account per minute when idle). Gmail: an initial `-in:inbox -in:sent -in:trash -in:spam after:` listing plus `TRASH`, and drop `only_known_archive` so History label changes fill Done in. Prune by the window like the inbox. First syncs after the update take longer (a busy archive is thousands of messages); notifications stay inbox-only, so none fire. Archive is optional on Microsoft (a 404 skips it); `wk:` placeholder folders from earlier local moves get their real id in place. Gmail accounts synced before this list archive and trash once (`gmail_all_folders:<id>`).
 2. [x] **Scope by role.** `db::Mailbox` (inbox, done, sent, snoozed, all, trash) maps to a `Scope`: `Role(role)` over signed-in accounts, `Done` (archived conversations with nothing in the inbox or snoozed, so a reply arriving in a done conversation moves it back), `AllMail` (signed-in accounts, excluding Trash; search uses it too). `list_threads` takes `mailbox`; `get_thread` takes `withTrash` for the Trash view's reader.
-3. **UI.** `mail.folder` beside `mail.view`; the Rail gains Inbox, Done, Sent, Snoozed, Scheduled, All mail, Trash (icons, tooltips with keys, unread dot on Inbox); split tabs only in the Inbox, a folder title elsewhere; `g` bindings in the keymap registry. Triage follows the folder: in Done `e` is "not done" (back to the inbox, undoable); in Trash `#` restores to the inbox; in Sent and All mail `e`/`#` act on the conversation's inbox messages as now.
+3. [x] **UI.** `mail.mailbox` beside `mail.view`; the Rail gains Inbox, Done, Sent, Snoozed, Scheduled, All mail, Trash (icons, tooltips with keys, unread dot on Inbox); split tabs only in the Inbox, a folder title elsewhere; `g` bindings in the keymap registry. Triage follows the folder: in Done `e` is "not done" (back to the inbox, undoable); in Trash `#` restores to the inbox; in Sent and All mail `e`/`#` act on the conversation's inbox messages as now.
 4. **Snoozed and Scheduled become list views**, replacing their dialogs (`h` change time and `u` back now keep working in Snoozed).
 5. Fake Graph/Gmail serve an archive and trash; E2E for each view and its triage; help page shortcut table; changelog.

@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- The left sidebar lists your mailboxes: Inbox, Done, Sent, Snoozed, Scheduled, All mail and Trash, across all your accounts. **g e**, **g t**, **g a** and **g #** open Done, Sent, All mail and Trash. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it.
 - Search no longer shows mail from accounts you've signed out of.
 - Mail you archive or delete anywhere (Outlook, Gmail, your phone) is now kept in PeetMail too, within your mail window: search finds archived mail and conversations show it. The first sync after updating takes a little longer while it fetches.
 - Replies and forwards open under the conversation you're reading, like Outlook, so the earlier messages stay in view while you write. New messages still open on their own.

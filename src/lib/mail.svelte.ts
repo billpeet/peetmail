@@ -109,6 +109,8 @@ class MailStore {
   );
   /** Active search text; when non-null the list shows search results across all mail. */
   search = $state<string | null>(null);
+  /** The mailbox the list shows (the sidebar, g i / g e / g t / g a / g #). */
+  mailbox = $state<Mailbox>("inbox");
 
   threads = $state.raw<ThreadRow[]>([]);
   selected = $state(0);
@@ -211,7 +213,21 @@ class MailStore {
     // Search covers all mail.
     if (this.search !== null) return { mailbox: null, query: this.search, split: null };
     // The unified inbox of every signed-in account, by split tab.
-    return { mailbox: "inbox", query: "", split: this.splitIndex };
+    if (this.mailbox === "inbox") return { mailbox: "inbox", query: "", split: this.splitIndex };
+    return { mailbox: this.mailbox, query: "", split: null };
+  }
+
+  /** Conversations opened from Trash show their deleted messages; elsewhere those stay hidden. */
+  get #withTrash(): boolean {
+    return this.mailbox === "trash" && this.search === null;
+  }
+
+  /** What `e` and `#` do here: in Done and Trash they bring mail back to the inbox. */
+  triageFor(action: "archive" | "trash"): Action {
+    if (this.search !== null) return action;
+    if (this.mailbox === "done" && action === "archive") return "moveToInbox";
+    if (this.mailbox === "trash") return "moveToInbox";
+    return action;
   }
 
   /** Opens Help (the user docs), at `page` if given. */
@@ -320,7 +336,7 @@ class MailStore {
         this.threadFor = null;
         this.invite = null;
       } else {
-        const thread = await api.getThread(cur.accountId, cur.conversationId);
+        const thread = await api.getThread(cur.accountId, cur.conversationId, this.#withTrash);
         if (seq !== this.#listSeq) return;
         this.thread = thread;
         this.threadFor = cur.conversationId;
@@ -365,7 +381,7 @@ class MailStore {
     if (!t) return;
     const nav = this.#navSeq;
     // Load the thread first (a local query) so the reader never flashes empty or stale.
-    const rows = await api.getThread(t.accountId, t.conversationId);
+    const rows = await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     if (this.current?.conversationId !== t.conversationId) return;
     // Esc (back to the list) while it loaded wins: don't reopen the reader behind it.
     if (nav !== this.#navSeq) return;
@@ -399,7 +415,7 @@ class MailStore {
       this.invite = null;
       return;
     }
-    const rows = await api.getThread(t.accountId, t.conversationId);
+    const rows = await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
@@ -449,9 +465,26 @@ class MailStore {
 
   // ---------- splits and search ----------
 
+  /** Shows a mailbox (Inbox opens on the tab you were on). */
+  async goTo(mailbox: Mailbox) {
+    this.search = null;
+    this.pinned = null;
+    if (this.mailbox !== mailbox) {
+      // Drop the old list at once: a key pressed before the new one loads (e, #) must not
+      // act on a conversation from the mailbox you just left.
+      this.threads = [];
+      this.selected = 0;
+    }
+    this.mailbox = mailbox;
+    this.view = "list";
+    await this.refresh();
+    if (this.previewing) await this.preview();
+  }
+
   async switchSplit(index: number) {
     if (!this.splits.length) return;
     this.search = null;
+    this.mailbox = "inbox";
     this.splitIndex = (index + this.splits.length) % this.splits.length;
     this.selected = 0;
     this.view = "list";
@@ -499,7 +532,7 @@ class MailStore {
       if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
       // mail-changed triggers the refresh; do it now too so the list never lags a keypress.
       await this.refresh();
-      if (action === "archive" || action === "trash") await this.#afterRemoval();
+      if (action === "archive" || action === "trash" || action === "moveToInbox") await this.#afterRemoval();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
@@ -677,7 +710,7 @@ class MailStore {
     // Reply from the account the conversation belongs to.
     const account = this.accountOf(t?.accountId ?? -1);
     if (!t || !account) return;
-    const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId);
+    const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     // Reply to the newest message someone else sent, if there is one.
     const me = account.email.toLowerCase();
     const ref = [...msgs].reverse().find((m) => m.fromAddress?.toLowerCase() !== me) ?? msgs.at(-1);

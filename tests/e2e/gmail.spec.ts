@@ -113,6 +113,41 @@ test("archived and trashed Gmail mail in the window is kept; spam and old mail a
   expect(await folderConversations(page, "archive", email)).toContain("g-thread-filtered");
 });
 
+test("Done and Trash are label changes too: back to the inbox, restore, and undoing a delete from Done", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  // e in Done: back to the inbox.
+  await page.keyboard.press("g");
+  await page.keyboard.press("e");
+  await expect(row(page, "g-thread-old-archived")).toBeVisible();
+  await row(page, "g-thread-old-archived").click();
+  await page.keyboard.press("e");
+  await expect(row(page, "g-thread-old-archived")).toHaveCount(0);
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).toContain("INBOX");
+
+  // # in Trash: out of Trash, into the inbox.
+  await page.keyboard.press("g");
+  await page.keyboard.press("#");
+  await expect(row(page, "g-thread-trashed")).toBeVisible();
+  await row(page, "g-thread-trashed").click();
+  await page.keyboard.press("#");
+  await expect.poll(() => labelsOf(gmail, "g-10"), { timeout: 10_000 }).toContain("INBOX");
+  expect(await labelsOf(gmail, "g-10")).not.toContain("TRASH");
+
+  // Deleting archived mail, then undoing once it reached Gmail: back in Done (not Trash, not the inbox).
+  await gmail.control("label", { id: "g-7", remove: ["INBOX"] });
+  await syncGmail(page, gmail);
+  await page.keyboard.press("g");
+  await page.keyboard.press("e");
+  await row(page, "g-thread-old-archived").click();
+  await page.keyboard.press("#");
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).toContain("TRASH");
+  await page.keyboard.press("z");
+  await page.keyboard.press("Escape"); // the reader moved on to the next conversation
+  await expect(row(page, "g-thread-old-archived")).toBeVisible();
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).not.toContain("TRASH");
+  expect(await labelsOf(gmail, "g-7")).not.toContain("INBOX");
+});
+
 test("triage becomes label changes: archive, read, star, delete, snooze, and undo", async ({ inbox: page, gmail }) => {
   await addGmail(page);
   await selectWithKeys(page, "g-thread-latin");

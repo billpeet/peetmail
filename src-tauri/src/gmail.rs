@@ -899,7 +899,16 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
         Op::Move { destination } => {
             let id = rid()?;
             match destination.as_str() {
-                "archive" => modify(state, account_id, id, &[], &["INBOX"]).await,
+                "archive" => {
+                    let m = modify(state, account_id, id, &[], &["INBOX"]).await?;
+                    if !m["labelIds"].as_array().is_some_and(|l| l.iter().any(|l| l == "TRASH")) {
+                        return Ok(m);
+                    }
+                    // Undoing a delete of archived mail: only untrash leaves Trash, and it can
+                    // put the message back in the inbox, so take that off again.
+                    call(state, account_id, Method::POST, &format!("{}/messages/{id}/untrash", base()), None).await?;
+                    modify(state, account_id, id, &[], &["INBOX"]).await
+                }
                 "deleteditems" => call(state, account_id, Method::POST, &format!("{}/messages/{id}/trash", base()), None).await,
                 "inbox" => {
                     // Back from Trash (undo delete) or from a snooze or archive.

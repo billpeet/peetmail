@@ -18,6 +18,7 @@
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
+  import type { Mailbox } from "$lib/api";
   import { Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import Rail from "$lib/components/Rail.svelte";
@@ -47,6 +48,10 @@
   const inList = () => ready() && mail.view === "list";
   const inReader = () => ready() && mail.view === "reader";
   const hasThread = () => ready() && !!mail.current;
+  const inInbox = () => ready() && mail.search === null && mail.mailbox === "inbox";
+
+  /** Names of the mailboxes, for the list header. */
+  const MAILBOX_TITLES: Record<Mailbox, string> = { inbox: "Inbox", done: "Done", sent: "Sent", snoozed: "Snoozed", all: "All mail", trash: "Trash" };
 
   let searchInput: HTMLInputElement | undefined = $state();
 
@@ -130,9 +135,13 @@
       { id: "search.clear", keys: "Escape", label: "Clear search", group: "Navigate", when: () => inList() && mail.search !== null, run: () => mail.endSearch() },
       { id: "list.top", keys: "g g", label: "Jump to top", group: "Navigate", when: inList, run: () => mail.select(0) },
       { id: "list.bottom", keys: "G", label: "Jump to bottom", group: "Navigate", when: inList, run: () => mail.select(mail.threads.length - 1) },
-      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
-      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
+      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: inInbox, run: () => mail.cycleSplit(1) },
+      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: inInbox, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
+      { id: "go.done", keys: "g e", label: "Done (archived)", group: "Go to", when: base, run: () => mail.goTo("done") },
+      { id: "go.sent", keys: "g t", label: "Sent", group: "Go to", when: base, run: () => mail.goTo("sent") },
+      { id: "go.all", keys: "g a", label: "All mail", group: "Go to", when: base, run: () => mail.goTo("all") },
+      { id: "go.trash", keys: "g #", label: "Trash", group: "Go to", when: base, run: () => mail.goTo("trash") },
       { id: "go.snoozed", keys: "g h", label: "Snoozed conversations", group: "Go to", when: base, run: () => (mail.overlay = "snoozed") },
       { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => (mail.overlay = "scheduled") },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
@@ -145,8 +154,9 @@
       { id: "calendar.today", keys: "t", label: "This week", group: "Calendar", when: inCalendar, run: () => calendar.thisWeek() },
       { id: "calendar.back", keys: "Escape", label: "Back to inbox", group: "Calendar", when: inCalendar, run: () => mail.back() },
 
-      { id: "triage.archive", keys: "e", label: "Archive", group: "Triage", when: hasThread, run: () => mail.act("archive") },
-      { id: "triage.trash", keys: "#", label: "Delete", group: "Triage", when: hasThread, run: () => mail.act("trash") },
+      // In Done and Trash these bring mail back to the inbox (Mail.triageFor).
+      { id: "triage.archive", keys: "e", label: "Archive (in Done: back to Inbox)", group: "Triage", when: hasThread, run: () => mail.act(mail.triageFor("archive")) },
+      { id: "triage.trash", keys: "#", label: "Delete (in Trash: restore)", group: "Triage", when: hasThread, run: () => mail.act(mail.triageFor("trash")) },
       { id: "triage.read", keys: "u", label: "Toggle read", group: "Triage", when: hasThread, run: () => mail.toggleRead() },
       { id: "triage.flag", keys: "s", label: "Toggle flag", group: "Triage", when: hasThread, run: () => mail.toggleFlag() },
       { id: "triage.snooze", keys: "h", label: "Snooze", group: "Triage", when: hasThread, run: () => mail.startSnooze() },
@@ -221,7 +231,10 @@
     {:else}
     <div class="flex min-w-0 flex-1 flex-col">
     <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
-      {#if mail.search === null}
+      {#if mail.search === null && mail.mailbox !== "inbox"}
+        <h2 data-testid="mailbox-title" data-mailbox={mail.mailbox} class="px-3 py-1.5 font-semibold text-ink-100">{MAILBOX_TITLES[mail.mailbox]}</h2>
+        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
+      {:else if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
           {#each mail.visibleSplits as i (mail.splits[i].name)}
             {@const s = mail.splits[i]}

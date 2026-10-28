@@ -74,7 +74,8 @@ export type MessageRow = {
   meetingMessageType: string | null;
 };
 
-export type Action = "archive" | "trash" | "markRead" | "markUnread" | "flag" | "unflag";
+/** `moveToInbox`: archived or deleted mail back to the inbox (e in Done, # in Trash). */
+export type Action = "archive" | "trash" | "moveToInbox" | "markRead" | "markUnread" | "flag" | "unflag";
 export type ActionOutcome = { label: string | null; changed: number };
 export type DraftKind = "new" | "reply" | "replyAll" | "forward";
 
