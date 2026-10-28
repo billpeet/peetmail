@@ -5,12 +5,16 @@
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
   import InviteCard from "./InviteCard.svelte";
-  import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
+  import Composer from "./Composer.svelte";
+  import { Archive, ArchiveRestore, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Inbox, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
 
   /** Shown as the reading pane beside the list (preview layout), not full width. */
   const inPane = $derived(mail.previewing && mail.view === "list");
 
   const flagged = $derived(mail.current?.isFlagged ?? false);
+  // In Done, e brings the conversation back to the inbox; in Trash, e and # restore it.
+  const archiveBack = $derived(mail.triageFor("archive") === "moveToInbox");
+  const trashBack = $derived(mail.triageFor("trash") === "moveToInbox");
 
   /** Label for meeting messages: invitations, updates, and how people answered. */
   function meetingLabel(m: MessageRow): { text: string; tone: string } | null {
@@ -78,8 +82,16 @@
       {@render action("reader-back", "Back to list (Esc)", () => mail.back(), ArrowLeft)}
     {/if}
     <span class="mx-1 h-5 w-px bg-ink-700"></span>
-    {@render action("reader-archive", "Archive (E)", () => mail.act("archive"), Archive)}
-    {@render action("reader-trash", "Delete (#)", () => mail.act("trash"), Trash2)}
+    {#if archiveBack}
+      {@render action("reader-archive", "Move to Inbox (E)", () => mail.act("moveToInbox"), Inbox)}
+    {:else}
+      {@render action("reader-archive", "Archive (E)", () => mail.act("archive"), Archive)}
+    {/if}
+    {#if trashBack}
+      {@render action("reader-trash", "Restore to Inbox (#)", () => mail.act("moveToInbox"), ArchiveRestore)}
+    {:else}
+      {@render action("reader-trash", "Delete (#)", () => mail.act("trash"), Trash2)}
+    {/if}
     {@render action("reader-unread", "Mark as unread (U)", () => mail.act("markUnread"), Mail)}
     {@render action("reader-flag", flagged ? "Unflag (S)" : "Flag (S)", () => mail.toggleFlag(), Flag, flagged ? "text-amber-400" : "")}
     <span class="mx-1 h-5 w-px bg-ink-700"></span>
@@ -125,6 +137,7 @@
         </article>
       {/each}
     </div>
+    {#if mail.composerInline}<Composer inline />{/if}
   </div>
 </div>
 </div>

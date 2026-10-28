@@ -49,7 +49,8 @@ test("h snoozes a conversation into a hidden server folder; g h lists it; a sync
 
   await page.keyboard.press("g");
   await page.keyboard.press("h");
-  const rows = page.getByTestId("snoozed-row");
+  await expect(page.getByTestId("mailbox-title")).toHaveAttribute("data-mailbox", "snoozed");
+  const rows = page.getByTestId("thread-row");
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toHaveAttribute("data-conversation-id", "conv-plain"); // soonest back first
   await expect(page.getByTestId("snoozed-until").first()).toContainText("tomorrow");
@@ -67,7 +68,7 @@ test("z undoes a snooze before it reaches the server", async ({ inbox: page, fak
   expect(moves(fake)).toEqual([]);
   await page.keyboard.press("g");
   await page.keyboard.press("h");
-  await expect(page.getByTestId("snoozed-empty")).toBeVisible();
+  await expect(page.getByTestId("thread-list-empty")).toContainText("Nothing snoozed.");
 });
 
 test("a typed time works too", async ({ inbox: page }) => {
@@ -81,7 +82,7 @@ test("a typed time works too", async ({ inbox: page }) => {
   await expect(row(page, "conv-plain")).toHaveCount(0);
   await page.keyboard.press("g");
   await page.keyboard.press("h");
-  await expect(page.getByTestId("snoozed-row")).toHaveCount(1);
+  await expect(page.getByTestId("thread-row")).toHaveCount(1);
 });
 
 test("when it's due, it comes back to the top of the inbox, unread, marked as a reminder", async ({ inbox: page, fake }) => {
@@ -102,26 +103,42 @@ test("when it's due, it comes back to the top of the inbox, unread, marked as a 
   await expect(page.getByTestId("thread-row").first()).toHaveAttribute("data-conversation-id", "conv-plain");
 });
 
-test("from the snoozed list: Enter reads it without waking it, u brings it back now", async ({ inbox: page }) => {
+test("in Snoozed: Enter reads it without waking it, u brings it back now", async ({ inbox: page }) => {
   await select(page, "conv-plain");
   await page.keyboard.press("h");
   await page.getByTestId("snooze-preset").and(page.locator("[data-id=tomorrow]")).click();
   await page.keyboard.press("g");
   await page.keyboard.press("h");
-  await expect(page.getByTestId("snoozed-row")).toHaveCount(1); // loaded, so Enter has a row to open
+  await expect(page.getByTestId("thread-row")).toHaveCount(1); // loaded, so Enter has a row to open
+  await expect(page.getByTestId("snoozed-until")).toContainText("tomorrow");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("reader")).toHaveAttribute("data-conversation-id", "conv-plain");
   await page.keyboard.press("Escape");
-  await expect(row(page, "conv-plain")).toHaveCount(0);
+  await expect(row(page, "conv-plain")).toBeVisible(); // still snoozed
 
-  await page.keyboard.press("g");
-  await page.keyboard.press("h");
-  await expect(page.getByTestId("snoozed-row")).toHaveCount(1);
   await page.keyboard.press("u");
   await expect(page.getByTestId("toast")).toContainText("Back in your inbox");
-  await expect(page.getByTestId("snoozed-empty")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("thread-list-empty")).toContainText("Nothing snoozed.");
+  await page.keyboard.press("g");
+  await page.keyboard.press("i");
   await expect(page.getByTestId("thread-row").first()).toHaveAttribute("data-conversation-id", "conv-plain");
+});
+
+test("in Snoozed, e archives a conversation and z puts it back in Snoozed", async ({ inbox: page, fake }) => {
+  await select(page, "conv-plain");
+  await page.keyboard.press("h");
+  await page.getByTestId("snooze-preset").and(page.locator("[data-id=tomorrow]")).click();
+  await expect.poll(() => folderOf(fake, "msg-plain"), { timeout: 10_000 }).toBe("folder-1");
+  await page.keyboard.press("g");
+  await page.keyboard.press("h");
+  await expect(row(page, "conv-plain")).toBeVisible();
+  await page.keyboard.press("e");
+  await expect(page.getByTestId("toast")).toContainText("Archived");
+  await expect(page.getByTestId("thread-list-empty")).toBeVisible();
+  await expect.poll(() => folderOf(fake, "msg-plain"), { timeout: 10_000 }).toBe("AAMkAGI2-archive");
+  await page.keyboard.press("z");
+  await expect(row(page, "conv-plain")).toBeVisible();
+  await expect.poll(() => folderOf(fake, "msg-plain"), { timeout: 10_000 }).toBe("folder-1");
 });
 
 test("snoozing from the reader moves on to the next conversation", async ({ inbox: page }) => {

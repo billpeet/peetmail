@@ -1,4 +1,4 @@
-//! Conversation-level triage (archive, delete, read state, flag) with undo.
+//! Conversation-level triage (archive, delete, back to the inbox, read state, flag) with undo.
 //! Each action updates SQLite immediately and queues the matching outbox ops.
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -14,8 +14,12 @@ type LocalChange = Box<dyn Fn(&Connection, &MessageState) -> Result<()>>;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum Action {
+    /// Inbox (and snoozed) mail to Archive (Done).
     Archive,
+    /// Inbox, snoozed and archived mail to Deleted Items.
     Trash,
+    /// Archived and deleted mail back to the inbox ("not done", restore from Trash).
+    MoveToInbox,
     MarkRead,
     MarkUnread,
     Flag,
@@ -27,6 +31,7 @@ impl Action {
         match self {
             Action::Archive => "Archived",
             Action::Trash => "Deleted",
+            Action::MoveToInbox => "Moved to Inbox",
             Action::MarkRead => "Marked as read",
             Action::MarkUnread => "Marked as unread",
             Action::Flag => "Flagged",
@@ -173,27 +178,47 @@ pub struct ActionOutcome {
 /// (empty `before` means there was nothing to do).
 pub fn apply(conn: &mut Connection, account_id: i64, conversation_id: &str, action: Action) -> Result<UndoEntry> {
     let tx = conn.transaction()?;
-    let inbox = db::folder_by_role(&tx, account_id, "inbox")?.map(|f| f.id);
     let all = db::conversation_states(&tx, account_id, conversation_id, None)?;
+
+    // Moves: which folders the messages come from and go to. Each move's undo sends a message
+    // back to the folder it came from (deleting from Done puts it back in Done).
+    let moves: Option<(&[&str], (&str, &str))> = match action {
+        // Snoozed mail too, so e and # work in the Snoozed view. Its snooze stays: undo puts
+        // it back in Snoozed, and waking only moves what's still there.
+        Action::Archive => Some((&["inbox", SNOOZED_ROLE], ("archive", "Archive"))),
+        Action::Trash => Some((&["inbox", SNOOZED_ROLE, "archive"], ("deleteditems", "Deleted Items"))),
+        Action::MoveToInbox => Some((&["archive", "deleteditems"], ("inbox", "Inbox"))),
+        _ => None,
+    };
+    if let Some((from, (to, name))) = moves {
+        let target = db::ensure_local_folder(&tx, account_id, to, name)?.id;
+        let mut origin = std::collections::HashMap::new();
+        for role in from {
+            if let Some(f) = db::folder_by_role(&tx, account_id, role)? {
+                origin.insert(f.id, *role);
+            }
+        }
+        let targets: Vec<MessageState> = all.iter().filter(|m| origin.contains_key(&m.folder_id)).cloned().collect();
+        let remote = Op::Move { destination: to.into() };
+        let mut ops = Vec::with_capacity(targets.len());
+        for m in &targets {
+            db::set_folder(&tx, m.id, target)?;
+            let id = outbox::enqueue(&tx, account_id, Some(&m.remote_id), &remote, GRACE)?;
+            // Snoozed mail goes back to the snooze folder, which the outbox resolves.
+            let back = match origin[&m.folder_id] {
+                SNOOZED_ROLE => SNOOZE_DEST,
+                role => role,
+            };
+            ops.push((id, m.remote_id.clone(), Op::Move { destination: back.into() }));
+        }
+        tx.commit()?;
+        return Ok(UndoEntry { label: action.label().into(), account_id, before: targets, ops, snooze: None });
+    }
 
     // Which messages the action touches, and what it does to each.
     let (targets, local, remote, inverse): (Vec<MessageState>, LocalChange, Op, Op) =
         match action {
-            Action::Archive | Action::Trash => {
-                let (role, name, dest) = if action == Action::Archive {
-                    ("archive", "Archive", "archive")
-                } else {
-                    ("deleteditems", "Deleted Items", "deleteditems")
-                };
-                let target = db::ensure_local_folder(&tx, account_id, role, name)?.id;
-                let in_inbox = all.iter().filter(|m| Some(m.folder_id) == inbox).cloned().collect();
-                (
-                    in_inbox,
-                    Box::new(move |c, m| db::set_folder(c, m.id, target)),
-                    Op::Move { destination: dest.into() },
-                    Op::Move { destination: "inbox".into() },
-                )
-            }
+            Action::Archive | Action::Trash | Action::MoveToInbox => unreachable!("moves are handled above"),
             Action::MarkRead => (
                 all.iter().filter(|m| !m.is_read).cloned().collect(),
                 Box::new(|c, m| db::set_read(c, m.id, true)),
@@ -301,6 +326,72 @@ mod tests {
             undo(c, &entry)?;
             assert_eq!(db::list_threads(c, db::Scope::Folder(inbox), &crate::query::compile(""), None, 10)?.len(), 1);
             assert!(queued(c).is_empty(), "pending moves are cancelled, nothing sent");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn deleting_from_done_then_restoring_puts_mail_back_where_it_was() {
+        let (db, a, inbox) = seed();
+        let mailbox = |c: &Connection, m: db::Mailbox| db::list_threads(c, m.scope(), &crate::query::compile(""), None, 10).unwrap().len();
+        let undo_ops = |e: &UndoEntry| e.ops.iter().map(|(_, _, op)| serde_json::to_string(op).unwrap()).collect::<Vec<_>>();
+        db.with(|c| {
+            apply(c, a, "c1", Action::Archive)?;
+            c.execute("DELETE FROM outbox", [])?; // reached the server
+            assert_eq!((mailbox(c, db::Mailbox::Inbox), mailbox(c, db::Mailbox::Done)), (0, 1));
+
+            // # in Done deletes the archived mail; its undo sends it back to Archive, not the inbox.
+            let del = apply(c, a, "c1", Action::Trash)?;
+            assert_eq!(del.before.len(), 3);
+            assert_eq!((mailbox(c, db::Mailbox::Done), mailbox(c, db::Mailbox::Trash)), (0, 1));
+            assert!(undo_ops(&del).iter().all(|op| op.contains("\"archive\"")));
+            c.execute("DELETE FROM outbox", [])?;
+            undo(c, &del)?;
+            assert_eq!((mailbox(c, db::Mailbox::Done), mailbox(c, db::Mailbox::Trash)), (1, 0));
+            assert!(queued(c).iter().all(|(_, op)| op.contains("\"archive\"")), "inverse moves queued");
+            c.execute("DELETE FROM outbox", [])?;
+
+            // e in Done: back to the inbox, as the conversation it was.
+            let back = apply(c, a, "c1", Action::MoveToInbox)?;
+            assert_eq!(back.label, "Moved to Inbox");
+            assert_eq!((mailbox(c, db::Mailbox::Inbox), mailbox(c, db::Mailbox::Done)), (1, 0));
+            assert_eq!(db::list_threads(c, db::Scope::Folder(inbox), &crate::query::compile(""), None, 10)?[0].message_count, 3);
+            assert!(queued(c).iter().all(|(_, op)| op.contains("\"inbox\"")));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn archiving_snoozed_mail_and_undoing_puts_it_back_in_snoozed() {
+        let (db, a, _) = seed();
+        let mailbox = |c: &Connection, m: db::Mailbox| db::list_threads(c, m.scope(), &crate::query::compile(""), None, 10).unwrap().len();
+        db.with(|c| {
+            snooze(c, a, "c1", chrono::Utc::now() + chrono::Duration::hours(3))?;
+            c.execute("DELETE FROM outbox", [])?;
+            let done = apply(c, a, "c1", Action::Archive)?;
+            assert_eq!(done.before.len(), 3);
+            assert_eq!((mailbox(c, db::Mailbox::Snoozed), mailbox(c, db::Mailbox::Done)), (0, 1));
+            assert!(done.ops.iter().all(|(_, _, op)| serde_json::to_string(op).unwrap().contains(SNOOZE_DEST)));
+            undo(c, &done)?;
+            assert_eq!((mailbox(c, db::Mailbox::Snoozed), mailbox(c, db::Mailbox::Done)), (1, 0));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn restoring_from_trash_moves_to_the_inbox_and_nothing_else() {
+        let (db, a, _) = seed();
+        db.with(|c| {
+            apply(c, a, "c1", Action::Trash)?;
+            c.execute("DELETE FROM outbox", [])?;
+            let back = apply(c, a, "c1", Action::MoveToInbox)?;
+            assert_eq!(back.before.len(), 3);
+            assert_eq!(db::list_threads(c, db::Mailbox::Inbox.scope(), &crate::query::compile(""), None, 10)?.len(), 1);
+            // Inbox mail has nowhere to go "back to the inbox" from.
+            assert!(apply(c, a, "c1", Action::MoveToInbox)?.before.is_empty());
             Ok(())
         })
         .unwrap();

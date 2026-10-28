@@ -18,6 +18,7 @@
   import Composer from "$lib/components/Composer.svelte";
   import Palette from "$lib/components/Palette.svelte";
   import { count } from "$lib/format";
+  import type { MailView } from "$lib/mail.svelte";
   import { Columns2, PanelRight, Rows3, Search, Settings as SettingsIcon, SquarePen, X } from "@lucide/svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import Rail from "$lib/components/Rail.svelte";
@@ -28,7 +29,6 @@
   import RightPane from "$lib/components/RightPane.svelte";
   import ScheduledList from "$lib/components/ScheduledList.svelte";
   import SnoozePicker from "$lib/components/SnoozePicker.svelte";
-  import SnoozedList from "$lib/components/SnoozedList.svelte";
 
   // `base`: signed in, nothing modal open (global keys). `ready`: base, in the mail views
   // (every mail binding hangs off it, so mail keys don't act on a hidden conversation
@@ -44,9 +44,16 @@
     !mail.invite.event.isOrganizer &&
     !mail.invite.event.isCancelled &&
     mail.invite.meetingMessageType !== "meetingCancelled";
-  const inList = () => ready() && mail.view === "list";
+  /** The list holds conversations (Scheduled holds sends, with its own keys). */
+  const inThreads = () => ready() && !(mail.mailbox === "scheduled" && mail.search === null);
+  const inList = () => inThreads() && mail.view === "list";
+  const inSnoozed = () => ready() && mail.mailbox === "snoozed" && mail.search === null;
   const inReader = () => ready() && mail.view === "reader";
   const hasThread = () => ready() && !!mail.current;
+  const inInbox = () => ready() && mail.search === null && mail.mailbox === "inbox";
+
+  /** Names of the mailboxes, for the list header. */
+  const MAILBOX_TITLES: Record<MailView, string> = { inbox: "Inbox", done: "Done", sent: "Sent", snoozed: "Snoozed", scheduled: "Scheduled", all: "All mail", trash: "Trash" };
 
   let searchInput: HTMLInputElement | undefined = $state();
 
@@ -121,8 +128,8 @@
     ];
 
     const unregister = keymap.register([
-      { id: "list.down", keys: "j", label: "Next conversation", group: "Navigate", when: ready, run: () => mail.move(1) },
-      { id: "list.up", keys: "k", label: "Previous conversation", group: "Navigate", when: ready, run: () => mail.move(-1) },
+      { id: "list.down", keys: "j", label: "Next conversation", group: "Navigate", when: inThreads, run: () => mail.move(1) },
+      { id: "list.up", keys: "k", label: "Previous conversation", group: "Navigate", when: inThreads, run: () => mail.move(-1) },
       { id: "list.down.arrow", keys: "ArrowDown", label: "Next conversation", group: "Navigate", when: inList, run: () => mail.move(1) },
       { id: "list.up.arrow", keys: "ArrowUp", label: "Previous conversation", group: "Navigate", when: inList, run: () => mail.move(-1) },
       { id: "list.open", keys: "Enter", label: "Open conversation", group: "Navigate", when: inList, run: () => mail.open() },
@@ -130,11 +137,15 @@
       { id: "search.clear", keys: "Escape", label: "Clear search", group: "Navigate", when: () => inList() && mail.search !== null, run: () => mail.endSearch() },
       { id: "list.top", keys: "g g", label: "Jump to top", group: "Navigate", when: inList, run: () => mail.select(0) },
       { id: "list.bottom", keys: "G", label: "Jump to bottom", group: "Navigate", when: inList, run: () => mail.select(mail.threads.length - 1) },
-      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: ready, run: () => mail.cycleSplit(1) },
-      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: ready, run: () => mail.cycleSplit(-1) },
+      { id: "split.next", keys: "Tab", label: "Next split", group: "Navigate", when: inInbox, run: () => mail.cycleSplit(1) },
+      { id: "split.prev", keys: "shift+Tab", label: "Previous split", group: "Navigate", when: inInbox, run: () => mail.cycleSplit(-1) },
       { id: "go.inbox", keys: "g i", label: "Go to inbox", group: "Go to", when: base, run: () => mail.switchSplit(0) },
-      { id: "go.snoozed", keys: "g h", label: "Snoozed conversations", group: "Go to", when: base, run: () => (mail.overlay = "snoozed") },
-      { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => (mail.overlay = "scheduled") },
+      { id: "go.done", keys: "g e", label: "Done (archived)", group: "Go to", when: base, run: () => mail.goTo("done") },
+      { id: "go.sent", keys: "g t", label: "Sent", group: "Go to", when: base, run: () => mail.goTo("sent") },
+      { id: "go.all", keys: "g a", label: "All mail", group: "Go to", when: base, run: () => mail.goTo("all") },
+      { id: "go.trash", keys: "g #", label: "Trash", group: "Go to", when: base, run: () => mail.goTo("trash") },
+      { id: "go.snoozed", keys: "g h", label: "Snoozed", group: "Go to", when: base, run: () => mail.goTo("snoozed") },
+      { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => mail.goTo("scheduled") },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
       { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
@@ -145,9 +156,11 @@
       { id: "calendar.today", keys: "t", label: "This week", group: "Calendar", when: inCalendar, run: () => calendar.thisWeek() },
       { id: "calendar.back", keys: "Escape", label: "Back to inbox", group: "Calendar", when: inCalendar, run: () => mail.back() },
 
-      { id: "triage.archive", keys: "e", label: "Archive", group: "Triage", when: hasThread, run: () => mail.act("archive") },
-      { id: "triage.trash", keys: "#", label: "Delete", group: "Triage", when: hasThread, run: () => mail.act("trash") },
-      { id: "triage.read", keys: "u", label: "Toggle read", group: "Triage", when: hasThread, run: () => mail.toggleRead() },
+      // In Done and Trash these bring mail back to the inbox (Mail.triageFor).
+      { id: "triage.archive", keys: "e", label: "Archive (in Done: back to Inbox)", group: "Triage", when: hasThread, run: () => mail.act(mail.triageFor("archive")) },
+      { id: "triage.trash", keys: "#", label: "Delete (in Trash: restore)", group: "Triage", when: hasThread, run: () => mail.act(mail.triageFor("trash")) },
+      { id: "triage.read", keys: "u", label: "Toggle read", group: "Triage", when: () => hasThread() && !inSnoozed(), run: () => mail.toggleRead() },
+      { id: "snoozed.wake", keys: "u", label: "Back to inbox now (in Snoozed)", group: "Triage", when: () => hasThread() && inSnoozed(), run: () => mail.unsnooze() },
       { id: "triage.flag", keys: "s", label: "Toggle flag", group: "Triage", when: hasThread, run: () => mail.toggleFlag() },
       { id: "triage.snooze", keys: "h", label: "Snooze", group: "Triage", when: hasThread, run: () => mail.startSnooze() },
       { id: "triage.undo", keys: "z", label: "Undo", group: "Triage", when: ready, run: () => mail.undo() },
@@ -221,7 +234,10 @@
     {:else}
     <div class="flex min-w-0 flex-1 flex-col">
     <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
-      {#if mail.search === null}
+      {#if mail.search === null && mail.mailbox !== "inbox"}
+        <h2 data-testid="mailbox-title" data-mailbox={mail.mailbox} class="px-3 py-1.5 font-semibold text-ink-100">{MAILBOX_TITLES[mail.mailbox]}</h2>
+        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
+      {:else if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
           {#each mail.visibleSplits as i (mail.splits[i].name)}
             {@const s = mail.splits[i]}
@@ -283,7 +299,9 @@
     </header>
 
     <main data-testid="main" data-layout={mail.previewing ? "preview" : "list"} class="flex min-h-0 flex-1">
-      {#if mail.view === "reader"}
+      {#if mail.mailbox === "scheduled" && mail.search === null}
+        <div class="min-w-0 flex-1"><ScheduledList /></div>
+      {:else if mail.view === "reader"}
         <div class="min-w-0 flex-1"><Reader /></div>
       {:else if mail.previewing}
         <div data-testid="preview-list" data-width={listWidth} style:width="{listWidth}px" class="relative shrink-0 border-r border-ink-800">
@@ -322,7 +340,7 @@
       {#if mail.outbox.pending && mail.outboxSlow}<span data-testid="outbox-pending">Sending {count(mail.outbox.pending, "change")}…</span>{/if}
       {#if mail.outbox.failed}<span data-testid="outbox-failed" class="text-red-300" title={mail.outbox.lastError ?? ""}>{mail.outbox.failed} failed</span>{/if}
       {#if mail.scheduled.length}
-        <button data-testid="footer-scheduled" onclick={() => (mail.overlay = "scheduled")} class="hover:text-ink-100" title="Scheduled messages (g s)">
+        <button data-testid="footer-scheduled" onclick={() => mail.goTo("scheduled")} class="hover:text-ink-100" title="Scheduled messages (g s)">
           {count(mail.scheduled.length, "scheduled message")}
         </button>
       {/if}
@@ -395,7 +413,8 @@
   {/if}
 </div>
 
-{#if mail.composer}<Composer />{/if}
+<!-- Replies to the conversation on screen are written inline in the reader instead. -->
+{#if mail.composer && !mail.composerInline}<Composer />{/if}
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
 {#if mail.overlay === "docs"}<Help />{/if}
 {#if mail.overlay === "whatsnew"}<WhatsNew mode="new" />{/if}
@@ -405,6 +424,4 @@
 {#if mail.overlay === "event"}<EventDetails />{/if}
 {#if mail.overlay === "quickadd"}<QuickAdd />{/if}
 {#if mail.overlay === "editevent" && calendar.editing}<EventEditor />{/if}
-{#if mail.overlay === "scheduled"}<ScheduledList />{/if}
 {#if mail.overlay === "snooze"}<SnoozePicker />{/if}
-{#if mail.overlay === "snoozed"}<SnoozedList />{/if}

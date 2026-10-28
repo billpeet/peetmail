@@ -483,11 +483,44 @@ pub struct Cursor {
 pub enum Scope {
     /// One folder.
     Folder(i64),
-    /// The inbox of every signed-in account (the unified inbox and its splits).
-    Inboxes,
-    /// Every cached folder except Deleted Items (search).
+    /// One well-known folder (`folders.role`) of every signed-in account: `Role("inbox")` is
+    /// the unified inbox and its splits.
+    Role(&'static str),
+    /// Archived conversations with nothing left in the inbox or snoozed: a reply that lands
+    /// in an archived conversation takes it out of Done and back to the inbox.
+    Done,
+    /// Every signed-in account's cached folders except Deleted Items (search, All mail).
     AllMail,
 }
+
+/// The mail views the sidebar lists, across accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Mailbox {
+    Inbox,
+    Done,
+    Sent,
+    Snoozed,
+    All,
+    Trash,
+}
+
+impl Mailbox {
+    pub fn scope(self) -> Scope {
+        match self {
+            Mailbox::Inbox => Scope::Role("inbox"),
+            Mailbox::Done => Scope::Done,
+            Mailbox::Sent => Scope::Role("sentitems"),
+            Mailbox::Snoozed => Scope::Role(crate::actions::SNOOZED_ROLE),
+            Mailbox::All => Scope::AllMail,
+            Mailbox::Trash => Scope::Role("deleteditems"),
+        }
+    }
+}
+
+/// Signed-in accounts' folders with this role, as SQL over `?` (the role).
+const ROLE_FOLDERS: &str = "SELECT f.id FROM folders f JOIN accounts a ON a.id = f.account_id
+                            WHERE f.role = ? AND a.token_blob IS NOT NULL";
 
 impl Scope {
     /// SQL condition on `m` (messages), pushing any parameter it needs.
@@ -497,10 +530,23 @@ impl Scope {
                 params.push(rusqlite::types::Value::Integer(*id));
                 "m.folder_id = ?".to_string()
             }
-            Scope::Inboxes => "m.folder_id IN (SELECT f.id FROM folders f JOIN accounts a ON a.id = f.account_id
-                                WHERE f.role = 'inbox' AND a.token_blob IS NOT NULL)"
+            Scope::Role(role) => {
+                params.push(rusqlite::types::Value::Text(role.to_string()));
+                format!("m.folder_id IN ({ROLE_FOLDERS})")
+            }
+            Scope::Done => {
+                params.push(rusqlite::types::Value::Text("archive".into()));
+                format!(
+                    "m.folder_id IN ({ROLE_FOLDERS}) AND NOT EXISTS (
+                       SELECT 1 FROM messages o JOIN folders fo ON fo.id = o.folder_id
+                       WHERE o.account_id = m.account_id AND o.conversation_id = m.conversation_id
+                         AND fo.role IN ('inbox', '{}'))",
+                    crate::actions::SNOOZED_ROLE
+                )
+            }
+            Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')
+                               AND m.account_id IN (SELECT id FROM accounts WHERE token_blob IS NOT NULL)"
                 .to_string(),
-            Scope::AllMail => "m.folder_id NOT IN (SELECT id FROM folders WHERE role = 'deleteditems')".to_string(),
         }
     }
 }
@@ -582,17 +628,17 @@ pub fn count_threads(conn: &Connection, scope: Scope, filter: &crate::query::Fil
     Ok(conn.query_row(&sql, rusqlite::params_from_iter(params), |r| Ok((r.get(0)?, r.get(1)?)))?)
 }
 
-/// Every message of a conversation, oldest first, excluding Deleted Items. Includes Sent
-/// and Archive copies so the reader shows the whole exchange.
-pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str) -> Result<Vec<MessageRow>> {
+/// Every message of a conversation, oldest first. Includes Sent and Archive copies so the
+/// reader shows the whole exchange; Deleted Items only with `with_trash` (the Trash view).
+pub fn get_thread(conn: &Connection, account_id: i64, conversation_id: &str, with_trash: bool) -> Result<Vec<MessageRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.id, m.subject, m.from_name, m.from_address, m.to_json, m.cc_json, m.received_at, m.preview,
                 m.is_read, m.has_attachments, m.is_flagged, COALESCE(f.role, ''), m.message_type, m.meeting_message_type
          FROM messages m JOIN folders f ON f.id = m.folder_id
-         WHERE m.account_id = ?1 AND m.conversation_id = ?2 AND COALESCE(f.role, '') <> 'deleteditems'
+         WHERE m.account_id = ?1 AND m.conversation_id = ?2 AND (?3 OR COALESCE(f.role, '') <> 'deleteditems')
          ORDER BY m.received_at ASC, m.id ASC",
     )?;
-    let rows = stmt.query_map(params![account_id, conversation_id], |r| {
+    let rows = stmt.query_map(params![account_id, conversation_id, with_trash], |r| {
         let to: String = r.get(4)?;
         let cc: String = r.get(5)?;
         Ok(MessageRow {
@@ -672,13 +718,25 @@ pub fn set_folder(conn: &Connection, id: i64, folder_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Remote id prefix of a local placeholder folder.
+pub const PLACEHOLDER_PREFIX: &str = "wk:";
+
 /// Folder row for a well-known role, creating a local placeholder if it was never synced.
 /// Placeholders use `wk:<role>` as remote id; moves address Graph by well-known name anyway.
 pub fn ensure_local_folder(conn: &Connection, account_id: i64, role: &str, name: &str) -> Result<Folder> {
     if let Some(f) = folder_by_role(conn, account_id, role)? {
         return Ok(f);
     }
-    insert_folder(conn, account_id, &format!("wk:{role}"), role, name)
+    insert_folder(conn, account_id, &format!("{PLACEHOLDER_PREFIX}{role}"), role, name)
+}
+
+/// Gives a placeholder folder its server id once sync finds it, keeping its row (and mail).
+pub fn resolve_placeholder(conn: &Connection, folder_id: i64, remote_id: &str, name: &str) -> Result<Folder> {
+    conn.execute(
+        "UPDATE folders SET remote_id = ?2, name = ?3, delta_link = NULL WHERE id = ?1",
+        params![folder_id, remote_id, name],
+    )?;
+    Ok(conn.query_row(&format!("SELECT {FOLDER_COLS} FROM folders WHERE id = ?1"), [folder_id], folder_from_row)?)
 }
 
 // ---------- recent opens ----------
@@ -1055,12 +1113,12 @@ mod tests {
             upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
             upsert_message(c, b, fb, &msg("w1", "c1", "2026-10-02T10:00:00Z", true))?; // same conversation id, other account
             upsert_message(c, b, b_sent, &msg("w2", "c9", "2026-10-03T10:00:00Z", true))?;
-            let all = |q: &str| list_threads(c, Scope::Inboxes, &crate::query::compile(q), None, 10).unwrap();
+            let all = |q: &str| list_threads(c, Scope::Role("inbox"), &crate::query::compile(q), None, 10).unwrap();
 
             let t = all("");
             assert_eq!(t.iter().map(|t| (t.account_id, t.conversation_id.as_str())).collect::<Vec<_>>(), vec![(b, "c1"), (a, "c1")]);
             assert!(t.iter().all(|t| t.message_count == 1), "conversations don't merge across accounts");
-            assert_eq!(count_threads(c, Scope::Inboxes, &crate::query::compile(""))?, (2, 1));
+            assert_eq!(count_threads(c, Scope::Role("inbox"), &crate::query::compile(""))?, (2, 1));
             assert_eq!(all("account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![b]);
             assert_eq!(all("-account:work").iter().map(|t| t.account_id).collect::<Vec<_>>(), vec![a]);
 
@@ -1078,7 +1136,7 @@ mod tests {
         db.with(|c| {
             upsert_message(c, a, f, &msg("m1", "c1", "2026-10-01T10:00:00Z", false))?;
             upsert_message(c, a, f, &MessageUpsert { remote_id: "m1".into(), is_read: Some(true), ..Default::default() })?;
-            let t = get_thread(c, a, "c1")?;
+            let t = get_thread(c, a, "c1", false)?;
             assert_eq!(t.len(), 1);
             assert!(t[0].is_read);
             assert_eq!(t[0].subject, "subject m1");
@@ -1178,6 +1236,63 @@ mod tests {
             assert!(get_body(c, 2)?.is_none());
             assert!(get_body(c, 1)?.is_some());
             assert!(get_body(c, 3)?.is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_placeholder_folder_gets_its_server_id_and_keeps_its_mail() {
+        let (db, a, _) = seed();
+        db.with(|c| {
+            let archive = ensure_local_folder(c, a, "archive", "Archive")?;
+            assert!(archive.remote_id.starts_with(PLACEHOLDER_PREFIX));
+            upsert_message(c, a, archive.id, &msg("m1", "c1", "2026-10-01T10:00:00Z", true))?;
+            set_delta_link(c, archive.id, Some("stale"))?;
+
+            let real = resolve_placeholder(c, archive.id, "AAMk-archive", "Archive")?;
+            assert_eq!((real.id, real.remote_id.as_str(), real.delta_link.as_deref()), (archive.id, "AAMk-archive", None));
+            assert_eq!(folder_by_role(c, a, "archive")?.unwrap().remote_id, "AAMk-archive");
+            assert_eq!(list_threads(c, Scope::Folder(archive.id), &crate::query::compile(""), None, 10)?.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn mailboxes_list_their_folders_across_accounts() {
+        let (db, a, inbox) = seed();
+        db.with(|c| {
+            let b = upsert_account(c, "google", "boris@gmail.com", None, b"x")?.id;
+            let folder = |acct, role: &str| ensure_local_folder(c, acct, role, role).map(|f| f.id);
+            let (sent, archive, archive_b) = (folder(a, "sentitems")?, folder(a, "archive")?, folder(b, "archive")?);
+            let deleted = folder(b, "deleteditems")?;
+            upsert_message(c, a, inbox, &msg("i1", "c-inbox", "2026-10-05T10:00:00Z", false))?;
+            upsert_message(c, a, sent, &msg("s1", "c-sent", "2026-10-04T10:00:00Z", true))?;
+            upsert_message(c, a, archive, &msg("a1", "c-done", "2026-10-03T10:00:00Z", true))?;
+            upsert_message(c, b, archive_b, &msg("a2", "c-done-b", "2026-10-02T10:00:00Z", true))?;
+            upsert_message(c, b, deleted, &msg("d1", "c-trash", "2026-10-01T10:00:00Z", true))?;
+            // An archived conversation someone replied to is back in the inbox, not Done.
+            upsert_message(c, a, archive, &msg("a3", "c-inbox", "2026-10-01T09:00:00Z", true))?;
+
+            let convs = |m: Mailbox| -> Vec<String> {
+                list_threads(c, m.scope(), &crate::query::compile(""), None, 10).unwrap().into_iter().map(|t| t.conversation_id).collect()
+            };
+            assert_eq!(convs(Mailbox::Inbox), ["c-inbox"]);
+            assert_eq!(convs(Mailbox::Sent), ["c-sent"]);
+            assert_eq!(convs(Mailbox::Done), ["c-done", "c-done-b"]);
+            assert_eq!(convs(Mailbox::Trash), ["c-trash"]);
+            assert_eq!(convs(Mailbox::All), ["c-inbox", "c-sent", "c-done", "c-done-b"]);
+
+            // The Trash view's reader shows the deleted message; elsewhere it's hidden.
+            assert!(get_thread(c, b, "c-trash", false)?.is_empty());
+            assert_eq!(get_thread(c, b, "c-trash", true)?.len(), 1);
+
+            // A signed-out account's mail leaves every mailbox.
+            c.execute("UPDATE accounts SET token_blob = NULL WHERE id = ?1", [b])?;
+            assert_eq!(convs(Mailbox::Done), ["c-done"]);
+            assert!(convs(Mailbox::Trash).is_empty());
+            assert_eq!(convs(Mailbox::All), ["c-inbox", "c-sent", "c-done"]);
             Ok(())
         })
         .unwrap();

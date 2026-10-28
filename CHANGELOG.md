@@ -12,6 +12,11 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Snoozed (**g h**) and Scheduled (**g s**) open as lists in the main window instead of pop-ups. In Snoozed, **e** and **#** archive and delete too.
+- The left sidebar lists your mailboxes: Inbox, Done, Sent, Snoozed, Scheduled, All mail and Trash, across all your accounts. **g e**, **g t**, **g a** and **g #** open Done, Sent, All mail and Trash. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it.
+- Search no longer shows mail from accounts you've signed out of.
+- Mail you archive or delete anywhere (Outlook, Gmail, your phone) is now kept in PeetMail too, within your mail window: search finds archived mail and conversations show it. The first sync after updating takes a little longer while it fetches.
+- Replies and forwards open under the conversation you're reading, like Outlook, so the earlier messages stay in view while you write. New messages still open on their own.
 - PeetMail warns you, with what to do, when your disk is nearly full, your PC's clock is wrong, it can't save to its folder, WebView2 is out of date, or its mail cache looks damaged after an update.
 - **Help → Report a problem**: send feedback to the developers from PeetMail (with diagnostics if you like), write an email instead, or save a diagnostics file with no personal details in it.
 - **Help** (**F1**): getting started, updates, privacy, troubleshooting and every keyboard shortcut, built into PeetMail.

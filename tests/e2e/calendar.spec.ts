@@ -153,8 +153,8 @@ test("recurring meetings and bare events show their details (subject, organiser,
   await expect(page.getByTestId("event-location")).toHaveText("Board room");
 });
 
-test("the left sidebar switches between Mail and Calendar, and so do 1 and 2", async ({ inbox: page }, testInfo) => {
-  const railMail = page.getByTestId("rail-mail");
+test("the left sidebar switches between the inbox and Calendar, and so do 1 and 2", async ({ inbox: page }, testInfo) => {
+  const railMail = page.getByTestId("rail-mailbox-inbox");
   const railCal = page.getByTestId("rail-calendar");
   await expect(railMail).toHaveAttribute("data-active", "true");
   await snap(page, testInfo, "rail");

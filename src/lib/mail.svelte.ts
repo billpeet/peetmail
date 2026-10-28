@@ -4,6 +4,7 @@ import {
   type Bootstrap,
   type DraftKind,
   type Folder,
+  type Mailbox,
   type MessageRow,
   type OutboxStatus,
   type Preferences,
@@ -32,7 +33,9 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed" | "editevent" | "whatsnew" | "changelog" | "docs";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "snooze" | "editevent" | "whatsnew" | "changelog" | "docs";
+/** What the mail list shows: a mailbox, or messages scheduled to send. */
+export type MailView = Mailbox | "scheduled";
 
 /** The pages of Settings, in sidebar order. */
 export type SettingsPage = "accounts" | "mail" | "calendar" | "notifications" | "storage" | "updates" | "privacy" | "apps";
@@ -43,6 +46,8 @@ export type ComposerState = {
   kind: DraftKind;
   /** Message replied to or forwarded. */
   referenceMessageId: number | null;
+  /** Its conversation: while that's on screen, the composer sits under it in the reader. */
+  conversationId: string | null;
   to: string;
   cc: string;
   subject: string;
@@ -106,6 +111,8 @@ class MailStore {
   );
   /** Active search text; when non-null the list shows search results across all mail. */
   search = $state<string | null>(null);
+  /** What the list shows (the sidebar, g i / g e / g t / g h / g s / g a / g #). */
+  mailbox = $state<MailView>("inbox");
 
   threads = $state.raw<ThreadRow[]>([]);
   selected = $state(0);
@@ -172,6 +179,23 @@ class MailStore {
     return this.boot?.preferences.layout === "preview";
   }
 
+  /**
+   * A reply or forward whose conversation is on screen is written inline, under the
+   * messages it answers. Anything else (new mail, or the conversation isn't showing)
+   * opens as a dialog.
+   */
+  get composerInline(): boolean {
+    const c = this.composer;
+    return (
+      !!c &&
+      c.kind !== "new" &&
+      c.conversationId !== null &&
+      c.conversationId === this.threadFor &&
+      c.conversationId === this.current?.conversationId &&
+      (this.view === "reader" || (this.view === "list" && this.previewing))
+    );
+  }
+
   setOutbox(s: OutboxStatus) {
     this.outbox = s;
     if (s.pending === 0) {
@@ -187,10 +211,47 @@ class MailStore {
   }
 
   /** Query and scope behind the current list. */
-  get listQuery(): { folderId: number | null; query: string; split: number | null } {
-    if (this.search !== null) return { folderId: null, query: this.search, split: null };
-    // No folder: the unified inbox of every signed-in account.
-    return { folderId: null, query: "", split: this.splitIndex };
+  get listQuery(): { mailbox: Mailbox | null; query: string; split: number | null } {
+    // Search covers all mail.
+    if (this.search !== null) return { mailbox: null, query: this.search, split: null };
+    // The unified inbox of every signed-in account, by split tab.
+    if (this.mailbox === "inbox") return { mailbox: "inbox", query: "", split: this.splitIndex };
+    return { mailbox: this.mailbox === "scheduled" ? null : this.mailbox, query: "", split: null };
+  }
+
+  /**
+   * Snoozed lists soonest back first, each row with its time; Scheduled holds sends, not
+   * conversations. Both load whole, not page by page.
+   */
+  get #special(): "snoozed" | "scheduled" | null {
+    return this.search === null && (this.mailbox === "snoozed" || this.mailbox === "scheduled") ? this.mailbox : null;
+  }
+
+  async #rows(count: number): Promise<ThreadRow[]> {
+    if (this.#special === "scheduled") {
+      await this.refreshScheduled();
+      return [];
+    }
+    if (this.#special === "snoozed") {
+      const all = await api.listSnoozed();
+      this.snoozed = all;
+      return all.filter((t) => !this.hiddenIds.includes(t.accountId));
+    }
+    const { mailbox, query, split } = this.listQuery;
+    return api.listThreads(mailbox, query, split, null, count, this.hiddenIds);
+  }
+
+  /** Conversations opened from Trash show their deleted messages; elsewhere those stay hidden. */
+  get #withTrash(): boolean {
+    return this.mailbox === "trash" && this.search === null;
+  }
+
+  /** What `e` and `#` do here: in Done and Trash they bring mail back to the inbox. */
+  triageFor(action: "archive" | "trash"): Action {
+    if (this.search !== null) return action;
+    if (this.mailbox === "done" && action === "archive") return "moveToInbox";
+    if (this.mailbox === "trash") return "moveToInbox";
+    return action;
   }
 
   /** Opens Help (the user docs), at `page` if given. */
@@ -272,11 +333,10 @@ class MailStore {
     if (!this.account) return;
     const seq = ++this.#listSeq;
     const folderForSplits = null; // split tabs count the unified inbox
-    const { folderId, query, split } = this.listQuery;
     const count = Math.max(PAGE, this.threads.length);
     const [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits, this.hiddenIds),
-      api.listThreads(folderId, query, split, null, count, this.hiddenIds),
+      this.#rows(count),
       api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
@@ -287,7 +347,7 @@ class MailStore {
     this.splits = splits;
     if (this.splitIndex >= splits.length) this.splitIndex = 0;
     this.threads = rows;
-    this.#exhausted = rows.length < count;
+    this.#exhausted = this.#special !== null || rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
     this.#schedulePrefetch();
@@ -299,7 +359,7 @@ class MailStore {
         this.threadFor = null;
         this.invite = null;
       } else {
-        const thread = await api.getThread(cur.accountId, cur.conversationId);
+        const thread = await api.getThread(cur.accountId, cur.conversationId, this.#withTrash);
         if (seq !== this.#listSeq) return;
         this.thread = thread;
         this.threadFor = cur.conversationId;
@@ -315,8 +375,8 @@ class MailStore {
     this.#loadingMore = true;
     const seq = this.#listSeq;
     try {
-      const { folderId, query, split } = this.listQuery;
-      const rows = await api.listThreads(folderId, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
+      const { mailbox, query, split } = this.listQuery;
+      const rows = await api.listThreads(mailbox, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
       if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
       this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
@@ -344,7 +404,7 @@ class MailStore {
     if (!t) return;
     const nav = this.#navSeq;
     // Load the thread first (a local query) so the reader never flashes empty or stale.
-    const rows = await api.getThread(t.accountId, t.conversationId);
+    const rows = await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     if (this.current?.conversationId !== t.conversationId) return;
     // Esc (back to the list) while it loaded wins: don't reopen the reader behind it.
     if (nav !== this.#navSeq) return;
@@ -378,7 +438,7 @@ class MailStore {
       this.invite = null;
       return;
     }
-    const rows = await api.getThread(t.accountId, t.conversationId);
+    const rows = await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     if (this.current?.conversationId !== t.conversationId) return;
     this.thread = rows;
     this.threadFor = t.conversationId;
@@ -428,9 +488,26 @@ class MailStore {
 
   // ---------- splits and search ----------
 
+  /** Shows a mailbox (Inbox opens on the tab you were on). */
+  async goTo(mailbox: MailView) {
+    this.search = null;
+    this.pinned = null;
+    if (this.mailbox !== mailbox) {
+      // Drop the old list at once: a key pressed before the new one loads (e, #) must not
+      // act on a conversation from the mailbox you just left.
+      this.threads = [];
+      this.selected = 0;
+    }
+    this.mailbox = mailbox;
+    this.view = "list";
+    await this.refresh();
+    if (this.previewing) await this.preview();
+  }
+
   async switchSplit(index: number) {
     if (!this.splits.length) return;
     this.search = null;
+    this.mailbox = "inbox";
     this.splitIndex = (index + this.splits.length) % this.splits.length;
     this.selected = 0;
     this.view = "list";
@@ -478,7 +555,7 @@ class MailStore {
       if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
       // mail-changed triggers the refresh; do it now too so the list never lags a keypress.
       await this.refresh();
-      if (action === "archive" || action === "trash") await this.#afterRemoval();
+      if (action === "archive" || action === "trash" || action === "moveToInbox") await this.#afterRemoval();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
@@ -525,23 +602,18 @@ class MailStore {
     }
   }
 
-  async unsnooze(s: SnoozedThread) {
+  /** Wakes a snoozed conversation now (u in Snoozed). */
+  async unsnooze(t: ThreadRow | null = this.current) {
+    if (!t) return;
     try {
-      await api.unsnoozeThread(s.accountId, s.conversationId);
+      await api.unsnoozeThread(t.accountId, t.conversationId);
       this.showToast({ text: "Back in your inbox" });
       await this.refresh();
       this.refreshSnoozed();
+      await this.#afterRemoval();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
-  }
-
-  /** Opens a snoozed conversation without waking it. */
-  async openSnoozed(s: SnoozedThread) {
-    this.overlay = null;
-    this.search = null;
-    this.pinned = s;
-    await this.open();
   }
 
   async refreshSnoozed() {
@@ -647,7 +719,7 @@ class MailStore {
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -656,7 +728,7 @@ class MailStore {
     // Reply from the account the conversation belongs to.
     const account = this.accountOf(t?.accountId ?? -1);
     if (!t || !account) return;
-    const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId);
+    const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     // Reply to the newest message someone else sent, if there is one.
     const me = account.email.toLowerCase();
     const ref = [...msgs].reverse().find((m) => m.fromAddress?.toLowerCase() !== me) ?? msgs.at(-1);
@@ -675,6 +747,7 @@ class MailStore {
       accountId: account.id,
       kind,
       referenceMessageId: ref.id,
+      conversationId: t.conversationId,
       to: to.join(", "),
       cc: cc.join(", "),
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
@@ -720,6 +793,8 @@ class MailStore {
       accountId: q.accountId,
       kind: d.kind,
       referenceMessageId: d.referenceMessageId ?? null,
+      // Back under its conversation if that's still the one showing.
+      conversationId: this.thread.some((m) => m.id === d.referenceMessageId) ? this.threadFor : null,
       to: d.to.join(", "),
       cc: d.cc.join(", "),
       subject: d.subject,

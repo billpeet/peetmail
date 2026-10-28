@@ -85,6 +85,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `Esc` | Back to list, close dialog | ✓ |
 | `g g` / `G` | Top / bottom of list | ✓ |
 | `g i` | Go to inbox | ✓ |
+| `g e` / `g t` / `g a` / `g #` | Done / Sent / All mail / Trash (`e` in Done and `#` in Trash: back to the inbox) | ✓ |
 | `Ctrl+R` | Sync now | ✓ |
 | `Ctrl+,` | Settings | ✓ |
 | `?` | Shortcut overlay | ✓ |
@@ -94,7 +95,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `u` | Toggle read | ✓ |
 | `s` | Flag | ✓ |
 | `h` | Snooze: presets (later today, this evening, tomorrow, weekend, next week) or a typed time | ✓ |
-| `g h` | Snoozed conversations (`Enter` read, `h` change time, `u` back now) | ✓ |
+| `g h` | Snoozed, a list view (`Enter` read, `h` change time, `u` back now, `e`/`#` archive/delete; undo returns them to Snoozed) | ✓ |
 | `r` / `a` / `f` | Reply / reply all / forward | ✓ |
 | `c` | Compose | ✓ |
 | `/` | Search | ✓ |
@@ -106,7 +107,7 @@ Implemented bindings are marked ✓; numbers are the phase that adds them. They 
 | `e` / `#` | In an event's details: edit / delete (a recurring event asks: this occurrence `o` or the series `s`) | ✓ |
 | `Tab` | In quick add: open the full event editor (guests, location, description) | ✓ |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | In quick add: next / previous calendar | ✓ |
-| `g s` | Scheduled messages (`Enter` edit, `#` cancel) | ✓ |
+| `g s` | Scheduled, a list view (`Enter` edit, `#` cancel) | ✓ |
 | `i` | Load remote images in the open conversation | ✓ |
 | `\` | Show / hide the right pane (Recent Opens) | ✓ |
 | `v` | Toggle the reading pane (list only, or list + preview) | ✓ |
@@ -143,13 +144,13 @@ Every binding lives in one registry (`src/lib/keys.svelte.ts`) with an id, label
 - [x] Search (`/`): SQLite FTS5 over subject, people, preview, and body text once a body has been fetched. Covers all cached folders except Deleted Items.
 - [x] Split inboxes: named queries, `Tab`/`Shift+Tab` to cycle, unread counts on tabs, editable in Settings. A built-in Inbox tab comes first and holds whatever no split claims; each message lands in exactly one tab (first matching split wins). Default split: Other (`is:other`).
 - [x] Command palette (`Ctrl+K`) over the keymap registry.
-- [x] Sent Items synced, so threads include your replies. Archive and Deleted Items are local move targets only.
+- [x] Sent Items synced, so threads include your replies. Archive and Deleted Items synced too since the Folders work (below).
 - [x] Load images (`i`): Rust fetches remote images (raster only, 5 MB cap) and inlines them as data URIs; the CSP stays strict.
 - [x] Inline `cid:` images, attachment list, download to Downloads.
 
 Deferred from Phase 1:
 - Server search (`$search`) for mail outside the cache window.
-- Syncing Archive and Drafts; a folder picker / move-to-folder.
+- Syncing Drafts; a folder picker / move-to-folder.
 - Markdown shortcuts in the composer.
 
 ### Phase 2: calendar
@@ -190,3 +191,81 @@ Release builds sign in with PeetMail's own apps. Registering your own (for local
 - [x] Reconnect (Settings > Accounts, and the room prompt): signs a known account in again in place (login_hint, same-account check), keeping its mail and settings; also the way back for a signed-out account.
 - [x] Repeat editor: presets from the start date (daily, weekdays, weekly, monthly on the nth/last weekday or the date, yearly) that follow it when it moves, or custom (every N days/weeks/months/years, weekdays, monthly mode), ending never / on a date / after N times. Editable when creating, on your own single events (which become series) and on whole series (stopping one warns that the other occurrences go); read-only on one occurrence and as a guest. A series is sent in local wall-clock time with its IANA zone (`Times.local_start`), so it keeps its time across daylight saving; single events stay in UTC.
 
+
+## Folders (after Phase 3)
+
+Views of the well-known folders, unified across accounts like the inbox (and filtered by the footer account toggles). Custom Outlook folders and Gmail labels are out of scope for now; their mail is still in All mail and search.
+
+| View | Keys | Holds |
+|---|---|---|
+| Inbox | `g i` | As now, with splits (splits only ever apply to the inbox) |
+| Done | `g e` | Archive (Gmail: no INBOX/SENT/TRASH/SPAM label) |
+| Sent | `g t` | Sent Items |
+| Snoozed | `g h` | Snoozed, each row with its "back at" time |
+| Scheduled | `g s` | Waiting sends (outbox rows, not cached messages); `Enter` edits in the composer, `#` cancels |
+| All mail | `g a` | Every cached folder except Trash, Done included |
+| Trash | `g #` | Deleted Items |
+
+Slices:
+
+1. [x] **Sync Archive and Deleted Items** in the mail window. Microsoft: add both to `SYNCED_FOLDERS` (one more delta request per folder per account per minute when idle). Gmail: an initial `-in:inbox -in:sent -in:trash -in:spam after:` listing plus `TRASH`, and drop `only_known_archive` so History label changes fill Done in. Prune by the window like the inbox. First syncs after the update take longer (a busy archive is thousands of messages); notifications stay inbox-only, so none fire. Archive is optional on Microsoft (a 404 skips it); `wk:` placeholder folders from earlier local moves get their real id in place. Gmail accounts synced before this list archive and trash once (`gmail_all_folders:<id>`).
+2. [x] **Scope by role.** `db::Mailbox` (inbox, done, sent, snoozed, all, trash) maps to a `Scope`: `Role(role)` over signed-in accounts, `Done` (archived conversations with nothing in the inbox or snoozed, so a reply arriving in a done conversation moves it back), `AllMail` (signed-in accounts, excluding Trash; search uses it too). `list_threads` takes `mailbox`; `get_thread` takes `withTrash` for the Trash view's reader.
+3. [x] **UI.** `mail.mailbox` beside `mail.view`; the Rail gains Inbox, Done, Sent, Snoozed, Scheduled, All mail, Trash (icons, tooltips with keys, unread dot on Inbox); split tabs only in the Inbox, a folder title elsewhere; `g` bindings in the keymap registry. Triage follows the folder: in Done `e` is "not done" (back to the inbox, undoable); in Trash `#` restores to the inbox; in Sent and All mail `e`/`#` act on the conversation's inbox messages as now.
+4. [x] **Snoozed and Scheduled become list views**, replacing their dialogs (`h` change time and `u` back now keep working in Snoozed).
+5. [x] Fake Graph/Gmail serve an archive and trash; E2E for each view and its triage; help page shortcut table; changelog.
+
+## Roadmap candidates
+
+Gaps found by reviewing the app against what people expect from a keyboard-first Superhuman/Outlook-style client (October 2026). None are committed to; each still has to earn its place (principle 2). Tiers are rough priority. Key suggestions follow Superhuman where the key is free; clashes with existing bindings are noted.
+
+### Tier 1: blockers for daily use
+
+Without these, people go back to Outlook or Gmail for routine tasks.
+
+- **Attachments when composing.** `outbox::Draft` has only to/cc/subject/body. Attach from a file picker, drag and drop, and paste; keep forwarded attachments removable. Graph: inline `fileAttachment` under 3 MB, an upload session above. Gmail: multipart/mixed is already built for forwards (`gmail_send.rs`).
+- **Bcc.** Missing from the composer, `Draft` and both send paths. A binding next to `compose.cc` (`ctrl+shift+c`), e.g. `ctrl+shift+b`.
+- **Drafts.** Esc twice throws the message away and nothing survives a crash. First step: autosave the open composer locally and restore it. Then sync server drafts (Graph Drafts folder, Gmail `DRAFT` label, which `gmail.rs` drops today) so drafts started elsewhere show up, as a Drafts view (`g d`).
+- **Signatures.** Per account (or per From address), added to new messages and optionally to replies. Snippets don't replace one.
+- **Formatted text in the composer.** The composer is a plain `<textarea>`. Bold, italic, lists, links, and pasting rich text and images. Tiptap is already in `RichText.svelte`. Markdown shortcuts (deferred from Phase 1) suit the keyboard-first brief.
+- **Acting on several conversations at once.** `x` selects, `Shift+J`/`Shift+K` extend, `ctrl+a` selects everything in the view; triage keys (`e` `#` `u` `s` `h`) then act on the whole selection, and one `z` undoes all of it. This is also how people clear a whole view in one go (select all, then `e`).
+- **Spam / junk.** Report spam and Not spam (`!`), and a Junk view. Gmail SPAM is dropped at sync, so a real message caught as spam can't be found from PeetMail.
+- **Searching the server.** Local search covers only the cache window (90 days by default). When local results run out, offer "Search the server" (Graph `$search`, Gmail `q=`) and show those results without adding them to the cache. Deferred from Phase 1.
+
+### Tier 2: Superhuman-style power features
+
+- **Remind me if nobody replies.** On send or from a conversation: if no reply has arrived by a time, the conversation comes back to the inbox. Reuses the snooze machinery (wake time, Reminder badge). Noted as not done under Snooze.
+- **Move to folder / label.** Custom Outlook folders and Gmail labels are out of scope today, so mail can't be filed and filed mail can only be found through All mail or search. A fuzzy folder/label picker (`l` for label; Superhuman's `v` for move is taken by the reading pane toggle) plus `g l` to open any folder.
+- **Unsubscribe** with one key, from the `List-Unsubscribe` header (one-click POST per RFC 8058, else mailto or the link).
+- **Mute a conversation** (new replies skip the inbox) and **block a sender**. `m` is free in mail views (it's Maybe only in invites).
+- **Moving through messages inside a conversation.** Step between messages (`n`/`p`), expand/collapse one or all (`o`/`Shift+O`), and reply to the focused message rather than the latest. Quote the selected text in a reply.
+- **Opening links from the keyboard.** A hint mode that labels the links in the open message, or a palette list of them.
+- **Where to go after archiving:** next, previous, or back to the list (Settings > Mail). Today it always moves to the next conversation.
+- **Sender details in the right pane.** The sender's name, address and your recent conversations with them, beside or instead of Recent Opens. Later, a contacts list beyond the suggestions taken from mail history.
+- **Mark everything read** in a view or split, and "archive everything older than…".
+- **Copy a link / open in Outlook or Gmail**, to hand off to the web client for anything PeetMail doesn't do.
+- **Clicking a notification opens the conversation.** The notification plugin has no click callback on Windows; toast activation through the `windows` crate or a `peetmail://` URL scheme could provide one.
+- **Editable keyboard shortcuts**, stored as overrides on the keymap registry ids.
+
+### Tier 3: Outlook and workplace features
+
+- **Out-of-office replies** (Graph `automaticRepliesSetting`, the Gmail vacation responder), with a footer indicator while on.
+- **Categories and importance**, shown on rows and settable from the keyboard; `categories:` and `is:important` in the query language.
+- **Shared mailboxes and send-as aliases** (M365 delegates, Gmail send-as addresses) in the From picker.
+- **Rules.** Show server inbox rules, and "always move mail from this sender to…" from a conversation.
+- **Print / save as PDF** for a conversation.
+- **Find in message** (`ctrl+f`) and zoom for message bodies.
+- **Composer in its own window**, to write while reading other mail.
+
+### Calendar
+
+- Month view, and a full-screen day view alongside the week view.
+- Google calendars beyond the primary one, and turning individual calendars on and off.
+- Free/busy when inviting people (Graph `getSchedule`, Google `freeBusy`).
+- Event time zones, and a second time-zone column.
+- "Schedule a meeting" from a conversation, with its people as guests and its subject as the title.
+
+### General
+
+- A light theme that follows Windows' setting. `theme.test.ts` contrast checks would need a light palette too.
+- Density options (compact rows).
+- An unread-only toggle per view (today only `is:unread` in search or a split).

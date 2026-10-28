@@ -190,6 +190,15 @@ export function defaultMailbox({ now = Date.now(), count = 160, seed = 42 }: { n
       subject: `Quick question ${i + 1}`, receivedAt: now - (50 + i * 24) * HOUR, isRead: true, folder: "sentitems",
     }));
   }
+  // Archived and deleted mail (done elsewhere, before PeetMail), for Done and Trash.
+  messages.push(makeMessage({
+    id: "msg-archived", conversationId: "conv-archived", sender: SENDERS[2], subject: "Invoice paid, thanks",
+    receivedAt: now - 26 * HOUR, isRead: true, folder: "archive", snippet: "Got it, all settled.",
+  }));
+  messages.push(makeMessage({
+    id: "msg-deleted", conversationId: "conv-deleted", sender: SENDERS[3], subject: "Last chance: webinar seats",
+    receivedAt: now - 28 * HOUR, isRead: true, folder: "deleteditems", snippet: "Only a few seats left.",
+  }));
   // Inline image (cid:) plus a regular attachment.
   const attach = makeMessage({
     id: "msg-attach", conversationId: "conv-attach", sender: SENDERS[1], subject: "Q4 plan attached",

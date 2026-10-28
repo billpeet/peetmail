@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect, messageBody, row, selectedRow, selectWithKeys, snap, waitForSyncIdle, openSettings, showSettingsPage } from "./fixtures";
+import { test, expect, folderConversations, messageBody, row, selectedRow, selectWithKeys, snap, waitForSyncIdle, openSettings, showSettingsPage } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { GMAIL_ACCOUNT, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from "../harness/fake-gmail.ts";
 
@@ -88,13 +88,64 @@ test("later syncs follow Gmail's history: new mail, read elsewhere, archived els
   await expect(row(page, "g-thread-photos")).toHaveCount(0);
   await expect(row(page, "g-thread-latin")).toHaveCount(0);
   // Only metadata for what changed, not a full relist.
-  expect(gmail.state.requests.filter((r) => r.path.endsWith("/messages") && r.method === "GET").length).toBe(2); // the first sync's two lists
+  expect(gmail.state.requests.filter((r) => r.path.endsWith("/messages") && r.method === "GET").length).toBe(3); // the first sync's lists
+  expect(await folderConversations(page, "archive", GMAIL_ACCOUNT.email)).toContain("g-thread-photos"); // archived on the phone: Done
 
   // History too old: start over, and pick up what changed.
   await gmail.control("expire-history", {});
   await gmail.control("deliver", { subject: "After the gap" });
   await syncGmail(page, gmail);
   await expect(page.locator("[data-testid=thread-row]", { hasText: "After the gap" })).toBeVisible();
+});
+
+test("archived and trashed Gmail mail in the window is kept; spam and old mail aren't", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  const email = GMAIL_ACCOUNT.email;
+  await expect.poll(() => folderConversations(page, "archive", email)).toEqual(["g-thread-old-archived"]);
+  expect(await folderConversations(page, "deleteditems", email)).toEqual(["g-thread-trashed"]);
+  const everywhere = (await Promise.all(["inbox", "sentitems", "archive", "deleteditems"].map((r) => folderConversations(page, r, email)))).flat();
+  expect(everywhere).not.toContain("g-thread-spam");
+  expect(everywhere).not.toContain("g-thread-ancient");
+
+  // Mail that arrives already archived (a filter skipping the inbox) lands in Done, not nowhere.
+  await gmail.control("deliver", { id: "g-filtered", threadId: "g-thread-filtered", labelIds: ["CATEGORY_UPDATES"], subject: "Receipt" });
+  await syncGmail(page, gmail);
+  expect(await folderConversations(page, "archive", email)).toContain("g-thread-filtered");
+});
+
+test("Done and Trash are label changes too: back to the inbox, restore, and undoing a delete from Done", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  // e in Done: back to the inbox.
+  await page.keyboard.press("g");
+  await page.keyboard.press("e");
+  await expect(row(page, "g-thread-old-archived")).toBeVisible();
+  await row(page, "g-thread-old-archived").click();
+  await page.keyboard.press("e");
+  await expect(row(page, "g-thread-old-archived")).toHaveCount(0);
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).toContain("INBOX");
+
+  // # in Trash: out of Trash, into the inbox.
+  await page.keyboard.press("g");
+  await page.keyboard.press("#");
+  await expect(row(page, "g-thread-trashed")).toBeVisible();
+  await row(page, "g-thread-trashed").click();
+  await page.keyboard.press("#");
+  await expect.poll(() => labelsOf(gmail, "g-10"), { timeout: 10_000 }).toContain("INBOX");
+  expect(await labelsOf(gmail, "g-10")).not.toContain("TRASH");
+
+  // Deleting archived mail, then undoing once it reached Gmail: back in Done (not Trash, not the inbox).
+  await gmail.control("label", { id: "g-7", remove: ["INBOX"] });
+  await syncGmail(page, gmail);
+  await page.keyboard.press("g");
+  await page.keyboard.press("e");
+  await row(page, "g-thread-old-archived").click();
+  await page.keyboard.press("#");
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).toContain("TRASH");
+  await page.keyboard.press("z");
+  await page.keyboard.press("Escape"); // the reader moved on to the next conversation
+  await expect(row(page, "g-thread-old-archived")).toBeVisible();
+  await expect.poll(() => labelsOf(gmail, "g-7"), { timeout: 10_000 }).not.toContain("TRASH");
+  expect(await labelsOf(gmail, "g-7")).not.toContain("INBOX");
 });
 
 test("triage becomes label changes: archive, read, star, delete, snooze, and undo", async ({ inbox: page, gmail }) => {

@@ -13,6 +13,8 @@ test("c composes a new message with contact suggestions and Ctrl+Enter sends it"
   await page.getByTestId("compose-subject").fill("Lunch?");
   await page.getByTestId("compose-body").fill("Thai on Friday?\n\nB");
   await snap(page, testInfo, "composer");
+  // New mail has no conversation to sit under: it's a dialog.
+  await expect(page.getByTestId("composer")).toHaveAttribute("data-inline", "false");
   await page.keyboard.press("Control+Enter");
 
   await expect(page.getByTestId("composer")).toHaveCount(0);
@@ -27,6 +29,10 @@ test("r replies to the open conversation and the reply shows up in the thread", 
   await row(page, "conv-plain").click();
   await page.keyboard.press("Enter");
   await page.keyboard.press("r");
+  // Written in the reader, under the message it answers, not in a dialog over it.
+  const composer = page.getByTestId("reader").getByTestId("composer");
+  await expect(composer).toHaveAttribute("data-inline", "true");
+  await expect(page.getByTestId("message").last()).toBeVisible();
   await expect(page.getByTestId("compose-to")).toHaveValue("mum@outlook.com");
   await expect(page.getByTestId("compose-subject")).toHaveValue("RE: Weekend plans");
   await expect(page.getByTestId("compose-body")).toBeFocused();
@@ -51,6 +57,8 @@ test("a reply all goes to everyone except you", async ({ inbox: page, fake }) =>
   await page.keyboard.press("g");
   await page.keyboard.press("g");
   await page.keyboard.press("a");
+  // From the list alone the conversation isn't on screen, so it's a dialog.
+  await expect(page.getByTestId("composer")).toHaveAttribute("data-inline", "false");
   await expect(page.getByTestId("compose-to")).toHaveValue("jordan.lee@contoso.com, priya@fabrikam.io");
   await expect(page.getByTestId("compose-cc")).toHaveValue("sam.carter@contoso.com");
   await page.getByTestId("compose-body").fill("Count me in.");
@@ -59,6 +67,28 @@ test("a reply all goes to everyone except you", async ({ inbox: page, fake }) =>
   const sent = sentOfKind(fake, "replyAll")[0];
   expect(sent.to.map((r: any) => r.emailAddress.address)).toEqual(["jordan.lee@contoso.com", "priya@fabrikam.io"]);
   expect(sent.cc.map((r: any) => r.emailAddress.address)).toEqual(["sam.carter@contoso.com"]);
+});
+
+test("in the reading pane, a reply is written under the conversation, with the messages above it", async ({ inbox: page }, testInfo) => {
+  await page.keyboard.press("v");
+  await row(page, "conv-plain").click();
+  await expect(page.getByTestId("preview-pane").getByTestId("message").first()).toBeVisible();
+  await page.keyboard.press("r");
+
+  const pane = page.getByTestId("preview-pane");
+  const composer = pane.getByTestId("composer");
+  await expect(composer).toHaveAttribute("data-inline", "true");
+  await expect(page.getByTestId("composer")).toHaveCount(1); // no dialog as well
+  await expect(page.getByTestId("compose-body")).toBeFocused();
+  // The conversation stays readable, above the reply.
+  const last = await pane.getByTestId("message").last().boundingBox();
+  const box = await composer.boundingBox();
+  expect(last && box && last.y + last.height <= box.y).toBe(true);
+  await snap(page, testInfo, "reply-inline");
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("composer")).toHaveCount(0);
+  await expect(pane.getByTestId("message").first()).toBeVisible();
 });
 
 test("f forwards to the address you type", async ({ inbox: page, fake }) => {

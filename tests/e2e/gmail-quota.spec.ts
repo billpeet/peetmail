@@ -32,7 +32,7 @@ test.describe("a big first sync", () => {
   test("stays inside Gmail's quota and fetches everything", async ({ inbox: page, gmail }) => {
     await startAddingGmail(page);
     await expect(row(page, "g-thread-trip")).toBeVisible({ timeout: 30_000 });
-    await expect.poll(() => gmailThreads(page), { timeout: 30_000 }).toBe(155); // 150 fillers + trip, sale, photos, latin, invite
+    await expect.poll(() => gmailThreads(page), { timeout: 30_000 }).toBe(156); // 150 fillers + trip, sale, photos, latin, invite + the archived statement (trash and spam aren't in all mail)
     await waitForSyncIdle(page);
     expect(gmail.state.quotaErrors).toBe(0);
   });
