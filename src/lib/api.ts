@@ -278,7 +278,20 @@ export const api = {
   setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
+  feedbackOptions: () => invoke<FeedbackOptions>("feedback_options"),
+  /** Saves the diagnostics zip to Downloads; returns its path. */
+  exportDiagnostics: () => invoke<string>("export_diagnostics"),
+  sendFeedback: (message: string, email: string | null, includeDiagnostics: boolean) =>
+    invoke<void>("send_feedback", { message, email, includeDiagnostics }),
 };
+
+/** What Help → Report a problem can do in this build. */
+export interface FeedbackOptions {
+  /** Feedback can be sent to the developers from the app. */
+  sentry: boolean;
+  /** The address "Prefer email?" writes to, if this build has one. */
+  email: string | null;
+}
 
 export const onMailChanged = (cb: (p: { accountId: number; folderId: number }) => void): Promise<UnlistenFn> =>
   listen<{ accountId: number; folderId: number }>("mail-changed", (e) => cb(e.payload));

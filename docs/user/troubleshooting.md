@@ -23,6 +23,12 @@
 
 ## Reporting a problem
 
-Tell the person who gave you PeetMail what happened and when, and quote your **install ID** (**Settings → Privacy → Copy**). With crash reports on, the developers can then find what PeetMail recorded at the time.
+Open **Help → Report a problem** (or **Report a problem** in the command palette, **Ctrl+K**). Say what happened and what you expected, and press **Send**. It goes straight to the developers, with your version and install ID; add your email if you'd like a reply. Leave **Include diagnostics** ticked unless you'd rather not: it adds the file described below.
+
+Prefer email? **Write an email** on the same page starts one, addressed to the developers, with your version and install ID filled in.
+
+### Diagnostics
+
+**Export** under Diagnostics saves `PeetMail-diagnostics-….zip` to your Downloads folder. It has PeetMail's and Windows' versions, your settings (not the text of splits or snippets, and no passwords or tokens), how big the database is and whether it's healthy, which kinds of account you use (not their addresses), what's waiting to be sent, and PeetMail's recent logs with addresses, names and IDs removed. It has no mail, subjects or contacts. Open it and look if you like; it's plain text.
 
 PeetMail's own log is in `%LOCALAPPDATA%\com.peetsoftware.peetmail\logs`, if you're asked for it.

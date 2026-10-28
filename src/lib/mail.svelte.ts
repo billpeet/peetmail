@@ -643,9 +643,9 @@ class MailStore {
 
   // ---------- compose ----------
 
-  compose() {
+  compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: "", cc: "", subject: "", body: "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */

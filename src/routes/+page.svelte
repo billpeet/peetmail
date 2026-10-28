@@ -166,6 +166,7 @@
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
       { id: "app.help.docs", keys: "F1", label: "Help", group: "App", when: () => !mail.composer && mail.overlay !== "docs", run: () => mail.openHelp() },
+      { id: "app.feedback", keys: "", label: "Report a problem", group: "App", when: () => !mail.composer, run: () => mail.openHelp("report") },
       { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },

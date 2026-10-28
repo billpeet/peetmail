@@ -22,6 +22,7 @@ mod sanitize;
 mod scrub;
 mod secure;
 mod state;
+mod support;
 mod telemetry;
 mod testenv;
 mod update;
@@ -344,6 +345,9 @@ pub fn run() {
             commands::dismiss_privacy_notice,
             commands::changelog_seen,
             commands::set_changelog_seen,
+            commands::feedback_options,
+            commands::export_diagnostics,
+            commands::send_feedback,
             commands::report_error,
             commands::set_usage_data,
             commands::ui_events,

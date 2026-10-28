@@ -13,7 +13,8 @@
 //! | PEETMAIL_AUTH_AUTOFOLLOW=1    | Follow the authorize URL with reqwest, not a browser     |
 //! | PEETMAIL_SYNC_INTERVAL_SECS   | Background sync interval (default 60)                    |
 //! | PEETMAIL_HEADLESS=1           | Window hidden, no taskbar entry, never takes focus       |
-//! | PEETMAIL_DOWNLOAD_DIR         | Attachments save here and Explorer isn't opened          |
+//! | PEETMAIL_DOWNLOAD_DIR         | Attachments and diagnostics save here; Explorer isn't opened |
+//! | PEETMAIL_FEEDBACK_EMAIL       | Report a problem's "Prefer email?" address               |
 //! | PEETMAIL_UNDO_SEND_SECS       | Default undo-send delay (a saved setting still wins)     |
 //! | PEETMAIL_OPEN_LOG             | Links the UI opens are appended here, not opened         |
 //! | PEETMAIL_NOTIFY_LOG           | Toasts are appended here as JSON lines, not shown        |

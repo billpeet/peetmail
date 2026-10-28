@@ -1,14 +1,16 @@
 <script lang="ts">
   // Help: the user docs (docs/user, compiled in so they match this version and work
-  // offline), the keyboard shortcuts (from the keymap) and the changelog.
+  // offline), the keyboard shortcuts (from the keymap), the changelog, and a way to report
+  // a problem.
   import { onMount } from "svelte";
-  import { BookOpen, Keyboard, KeyRound, LifeBuoy, RefreshCw, ShieldCheck, Sparkles } from "@lucide/svelte";
+  import { BookOpen, Keyboard, KeyRound, LifeBuoy, MessageSquareWarning, RefreshCw, ShieldCheck, Sparkles } from "@lucide/svelte";
   import { api } from "$lib/api";
   import { DOC_SLUGS, parseDoc, resolveLink, type Doc, type HelpPage } from "$lib/docs";
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import { renderMarkdown } from "$lib/markdown";
   import { sectionLabel, whatsNew } from "$lib/whatsnew.svelte";
+  import ReportProblem from "./ReportProblem.svelte";
   import ShortcutList from "./ShortcutList.svelte";
   import SidebarDialog, { type SidebarPage } from "./SidebarDialog.svelte";
 
@@ -23,6 +25,7 @@
     { id: "updates", label: docs.updates.title, icon: RefreshCw },
     { id: "privacy", label: docs.privacy.title, icon: ShieldCheck },
     { id: "troubleshooting", label: docs.troubleshooting.title, icon: LifeBuoy },
+    { id: "report", label: "Report a problem", icon: MessageSquareWarning },
     { id: "whats-new", label: "What's new", icon: Sparkles },
     { id: "your-own-app", label: docs["your-own-app"].title, icon: KeyRound, separatorBefore: true },
   ];
@@ -66,6 +69,8 @@
         <p class="mt-1 text-sm text-ink-500">Everything PeetMail does has a key. Ctrl+K finds any command by name; ? shows this list anywhere.</p>
       </header>
       <ShortcutList />
+    {:else if page === "report"}
+      <ReportProblem />
     {:else if page === "whats-new"}
       <header class="mb-6">
         <h2 class="text-lg font-semibold text-ink-100">What's new</h2>

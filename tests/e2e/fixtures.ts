@@ -30,9 +30,11 @@ type App = Awaited<ReturnType<typeof launchApp>>;
 /** The fake update server, plus the file the app writes instead of running an installer. */
 type Updates = FakeUpdates & { installedPath: string };
 
-export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp; builtinApps: boolean }>({
+export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page; undoSendSecs: number; secondAccount: boolean; pair: Pair; withGmail: boolean; gmailExtra: number; gmail: Gmail; withUpdates: boolean; updateFeed: { stable?: Release; canary?: Release }; updateFirstCheckSecs: number; updates: Updates; withSentry: boolean; sentry: FakeSentry; withTelemetry: boolean; telemetry: FakeOtlp; builtinApps: boolean; feedbackEmail: string | null }>({
   /** Act as a release build with PeetMail's own apps built in (the fakes' client IDs). */
   builtinApps: [false, { option: true }],
+  /** The address Help → Report a problem offers to email (`PEETMAIL_FEEDBACK_EMAIL`). */
+  feedbackEmail: [null, { option: true }],
   /** Send usage telemetry to a fake OTLP collector (`test.use({ withTelemetry: true })`), as `telemetry`. */
   withTelemetry: [false, { option: true }],
   telemetry: async ({ withTelemetry }, use) => {
@@ -92,7 +94,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
     await fake.close();
   },
 
-  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry, builtinApps }, use, testInfo) => {
+  app: async ({ fake, undoSendSecs, gmail, updates, updateFirstCheckSecs, sentry, telemetry, builtinApps, feedbackEmail }, use, testInfo) => {
     const extraEnv: Record<string, string> = {
       ...(gmail ? { PEETMAIL_GMAIL_URL: gmail.gmailUrl, PEETMAIL_GOOGLE_AUTH_URL: gmail.authUrl, PEETMAIL_GCAL_URL: `${gmail.origin}/calendar/v3` } : {}),
       ...(updates
@@ -103,6 +105,7 @@ export const test = base.extend<{ fake: Fake; app: App; page: Page; inbox: Page;
           }
         : {}),
       ...(sentry ? { PEETMAIL_SENTRY_DSN: sentry.dsn } : {}),
+      ...(feedbackEmail ? { PEETMAIL_FEEDBACK_EMAIL: feedbackEmail } : {}),
       ...(builtinApps
         ? {
             PEETMAIL_BUILTIN_MS_CLIENT_ID: CLIENT_ID,

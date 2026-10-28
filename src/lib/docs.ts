@@ -2,7 +2,7 @@
 // check the real files: every page listed exists, has a title, and every link resolves.
 
 /** Help's pages in sidebar order: docs from docs/user, plus two the app builds itself. */
-export const HELP_PAGES = ["getting-started", "shortcuts", "updates", "privacy", "troubleshooting", "whats-new", "your-own-app"] as const;
+export const HELP_PAGES = ["getting-started", "shortcuts", "updates", "privacy", "troubleshooting", "report", "whats-new", "your-own-app"] as const;
 export type HelpPage = (typeof HELP_PAGES)[number];
 
 /** The pages that are Markdown files in docs/user (the others are made by the app). */

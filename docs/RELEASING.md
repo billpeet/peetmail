@@ -31,6 +31,7 @@ And these **variables** (Settings → Secrets and variables → Actions → Vari
 | Variable | What |
 |---|---|
 | `PEETMAIL_SENTRY_DSN` | The Sentry project's DSN, compiled into release builds. Unset: no crash reports |
+| `PEETMAIL_FEEDBACK_EMAIL` | Where Help → Report a problem's "Write an email" goes. Unset: the option is hidden |
 | `SENTRY_ORG` / `SENTRY_PROJECT` | Where uploads go. Default `metroid` / `peetmail` |
 | `PEETMAIL_OTLP_ENDPOINT` | The OTLP/HTTP gateway's base URL (the app adds `/v1/traces` etc.). Unset: no usage telemetry |
 

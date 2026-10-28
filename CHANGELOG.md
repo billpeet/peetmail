@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- **Help → Report a problem**: send feedback to the developers from PeetMail (with diagnostics if you like), write an email instead, or save a diagnostics file with no personal details in it.
 - **Help** (**F1**): getting started, updates, privacy, troubleshooting and every keyboard shortcut, built into PeetMail.
 - Keyboard shortcut lists show arrow keys as arrows (← →) and Page Up/Down as PgUp/PgDn.
 - Settings is organised into pages (Accounts, Mail, Calendar, Notifications, Storage, Updates, Privacy) with a sidebar. **Ctrl+PageUp** and **Ctrl+PageDown** move between them, and **Ctrl+,** opens the one you used last.
