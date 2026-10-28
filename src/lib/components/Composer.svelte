@@ -2,6 +2,8 @@
   // New message, reply, reply all, forward. Plain text in, HTML out (Rust converts).
   // Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text, so
   // nothing is lost by accident).
+  // `inline`: a reply or forward written in the reader, under the conversation it answers
+  // (like Outlook). Otherwise it's a dialog over everything.
   import { onMount } from "svelte";
   import { api, type Contact } from "$lib/api";
   import { keymap } from "$lib/keys.svelte";
@@ -14,7 +16,10 @@
   import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "$lib/snippets";
   import { caretCoords } from "$lib/caret";
 
+  let { inline = false }: { inline?: boolean } = $props();
+
   const c = mail.composer!;
+  let root: HTMLDivElement | undefined = $state();
   let to = $state(c.to);
   let cc = $state(c.cc);
   let subject = $state(c.subject);
@@ -216,7 +221,9 @@
   }
 
   onMount(() => {
-    (isReply ? bodyInput : toInput)?.focus();
+    (isReply ? bodyInput : toInput)?.focus({ preventScroll: inline });
+    // Bring the whole reply into view, its fields included, with the thread above it.
+    if (inline) root?.scrollIntoView({ block: "nearest" });
     return keymap.register([
       { id: "compose.send", keys: "ctrl+Enter", label: "Send", group: "Compose", when: () => !!mail.composer, run: () => mail.send() },
       { id: "compose.later", keys: "ctrl+shift+Enter", label: "Send later", group: "Compose", when: () => !!mail.composer, run: () => (later === null ? openLater() : closeLater()) },
@@ -246,12 +253,20 @@
   {/if}
 {/snippet}
 
-<div data-testid="composer" class="fixed inset-x-0 top-9 bottom-0 z-20 flex items-end justify-center bg-black/40 p-6">
-  <div class="flex h-[70vh] w-full max-w-3xl flex-col rounded-xl border border-ink-700 bg-ink-900 shadow-2xl">
+<div
+  data-testid="composer"
+  data-inline={inline}
+  bind:this={root}
+  class={inline ? "mt-4 scroll-mb-6" : "fixed inset-x-0 top-9 bottom-0 z-20 flex items-end justify-center bg-black/40 p-6"}
+>
+  <div class={["@container flex flex-col rounded-xl border bg-ink-900", inline ? "border-ink-600" : "h-[70vh] w-full max-w-3xl border-ink-700 shadow-2xl"]}>
     <div class="flex items-center justify-between border-b border-ink-800 px-4 py-2.5 text-sm">
       <span class="font-semibold text-ink-100">{title}</span>
-      <span class="flex items-center gap-2 text-xs text-ink-500">
-        <kbd>Ctrl</kbd> <kbd>Enter</kbd> send · <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd> later · <kbd>Esc</kbd> close
+      <span class="flex items-center gap-2 text-xs whitespace-nowrap text-ink-500">
+        <!-- The hints need room; a narrow reading pane drops them (the buttons say it too). -->
+        <span class="hidden items-center gap-2 @xl:flex">
+          <kbd>Ctrl</kbd> <kbd>Enter</kbd> send · <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Enter</kbd> later · <kbd>Esc</kbd> close
+        </span>
         <button data-testid="compose-close" title="Close (Esc)" aria-label="Close" onclick={close} class="icon-btn size-7"><X size={15} /></button>
       </span>
     </div>
@@ -319,7 +334,7 @@
       </label>
     </div>
 
-    <div class="relative flex min-h-0 flex-1 flex-col">
+    <div class={["relative flex flex-col", !inline && "min-h-0 flex-1"]}>
       <textarea
         data-testid="compose-body"
         bind:this={bodyInput}
@@ -334,7 +349,11 @@
           if (document.activeElement !== bodyInput) snip = null;
         }, 150)}
         placeholder={isReply ? "Write your reply… (;name inserts a snippet)" : "Type ;name to insert a snippet"}
-        class="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text"
+        class={[
+          "resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text",
+          // Inline it grows with what's typed; the reader scrolls.
+          inline ? "min-h-48 [field-sizing:content]" : "min-h-0 flex-1",
+        ]}
       ></textarea>
       {#if snipOpen}
         <div data-testid="snippet-list" style={snipStyle} class="absolute z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
@@ -400,11 +419,11 @@
       </div>
     {/if}
 
-    <div class="flex items-center justify-between border-t border-ink-800 px-4 py-2.5">
+    <div class="flex items-center justify-between gap-3 border-t border-ink-800 px-4 py-2.5">
       <span data-testid="compose-hint" class="text-xs {armedDiscard ? 'text-amber-300' : 'text-ink-500'}">
-        {armedDiscard ? "Press Esc again to discard" : isReply ? "The original message is quoted below your reply." : ""}
+        {armedDiscard ? "Press Esc again to discard" : isReply ? (inline ? "The message above is quoted below your reply." : "The original message is quoted below your reply.") : ""}
       </span>
-      <span class="flex items-center gap-2">
+      <span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
         <button
           data-testid="compose-later-toggle"
           title="Send later (Ctrl+Shift+Enter)"
@@ -413,7 +432,7 @@
         >
           Send later
         </button>
-        <button data-testid="compose-send" onclick={() => mail.send()} class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">
+        <button data-testid="compose-send" title="Send (Ctrl+Enter)" onclick={() => mail.send()} class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-ink-950">
           Send
         </button>
       </span>

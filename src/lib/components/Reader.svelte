@@ -5,6 +5,7 @@
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
   import InviteCard from "./InviteCard.svelte";
+  import Composer from "./Composer.svelte";
   import { Archive, ArrowLeft, ChevronDown, ChevronUp, Flag, Forward, Mail, Maximize2, Reply, ReplyAll, Trash2 } from "@lucide/svelte";
 
   /** Shown as the reading pane beside the list (preview layout), not full width. */
@@ -125,6 +126,7 @@
         </article>
       {/each}
     </div>
+    {#if mail.composerInline}<Composer inline />{/if}
   </div>
 </div>
 </div>

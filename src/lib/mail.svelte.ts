@@ -43,6 +43,8 @@ export type ComposerState = {
   kind: DraftKind;
   /** Message replied to or forwarded. */
   referenceMessageId: number | null;
+  /** Its conversation: while that's on screen, the composer sits under it in the reader. */
+  conversationId: string | null;
   to: string;
   cc: string;
   subject: string;
@@ -170,6 +172,23 @@ class MailStore {
   /** Preview layout: list on the left, the selected conversation beside it. */
   get previewing(): boolean {
     return this.boot?.preferences.layout === "preview";
+  }
+
+  /**
+   * A reply or forward whose conversation is on screen is written inline, under the
+   * messages it answers. Anything else (new mail, or the conversation isn't showing)
+   * opens as a dialog.
+   */
+  get composerInline(): boolean {
+    const c = this.composer;
+    return (
+      !!c &&
+      c.kind !== "new" &&
+      c.conversationId !== null &&
+      c.conversationId === this.threadFor &&
+      c.conversationId === this.current?.conversationId &&
+      (this.view === "reader" || (this.view === "list" && this.previewing))
+    );
   }
 
   setOutbox(s: OutboxStatus) {
@@ -647,7 +666,7 @@ class MailStore {
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -675,6 +694,7 @@ class MailStore {
       accountId: account.id,
       kind,
       referenceMessageId: ref.id,
+      conversationId: t.conversationId,
       to: to.join(", "),
       cc: cc.join(", "),
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
@@ -720,6 +740,8 @@ class MailStore {
       accountId: q.accountId,
       kind: d.kind,
       referenceMessageId: d.referenceMessageId ?? null,
+      // Back under its conversation if that's still the one showing.
+      conversationId: this.thread.some((m) => m.id === d.referenceMessageId) ? this.threadFor : null,
       to: d.to.join(", "),
       cc: d.cc.join(", "),
       subject: d.subject,

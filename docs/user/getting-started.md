@@ -39,6 +39,8 @@ Everything has a keyboard shortcut. The ones to start with:
 
 The mouse works too, everywhere.
 
+A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something).
+
 ## Your mail on this PC
 
 PeetMail keeps recent mail on your PC, so it opens instantly and you can read it offline. How much it keeps is under **Settings → Storage**. Pictures in messages are blocked until you press **i**, so senders can't tell when you've read their mail.

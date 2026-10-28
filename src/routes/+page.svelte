@@ -395,7 +395,8 @@
   {/if}
 </div>
 
-{#if mail.composer}<Composer />{/if}
+<!-- Replies to the conversation on screen are written inline in the reader instead. -->
+{#if mail.composer && !mail.composerInline}<Composer />{/if}
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
 {#if mail.overlay === "docs"}<Help />{/if}
 {#if mail.overlay === "whatsnew"}<WhatsNew mode="new" />{/if}

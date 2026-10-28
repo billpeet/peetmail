@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Replies and forwards open under the conversation you're reading, like Outlook, so the earlier messages stay in view while you write. New messages still open on their own.
 - PeetMail warns you, with what to do, when your disk is nearly full, your PC's clock is wrong, it can't save to its folder, WebView2 is out of date, or its mail cache looks damaged after an update.
 - **Help → Report a problem**: send feedback to the developers from PeetMail (with diagnostics if you like), write an email instead, or save a diagnostics file with no personal details in it.
 - **Help** (**F1**): getting started, updates, privacy, troubleshooting and every keyboard shortcut, built into PeetMail.
