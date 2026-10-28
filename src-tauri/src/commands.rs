@@ -949,14 +949,7 @@ pub fn delete_calendar_event(
 ) -> Result<()> {
     state.db.with(|c| {
         let tx = c.transaction()?;
-        crate::event_edit::delete_locally(&tx, account_id, &remote_id)?;
-        // A placeholder that never reached the server just goes.
-        if remote_id.starts_with("local:") {
-            tx.execute("DELETE FROM outbox WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'", rusqlite::params![account_id, remote_id])?;
-        } else {
-            let comment = comment.filter(|c| !c.trim().is_empty());
-            outbox::enqueue(&tx, account_id, Some(&remote_id), &Op::DeleteEvent { cancel, comment }, std::time::Duration::ZERO)?;
-        }
+        crate::calendar::remove(&tx, account_id, &remote_id, cancel, comment)?;
         tx.commit()?;
         Ok(())
     })?;
