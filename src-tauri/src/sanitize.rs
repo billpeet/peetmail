@@ -29,6 +29,36 @@ pub fn text_to_html(text: &str) -> String {
 
 /// HTML for a message typed as plain text in the composer: escaped, blank lines become
 /// paragraphs, single newlines become line breaks.
+/// What the composer's rich text may contain: the editor's own markup, nothing else.
+static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut b = ammonia::Builder::empty();
+    b.tags(HashSet::from([
+        "p", "br", "strong", "b", "em", "i", "u", "s", "a", "ul", "ol", "li", "blockquote", "code", "pre", "h1", "h2", "h3", "hr",
+    ]))
+    .tag_attributes(std::collections::HashMap::from([("a", HashSet::from(["href"])), ("ol", HashSet::from(["start"]))]))
+    .url_schemes(HashSet::from(["http", "https", "mailto"]))
+    .link_rel(Some("noopener noreferrer"));
+    b
+});
+
+/// The composer's rich text as sent: sanitized to the editor's markup, in the same wrapper
+/// as plain-text messages. Each editor paragraph is a line, so it goes out as a `<div>`
+/// (an empty one as a blank line), like Gmail's and Outlook's own composers: `<p>` margins
+/// differ between mail clients, divs look the same everywhere.
+pub fn compose_rich(html: &str) -> String {
+    let clean = COMPOSE_CLEANER.clean(html).to_string();
+    let mut lines = clean
+        .replace("<p></p>", "<div><br></div>")
+        .replace("<p>", "<div>")
+        .replace("</p>", "</div>")
+        .replace("<blockquote>", r#"<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex">"#);
+    // Blank lines left at the end are just where the caret was.
+    while let Some(rest) = lines.strip_suffix("<div><br></div>") {
+        lines = rest.to_string();
+    }
+    format!(r#"<div style="font-family:Segoe UI,sans-serif;font-size:14px">{lines}</div>"#)
+}
+
 pub fn compose_html(text: &str) -> String {
     let escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     let paragraphs: Vec<String> = text
@@ -180,6 +210,21 @@ mod tests {
     #[test]
     fn escapes_plain_text() {
         assert!(text_to_html("<b>&").contains("&lt;b&gt;&amp;"));
+    }
+
+    #[test]
+    fn rich_text_keeps_formatting_and_drops_everything_else() {
+        let h = compose_rich(
+            r#"<p>Hi <strong>Sam</strong>, <em>see</em> <a href="https://x.com" target="_blank">this</a></p><p></p><ul><li><p>one</p></li></ul><script>alert(1)</script><img src="https://t/p.gif"><p style="color:red" onclick="x()">plain</p><a href="javascript:alert(1)">bad</a><p></p><p></p>"#,
+        );
+        assert!(h.starts_with(r#"<div style="font-family:Segoe UI"#), "{h}");
+        assert!(h.contains("<div>Hi <strong>Sam</strong>, <em>see</em> <a href=\"https://x.com\" rel=\"noopener noreferrer\">this</a></div><div><br></div><ul>"), "{h}");
+        assert!(h.contains("<ul><li><div>one</div></li></ul>"), "{h}");
+        assert!(h.contains("<div>plain</div>"), "{h}");
+        assert!(h.ends_with("bad</a></div>"), "trailing blank lines dropped: {h}");
+        for gone in ["script", "alert(1)", "<img", "style=\"color", "onclick", "target=", "javascript:"] {
+            assert!(!h.contains(gone), "{gone} in {h}");
+        }
     }
 
     #[test]

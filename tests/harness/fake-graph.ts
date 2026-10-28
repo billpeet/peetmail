@@ -46,7 +46,7 @@ const b64url = (buf: Uint8Array) => Buffer.from(buf).toString("base64url");
 
 type Json = Record<string, any>;
 /** A message being put together (POST /me/messages, createReply...), not yet sent. */
-type Draft = { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; attachments: FakeAttachment[] };
+type Draft = { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; bcc: Json[]; attachments: FakeAttachment[] };
 /** An attachment upload session: the chunks received so far. */
 type Upload = { draftId: string; name: string; contentType: string; size: number; chunks: Buffer[]; received: number; ranges: string[] };
 type ChangeKind = "upsert" | "partial" | "remove";
@@ -347,7 +347,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (method === "POST" && p === "/me/messages") {
       const m = await readBody(req);
       const id = `draft-${++draftCount}`;
-      state.drafts.set(id, { kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], attachments: [] });
+      state.drafts.set(id, { kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], bcc: m.bccRecipients ?? [], attachments: [] });
       return reply(201, { id, subject: m.subject ?? "" });
     }
     const draftRoute = p.match(/^\/me\/messages\/(draft-[^/]+)(?:\/(.*))?$/);
@@ -356,7 +356,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (method === "POST" && p === "/me/sendMail") {
       const b = await readBody(req);
       const m = b.message ?? {};
-      sendCopy({ kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [] });
+      sendCopy({ kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], bcc: m.bccRecipients ?? [] });
       return reply(202, "");
     }
 
@@ -390,6 +390,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         html: `${b.comment ?? ""}<hr><blockquote>${msg.body.content}</blockquote>`,
         to,
         cc,
+        bcc: (b.message?.bccRecipients ?? []) as Json[],
       };
       if (create) {
         // Like Graph, a forward starts with the original's attachments (inline ones too).
@@ -639,7 +640,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
   let sentCount = 0;
   let createdCount = 0;
   /** Puts a copy of something you sent into Sent Items and logs it for assertions. */
-  function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; attachments?: FakeAttachment[] }) {
+  function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; bcc?: Json[]; attachments?: FakeAttachment[] }) {
     const id = `msg-sent-new-${++sentCount}`;
     const msg = makeMessage({
       id,
@@ -662,7 +663,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.messages.set(id, msg);
     change(id, "upsert");
     state.sent.push({
-      kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc,
+      kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc, bcc: s.bcc ?? [],
       attachments: attachments.map((a) => ({ name: a.name, contentType: a.contentType, size: a.size, isInline: a.isInline, content: a.contentBytes })),
     });
   }

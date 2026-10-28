@@ -174,7 +174,7 @@ test("the left sidebar switches between the inbox and Calendar, and so do 1 and 
   // Typing a 2 in the composer stays text.
   await page.keyboard.press("c");
   await page.getByTestId("compose-body").pressSequentially("2 tickets");
-  await expect(page.getByTestId("compose-body")).toHaveValue("2 tickets");
+  await expect(page.getByTestId("compose-body")).toHaveAttribute("data-text", "2 tickets");
   await expect(page.getByTestId("week-view")).toHaveCount(0);
 });
 

@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(url, "https://g/me/messages/R1/createReply");
         let (url, body) = draft_request("https://g", Some("R1"), &draft(DraftKind::Forward)).unwrap();
         assert_eq!(url, "https://g/me/messages/R1/createForward");
-        assert_eq!(body["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
+        assert_eq!(body["message"]["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
     }
 
     #[test]

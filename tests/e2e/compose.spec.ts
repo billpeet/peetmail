@@ -22,7 +22,7 @@ test("c composes a new message with contact suggestions and Ctrl+Enter sends it"
   const sent = sentOfKind(fake, "new")[0];
   expect(sent.subject).toBe("Lunch?");
   expect(sent.to).toEqual([{ emailAddress: { address: "priya@fabrikam.io" } }]);
-  expect(sent.html).toContain("<p>Thai on Friday?</p><p>B</p>");
+  expect(sent.html).toContain("<div>Thai on Friday?</div><div><br></div><div>B</div>");
 });
 
 test("r replies to the open conversation and the reply shows up in the thread", async ({ inbox: page, fake }) => {

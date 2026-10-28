@@ -43,7 +43,7 @@ describe("composer files", () => {
   const file = (id: number) => ({ id, name: `f${id}.txt`, mime: "text/plain", size: 1 });
   const composer = (ids: number[]) => ({
     accountId: 1, kind: "new" as const, referenceMessageId: null, conversationId: null,
-    to: "p@x.com", cc: "", subject: "", body: "", attachments: ids.map(file), droppedAttachments: [],
+    to: "p@x.com", cc: "", bcc: "", subject: "", body: "", html: "", attachments: ids.map(file), droppedAttachments: [],
   });
 
   it("closing or replacing the composer throws its files away", () => {

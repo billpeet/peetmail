@@ -45,7 +45,7 @@ test("a new message from the Gmail account is a proper MIME message", async ({ i
   expect(s.mime.headers["subject"]).toMatch(/^=\?UTF-8\?B\?/);
   expect(decodeWord(s.mime.headers["subject"])).toBe("Café on Friday ☕");
   expect(textPart(s.mime, "text/plain")).toBe("Shall we?\n\nB");
-  expect(textPart(s.mime, "text/html")).toContain("<p>Shall we?</p><p>B</p>");
+  expect(textPart(s.mime, "text/html")).toContain("<div>Shall we?</div><div><br></div><div>B</div>");
 });
 
 test("a reply threads in Gmail, quotes the original, and shows up in the conversation", async ({ inbox: page, gmail }, testInfo) => {
@@ -146,4 +146,28 @@ test("a forward from Gmail leaves out a removed attachment and carries an attach
   expect(files.map((f) => decodeWord(f.filename!))).toEqual(["pixel@mum", "Résumé.txt"]);
   expect(files[1].body.toString()).toBe("my cv");
   expect(files[1].contentType).toMatch(/^text\/plain/);
+});
+
+test("Bcc and formatting from the Gmail account: a Bcc header Gmail removes on delivery, and a plain-text part", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-from").selectOption({ label: `${GMAIL_ACCOUNT.name} <${GMAIL_ACCOUNT.email}>` });
+  await page.getByTestId("compose-to").fill("kim@friends.example");
+  await page.getByTestId("compose-show-bcc").click();
+  await page.getByTestId("compose-bcc").fill("lee@friends.example");
+  await page.getByTestId("compose-subject").fill("Plans");
+  await page.getByTestId("compose-body").click();
+  await page.keyboard.press("Control+B");
+  await page.keyboard.type("Saturday");
+  await page.keyboard.press("Control+B");
+  await page.keyboard.type(" works.");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("1. bring snacks");
+  await page.keyboard.press("Control+Enter");
+
+  const s = await sent(gmail);
+  expect(s.mime.headers["bcc"]).toBe("lee@friends.example");
+  expect(textPart(s.mime, "text/plain")).toBe("Saturday works.\n1. bring snacks");
+  const html = textPart(s.mime, "text/html");
+  expect(html).toContain("<div><strong>Saturday</strong> works.</div><ol><li><div>bring snacks</div></li></ol>");
 });

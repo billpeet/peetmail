@@ -46,6 +46,10 @@ The icons down the left side are your mailboxes: Inbox, Done (what you've archiv
 
 A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something or attached a file).
 
+Format as you write: **Ctrl+B**, **Ctrl+I** and **Ctrl+U** for bold, italic and underline, **Ctrl+K** to make a link, or the buttons at the bottom of the message. Markdown works as you type, too: `**bold**`, `*italic*`, a line starting with `- ` or `1. ` for a list, `> ` for a quote. Formatting pasted from documents and web pages is kept (pictures in it are left out; paste a picture on its own to attach it).
+
+**Ctrl+Shift+C** and **Ctrl+Shift+B** add Cc and Bcc. People in Bcc get the message, but no one else sees their addresses.
+
 To attach files, press **Ctrl+Shift+A** (or the paperclip) to pick them, drag them from Explorer onto the message, or paste them, a screenshot included. A message can carry up to 25 MB of attachments. A forward lists the original's attachments; remove any you don't want to pass on with its **×**.
 
 ## Your mail on this PC

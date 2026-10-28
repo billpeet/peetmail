@@ -1,23 +1,29 @@
 <script lang="ts">
-  // New message, reply, reply all, forward. Plain text in, HTML out (Rust converts).
-  // Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text or a
+  // New message, reply, reply all, forward. The text is rich text (Tiptap): Ctrl+B/I/U,
+  // lists, links (Ctrl+K in the text), and Markdown shortcuts as you type (**bold**,
+  // *italic*, "- " and "1. " lists, "> " quotes). It's sent as HTML (sanitized in Rust)
+  // plus a plain-text version. Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text or a
   // file, so nothing is lost by accident). Files come from Ctrl+Shift+A (a file picker),
   // dropping them on the composer, or pasting; a forward lists the original's attachments,
   // each removable.
   // `inline`: a reply or forward written in the reader, under the conversation it answers
   // (like Outlook). Otherwise it's a dialog over everything.
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { Editor } from "@tiptap/core";
+  import StarterKit from "@tiptap/starter-kit";
+  import Placeholder from "@tiptap/extension-placeholder";
+  import { Fragment, Slice, type Node as PMNode } from "@tiptap/pm/model";
+  import { docToText, textToHtml } from "#lib/richtext.js";
   import { api, type Attachment, type Contact } from "#lib/api.js";
   import { keymap } from "#lib/keys.svelte.js";
   import { mail } from "#lib/mail.svelte.js";
-  import { Paperclip, X } from "@lucide/svelte";
+  import { Bold, Italic, Link2, List, ListOrdered, Paperclip, Underline, X } from "@lucide/svelte";
   import { attachmentRoom, fileSize } from "#lib/format.js";
   import { latestOnly, STALE } from "#lib/latest.js";
   import { narrow } from "#lib/contacts.js";
   import { parseSendTime } from "#lib/quickAdd.js";
   import { formatSendAt } from "#lib/mail.svelte.js";
   import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "#lib/snippets.js";
-  import { caretCoords } from "#lib/caret.js";
 
   let { inline = false }: { inline?: boolean } = $props();
 
@@ -25,9 +31,14 @@
   let root: HTMLDivElement | undefined = $state();
   let to = $state(c.to);
   let cc = $state(c.cc);
+  let bcc = $state(c.bcc);
   let subject = $state(c.subject);
+  /** The text as plain text and as the editor's HTML, kept in step by the editor. */
   let body = $state(c.body);
+  let html = $state(c.html || textToHtml(c.body));
   let showCc = $state(c.cc.length > 0);
+  let showBcc = $state(c.bcc.length > 0);
+  let bccInput: HTMLInputElement | undefined = $state();
   let from = $state(c.accountId);
   let armedDiscard = $state(false);
 
@@ -100,12 +111,13 @@
     addFiles([...(e.dataTransfer?.files ?? [])]);
   }
 
-  function onpaste(e: ClipboardEvent) {
+  /** Pasted files become attachments. True if it took the paste. */
+  function pasteFiles(e: ClipboardEvent): boolean {
     const files = [...(e.clipboardData?.files ?? [])];
     // Text copied with a picture of itself (Word, Excel) pastes as text.
-    if (!files.length || e.clipboardData?.types.includes("text/plain")) return;
-    e.preventDefault();
+    if (!files.length || e.clipboardData?.types.includes("text/plain")) return false;
     addFiles(files);
+    return true;
   }
 
   // ----- send later -----
@@ -135,7 +147,7 @@
 
   function closeLater() {
     later = null;
-    bodyInput?.focus();
+    editor?.commands.focus();
   }
 
   function laterKeys(e: KeyboardEvent) {
@@ -157,21 +169,31 @@
   const SNIP_LIST_W = 384; // w-96
   const SNIP_LIST_H = 260; // roughly the tallest it gets
 
+  /** The ";query" just before the caret in its paragraph: its document position and the query. */
+  function triggerAtCaret(): { start: number; query: string } | null {
+    if (!editor) return null;
+    const { $from: pos, empty } = editor.state.selection;
+    if (!empty) return null;
+    const before = pos.parent.textBetween(0, pos.parentOffset, undefined, "\ufffc");
+    const t = snippetTrigger(before, before.length);
+    return t && { start: pos.start() + t.start, query: t.query };
+  }
+
   function placeSnip(start: number) {
-    if (!bodyInput) return;
-    const c = caretCoords(bodyInput, start);
-    const box = bodyInput.getBoundingClientRect();
-    const left = Math.max(8, Math.min(c.left, box.width - SNIP_LIST_W - 8));
-    const below = c.top + c.height + 4;
+    if (!editor || !bodyBox) return;
+    const at = editor.view.coordsAtPos(start);
+    const box = bodyBox.getBoundingClientRect();
+    const top = at.top - box.top;
+    const left = Math.max(8, Math.min(at.left - box.left, box.width - SNIP_LIST_W - 8));
+    const below = at.bottom - box.top + 4;
     snipStyle =
-      below + SNIP_LIST_H > box.height && c.top > SNIP_LIST_H
-        ? `left:${left}px; bottom:${box.height - c.top + 4}px`
+      below + SNIP_LIST_H > box.height && top > SNIP_LIST_H
+        ? `left:${left}px; bottom:${box.height - top + 4}px`
         : `left:${left}px; top:${below}px`;
   }
 
   function updateSnip() {
-    if (!bodyInput) return;
-    const t = snippetTrigger(body, bodyInput.selectionStart ?? body.length);
+    const t = editor?.isFocused || snipForced ? triggerAtCaret() : null;
     if (!t) {
       snip = null;
       snipForced = false;
@@ -183,24 +205,25 @@
   }
 
   function openSnippets() {
-    if (!bodyInput) return;
-    bodyInput.focus();
-    const at = bodyInput.selectionStart ?? body.length;
+    if (!editor) return;
+    const { $from: pos } = editor.state.selection;
+    const prev = pos.parentOffset > 0 ? pos.parent.textBetween(pos.parentOffset - 1, pos.parentOffset, undefined, "\ufffc") : "";
     // Start a ";" word at the caret (with a space before it if needed).
-    const pad = at > 0 && !/\s/.test(body[at - 1]) ? " " : "";
-    body = body.slice(0, at) + pad + ";" + body.slice(at);
-    const caret = at + pad.length + 1;
+    const pad = prev && !/\s/.test(prev) ? " " : "";
     snipForced = true;
-    queueMicrotask(() => {
-      bodyInput?.setSelectionRange(caret, caret);
-      updateSnip();
-    });
+    editor.chain().focus().insertContent({ type: "text", text: pad + ";" }).run();
+    updateSnip();
+  }
+
+  /** Text as editor nodes: a paragraph per line. */
+  function paragraphsOf(text: string): PMNode[] {
+    const schema = editor!.schema;
+    return text.split("\n").map((line) => schema.nodes.paragraph.create(null, line ? schema.text(line) : null));
   }
 
   async function insertSnippet(s: Snippet) {
-    if (!snip || !bodyInput) return;
+    if (!snip || !editor) return;
     const { start } = snip;
-    const end = bodyInput.selectionStart ?? body.length;
     snip = null;
     snipForced = false;
     const first = to.split(/[,;]/).map((x) => x.trim()).find(Boolean) ?? null;
@@ -212,49 +235,160 @@
     const acct = mail.accountOf(from);
     const me = acct ? { name: acct.displayName, address: acct.email } : null;
     const text = expandSnippet(s.body, { to: person, me });
-    body = body.slice(0, start) + text + body.slice(end);
-    const caret = start + text.length;
-    queueMicrotask(() => {
-      bodyInput?.focus();
-      bodyInput?.setSelectionRange(caret, caret);
-    });
+    // Open at both ends, so the first paragraph joins the text before the ";" and the
+    // last one the text after the caret, instead of splitting them off.
+    const slice = new Slice(Fragment.from(paragraphsOf(text)), 1, 1);
+    const end = editor.state.selection.from;
+    editor.view.dispatch(editor.state.tr.replaceRange(start, end, slice).scrollIntoView());
+    editor.commands.focus();
   }
 
-  function bodyKeys(e: KeyboardEvent) {
-    if (!snipOpen) return;
+  /** Keys for the snippet list while it's open. True if the key was used. */
+  function snippetKeys(e: KeyboardEvent): boolean {
+    if (!snipOpen) return false;
     const n = snipMatches.length;
     if (e.key === "ArrowDown" && n) snipActive = (snipActive + 1) % n;
     else if (e.key === "ArrowUp" && n) snipActive = (snipActive - 1 + n) % n;
     else if ((e.key === "Enter" || e.key === "Tab") && n && !e.ctrlKey) insertSnippet(snipMatches[snipActive]);
     else if (e.key === "Escape") {
+      // Close the list, not the composer.
       snip = null;
       snipForced = false;
-      e.stopPropagation(); // close the list, not the composer
-    } else return;
-    e.preventDefault();
+    } else return false;
+    return true;
   }
 
+  // ----- the editor -----
+  let host: HTMLDivElement | undefined = $state();
+  /** The text's box, which the snippet list is placed in. */
+  let bodyBox: HTMLDivElement | undefined = $state();
+  let editor: Editor | null = null;
+  /** Bumped on every editor transaction, so the toolbar's active states re-render. */
+  let tick = $state(0);
+  let linkUrl = $state<string | null>(null);
+  let linkInput: HTMLInputElement | undefined = $state();
+
+  /** Reads `tick` so the toolbar follows the selection. */
+  const isActive = (name: string) => tick >= 0 && (editor?.isActive(name) ?? false);
+  const inText = () => !!mail.composer && !!editor?.isFocused;
+
+  function format(run: (e: Editor) => void) {
+    if (editor) run(editor);
+  }
+
+  function openLink() {
+    if (!editor) return;
+    linkUrl = editor.getAttributes("link").href ?? "";
+    queueMicrotask(() => linkInput?.focus());
+  }
+
+  function applyLink(e?: Event) {
+    e?.preventDefault();
+    if (!editor || linkUrl === null) return;
+    const url = linkUrl.trim();
+    const chain = editor.chain().focus().extendMarkRange("link");
+    if (!url) chain.unsetLink().run();
+    else {
+      const href = /^(https?:|mailto:)/i.test(url) ? url : url.includes("@") && !url.includes("/") ? `mailto:${url}` : `https://${url}`;
+      // With nothing selected, the address itself becomes the link's text.
+      if (editor.state.selection.empty && !editor.isActive("link")) chain.insertContent({ type: "text", text: url, marks: [{ type: "link", attrs: { href } }] }).run();
+      else chain.setLink({ href }).run();
+    }
+    linkUrl = null;
+  }
+
+  function closeLink() {
+    linkUrl = null;
+    editor?.commands.focus();
+  }
+
+  const tools = [
+    { id: "bold", label: "Bold (Ctrl+B)", icon: Bold, on: "bold", run: () => format((e) => e.chain().focus().toggleBold().run()) },
+    { id: "italic", label: "Italic (Ctrl+I)", icon: Italic, on: "italic", run: () => format((e) => e.chain().focus().toggleItalic().run()) },
+    { id: "underline", label: "Underline (Ctrl+U)", icon: Underline, on: "underline", run: () => format((e) => e.chain().focus().toggleUnderline().run()) },
+    { id: "bullets", label: "Bulleted list (Ctrl+Shift+8, or type - and a space)", icon: List, on: "bulletList", run: () => format((e) => e.chain().focus().toggleBulletList().run()) },
+    { id: "numbers", label: "Numbered list (Ctrl+Shift+7, or type 1. and a space)", icon: ListOrdered, on: "orderedList", run: () => format((e) => e.chain().focus().toggleOrderedList().run()) },
+    { id: "link", label: "Link (Ctrl+K in the text)", icon: Link2, on: "link", run: openLink },
+  ];
+
+  function createEditor(element: HTMLElement) {
+    editor = new Editor({
+      element,
+      extensions: [
+        StarterKit.configure({ heading: { levels: [1, 2, 3] }, trailingNode: false, link: { openOnClick: false, autolink: true, defaultProtocol: "https" } }),
+        Placeholder.configure({ placeholder: isReply ? "Write your reply… (;name inserts a snippet)" : "Type ;name to insert a snippet" }),
+      ],
+      content: html,
+      editorProps: {
+        attributes: (state) => ({
+          "data-testid": "compose-body",
+          // The plain text, as sent: for tests and anything else that reads the field.
+          "data-text": docToText(state.doc.toJSON()),
+          "aria-label": "Message",
+          class: ["compose-rich px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text", inline ? "min-h-48" : "min-h-full"].join(" "),
+        }),
+        handleKeyDown: (_view, e) => {
+          if (snippetKeys(e)) return true;
+          // Esc closes the composer (or what's open in it); nothing in the editor wants it.
+          if (e.key === "Escape") {
+            keymap.handle(e);
+            return e.defaultPrevented;
+          }
+          if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+            openLink();
+            return true;
+          }
+          // Ctrl chords are PeetMail's first (Ctrl+Enter sends, where Tiptap would add a line
+          // break; Ctrl+Shift+B shows Bcc, not a quote). The rest (Ctrl+Z...) are the editor's.
+          if (e.ctrlKey) {
+            keymap.handle(e);
+            return e.defaultPrevented;
+          }
+          return false;
+        },
+        handlePaste: (_view, e) => pasteFiles(e),
+        // Files dropped on the text are attached by the composer's own drop handler.
+        handleDrop: (_view, e) => !!(e as DragEvent).dataTransfer?.types.includes("Files"),
+      },
+      onTransaction: () => {
+        tick++;
+        updateSnip();
+      },
+      onUpdate: ({ editor: ed }) => {
+        armedDiscard = false;
+        html = ed.isEmpty ? "" : ed.getHTML();
+        body = docToText(ed.getJSON());
+      },
+      onBlur: () =>
+        setTimeout(() => {
+          if (!editor?.isFocused) snip = null;
+        }, 150),
+    });
+  }
+
+  onDestroy(() => editor?.destroy());
+
   let toInput: HTMLInputElement | undefined = $state();
-  let bodyInput: HTMLTextAreaElement | undefined = $state();
 
   const isReply = c.kind === "reply" || c.kind === "replyAll";
   const title = { new: "New message", reply: "Reply", replyAll: "Reply all", forward: "Forward" }[c.kind];
 
   // Keep the store in sync so send() sees the latest text.
   $effect(() => {
-    if (mail.composer) Object.assign(mail.composer, { to, cc, subject, body, accountId: from });
+    if (mail.composer) Object.assign(mail.composer, { to, cc, bcc, subject, body, html, accountId: from });
   });
 
   // ----- contact suggestions for the field being typed in -----
   let suggestions = $state<Contact[]>([]);
   let active = $state(0);
-  let field = $state<"to" | "cc" | null>(null);
+  type Field = "to" | "cc" | "bcc";
+  let field = $state<Field | null>(null);
 
   // One lookup per keystroke; only the latest may update the list, or a slow reply for
   // "p" could replace the one for "priya" and Enter would pick the wrong person.
   const lookup = latestOnly(async (prefix: string) => (prefix ? api.suggestContacts(prefix) : []));
 
-  async function suggest(which: "to" | "cc", value: string) {
+  async function suggest(which: Field, value: string) {
     field = which;
     const text = value.split(/[,;]/).pop()?.trim() ?? "";
     // Instantly keep only what still matches; the fresh lookup replaces it when it lands.
@@ -266,17 +400,18 @@
     active = 0;
   }
 
-  function accept(which: "to" | "cc", contact: Contact) {
-    const parts = (which === "to" ? to : cc).split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  function accept(which: Field, contact: Contact) {
+    const parts = { to, cc, bcc }[which].split(/[,;]/).map((s) => s.trim()).filter(Boolean);
     parts.pop();
     const next = [...parts, contact.address].join(", ") + ", ";
     if (which === "to") to = next;
-    else cc = next;
+    else if (which === "cc") cc = next;
+    else bcc = next;
     lookup.cancel(); // a lookup still in flight mustn't reopen the list
     suggestions = [];
   }
 
-  function fieldKeys(which: "to" | "cc", e: KeyboardEvent) {
+  function fieldKeys(which: Field, e: KeyboardEvent) {
     if (!suggestions.length || field !== which) return;
     // Ctrl+Enter sends, even while suggestions are up (they arrive a moment after typing,
     // so taking it as a pick made a quick Ctrl+Enter silently not send).
@@ -292,6 +427,11 @@
     e.preventDefault();
   }
 
+  function revealBcc() {
+    showBcc = true;
+    queueMicrotask(() => bccInput?.focus());
+  }
+
   function close() {
     if ((body.trim() || c.attachments.length) && !armedDiscard) {
       armedDiscard = true;
@@ -301,7 +441,9 @@
   }
 
   onMount(() => {
-    (isReply ? bodyInput : toInput)?.focus({ preventScroll: inline });
+    createEditor(host!);
+    if (isReply) editor?.commands.focus("end", { scrollIntoView: !inline });
+    else toInput?.focus({ preventScroll: inline });
     // Bring the whole reply into view, its fields included, with the thread above it.
     if (inline) root?.scrollIntoView({ block: "nearest" });
     return keymap.register([
@@ -309,8 +451,17 @@
       { id: "compose.later", keys: "ctrl+shift+Enter", label: "Send later", group: "Compose", when: () => !!mail.composer, run: () => (later === null ? openLater() : closeLater()) },
       { id: "compose.later.close", keys: "Escape", label: "Close send later", group: "Compose", when: () => !!mail.composer && later !== null, run: closeLater },
       { id: "compose.snippet", keys: "ctrl+;", label: "Insert snippet", group: "Compose", when: () => !!mail.composer && later === null, run: openSnippets },
-      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null && !snipOpen, run: close },
+      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null && linkUrl === null && !snipOpen, run: close },
       { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => !!mail.composer, run: () => (showCc = true) },
+      { id: "compose.bcc", keys: "ctrl+shift+b", label: "Show Bcc", group: "Compose", when: () => !!mail.composer, run: revealBcc },
+      { id: "compose.bold", keys: "ctrl+b", label: "Bold", group: "Compose", when: inText, run: tools[0].run },
+      { id: "compose.italic", keys: "ctrl+i", label: "Italic", group: "Compose", when: inText, run: tools[1].run },
+      { id: "compose.underline", keys: "ctrl+u", label: "Underline", group: "Compose", when: inText, run: tools[2].run },
+      // Shift+8 arrives as "*", so the editor itself handles these keys; listed for the overlay and palette.
+      { id: "compose.bullets", keys: "ctrl+shift+8", label: "Bulleted list", group: "Compose", when: inText, run: tools[3].run },
+      { id: "compose.numbers", keys: "ctrl+shift+7", label: "Numbered list", group: "Compose", when: inText, run: tools[4].run },
+      // Taken by the text itself (Ctrl+K is the command palette everywhere else).
+      { id: "compose.link", keys: "ctrl+k", label: "Insert link (in the message text)", group: "Compose", when: () => false, run: openLink },
       { id: "compose.attach", keys: "ctrl+shift+a", label: "Attach files", group: "Compose", when: () => !!mail.composer, run: pickFiles },
     ]);
   });
@@ -325,7 +476,7 @@
   </span>
 {/snippet}
 
-{#snippet suggestionList(which: "to" | "cc")}
+{#snippet suggestionList(which: Field)}
   {#if field === which && suggestions.length}
     <ul data-testid="contact-suggestions" class="absolute top-full left-0 z-10 mt-1 w-80 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
       {#each suggestions as s, i (s.address)}
@@ -405,7 +556,10 @@
           class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
         />
         {#if !showCc}
-          <button type="button" onclick={() => (showCc = true)} class="text-xs text-ink-500 hover:text-ink-100">Cc</button>
+          <button type="button" data-testid="compose-show-cc" title="Cc (Ctrl+Shift+C)" onclick={() => (showCc = true)} class="text-xs text-ink-500 hover:text-ink-100">Cc</button>
+        {/if}
+        {#if !showBcc}
+          <button type="button" data-testid="compose-show-bcc" title="Bcc (Ctrl+Shift+B)" onclick={revealBcc} class="text-xs text-ink-500 hover:text-ink-100">Bcc</button>
         {/if}
         {@render suggestionList("to")}
       </label>
@@ -425,6 +579,23 @@
           {@render suggestionList("cc")}
         </label>
       {/if}
+      {#if showBcc}
+        <label class="relative flex items-center gap-3 border-t border-ink-800 px-4 py-2">
+          <span class="w-14 shrink-0 text-ink-500" title="Blind copy: the other recipients don't see these addresses">Bcc</span>
+          <input
+            data-testid="compose-bcc"
+            bind:this={bccInput}
+            bind:value={bcc}
+            oninput={() => suggest("bcc", bcc)}
+            onkeydown={(e) => fieldKeys("bcc", e)}
+            onblur={() => (suggestions = [])}
+            spellcheck="false"
+            autocomplete="off"
+            class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
+          />
+          {@render suggestionList("bcc")}
+        </label>
+      {/if}
       <label class="flex items-center gap-3 border-t border-ink-800 px-4 py-2">
         <span class="w-14 shrink-0 text-ink-500">Subject</span>
         <input
@@ -436,28 +607,9 @@
       </label>
     </div>
 
-    <div class={["relative flex flex-col", !inline && "min-h-0 flex-1"]}>
-      <textarea
-        data-testid="compose-body"
-        bind:this={bodyInput}
-        bind:value={body}
-        oninput={() => {
-          armedDiscard = false;
-          updateSnip();
-        }}
-        onkeydown={bodyKeys}
-        {onpaste}
-        onclick={updateSnip}
-        onblur={() => setTimeout(() => {
-          if (document.activeElement !== bodyInput) snip = null;
-        }, 150)}
-        placeholder={isReply ? "Write your reply… (;name inserts a snippet)" : "Type ;name to insert a snippet"}
-        class={[
-          "resize-none bg-transparent px-4 py-3 text-sm leading-relaxed text-ink-100 outline-none select-text",
-          // Inline it grows with what's typed; the reader scrolls.
-          inline ? "min-h-48 [field-sizing:content]" : "min-h-0 flex-1",
-        ]}
-      ></textarea>
+    <div bind:this={bodyBox} class={["relative flex flex-col", !inline && "min-h-0 flex-1"]}>
+      <!-- Inline it grows with what's typed (the reader scrolls); in the dialog it scrolls itself. -->
+      <div bind:this={host} class={inline ? "" : "min-h-0 flex-1 overflow-y-auto"}></div>
       {#if snipOpen}
         <div data-testid="snippet-list" style={snipStyle} class="absolute z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
           {#if snipMatches.length}
@@ -536,8 +688,48 @@
       </div>
     {/if}
 
+    {#if linkUrl !== null}
+      <form data-testid="compose-link" onsubmit={applyLink} class="flex items-center gap-3 border-t border-ink-800 px-4 py-2 text-sm">
+        <span class="shrink-0 text-ink-500">Link</span>
+        <input
+          data-testid="compose-link-input"
+          bind:this={linkInput}
+          bind:value={linkUrl}
+          onkeydown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              closeLink();
+            }
+          }}
+          placeholder="https://… or an email address (empty removes the link)"
+          spellcheck="false"
+          autocomplete="off"
+          class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
+        />
+        <button data-testid="compose-link-apply" class="rounded-md border border-ink-700 px-2 py-0.5 text-xs text-ink-300 hover:text-ink-100">Set</button>
+      </form>
+    {/if}
+
     <div class="flex items-center justify-between gap-3 border-t border-ink-800 px-4 py-2.5">
-      <span data-testid="compose-hint" class="text-xs {armedDiscard ? 'text-amber-300' : 'text-ink-500'}">
+      <!-- Out of the tab order: Tab goes from the text to the buttons that send. -->
+      <span class="flex shrink-0 items-center gap-0.5">
+        {#each tools as t (t.id)}
+          <button
+            type="button"
+            data-testid="compose-format-{t.id}"
+            title={t.label}
+            aria-label={t.label}
+            aria-pressed={isActive(t.on)}
+            tabindex="-1"
+            onmousedown={(e) => e.preventDefault()}
+            onclick={t.run}
+            class={["icon-btn size-7", isActive(t.on) && "bg-ink-800 text-ink-100"]}
+          >
+            <t.icon size={14} />
+          </button>
+        {/each}
+      </span>
+      <span data-testid="compose-hint" class="min-w-0 flex-1 truncate text-xs {armedDiscard ? 'text-amber-300' : 'text-ink-500'}">
         {armedDiscard ? "Press Esc again to discard" : isReply ? (inline ? "The message above is quoted below your reply." : "The original message is quoted below your reply.") : ""}
       </span>
       <span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
@@ -551,7 +743,7 @@
             const input = e.currentTarget;
             addFiles([...(input.files ?? [])]);
             input.value = ""; // picking the same file again still fires
-            bodyInput?.focus();
+            editor?.commands.focus();
           }}
         />
         <button data-testid="compose-attach" title="Attach files (Ctrl+Shift+A)" aria-label="Attach files" onclick={pickFiles} class="icon-btn size-8">
@@ -572,3 +764,26 @@
     </div>
   </div>
 </div>
+
+<style>
+  /* A paragraph is a line (Enter starts the next), as it's sent: no gaps of its own. */
+  :global(.compose-rich p) { margin: 0; min-height: 1lh; }
+  :global(.compose-rich ul) { list-style: disc; padding-left: 1.4em; margin: 0; }
+  :global(.compose-rich ol) { list-style: decimal; padding-left: 1.4em; margin: 0; }
+  :global(.compose-rich blockquote) { border-left: 2px solid var(--color-ink-500); padding-left: 0.8em; margin: 0; color: var(--color-ink-300); }
+  :global(.compose-rich h1) { font-size: 1.4em; font-weight: 600; margin: 0; }
+  :global(.compose-rich h2) { font-size: 1.2em; font-weight: 600; margin: 0; }
+  :global(.compose-rich h3) { font-weight: 600; margin: 0; }
+  :global(.compose-rich code) { font-family: ui-monospace, monospace; font-size: 0.9em; background: var(--color-ink-800); padding: 0 0.25em; border-radius: 3px; }
+  :global(.compose-rich pre) { background: var(--color-ink-800); padding: 0.5em 0.75em; border-radius: 4px; margin: 0; white-space: pre-wrap; }
+  :global(.compose-rich pre code) { background: none; padding: 0; }
+  :global(.compose-rich a) { color: var(--color-accent); text-decoration: underline; }
+  :global(.compose-rich hr) { border-color: var(--color-ink-700); margin: 0.75em 0; }
+  :global(.compose-rich p.is-editor-empty:first-child::before) {
+    content: attr(data-placeholder);
+    color: var(--color-ink-500);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+</style>

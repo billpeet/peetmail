@@ -12,6 +12,8 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Format your messages: bold, italic, underline, lists, quotes and links, with **Ctrl+B**, **Ctrl+I**, **Ctrl+U**, **Ctrl+K** (in the text), the buttons at the bottom of the message, or Markdown as you type (a dash and a space starts a list, for one). Formatting pasted from documents and web pages is kept.
+- Bcc: **Ctrl+Shift+B** or the Bcc button adds blind copies to new messages, replies and forwards. Forwards also keep their Cc now.
 - Double-click an attachment to open it in its app. A single click still saves it to Downloads. Files that can run programs (`.exe`, `.js` and the like) aren't opened this way.
 - Attach files to new messages, replies and forwards: **Ctrl+Shift+A** or the paperclip picks them, or drag them onto the message, or paste them (screenshots too). Forwards list the original's attachments, and you can remove any you don't want to send on.
 - Changes to a recurring meeting and to one of its occurrences (accept the series, then decline one day) reach the server in the order you made them, even when the connection drops in between.

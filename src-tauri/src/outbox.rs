@@ -105,10 +105,16 @@ pub struct Draft {
     pub to: Vec<String>,
     #[serde(default)]
     pub cc: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bcc: Vec<String>,
     #[serde(default)]
     pub subject: String,
-    /// Plain text as typed; converted to HTML when sent.
+    /// The text as plain text (the text/plain part, and the whole message when there's no
+    /// `html`, as in drafts queued before the rich-text composer).
     pub body: String,
+    /// The composer's rich text (sanitized when sent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub html: String,
     /// When the user scheduled it (UTC RFC 3339). None: sent after the undo delay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_at: Option<String>,
@@ -125,6 +131,11 @@ pub struct Draft {
 }
 
 impl Draft {
+    /// The message's own HTML (without any quoted original).
+    pub fn html_body(&self) -> String {
+        if self.html.trim().is_empty() { sanitize::compose_html(&self.body) } else { sanitize::compose_rich(&self.html) }
+    }
+
     /// Needs more than a single Graph call: files to add, or forwarded ones to take out.
     pub fn has_file_changes(&self) -> bool {
         !self.attachments.is_empty() || (self.kind == DraftKind::Forward && !self.dropped_attachments.is_empty())
@@ -582,7 +593,7 @@ fn recipients(list: &[String]) -> Value {
 /// Graph request for a draft. Replies and forwards use the dedicated actions so Graph
 /// threads them and quotes the original.
 pub fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method, String, Value)> {
-    let html = sanitize::compose_html(&d.body);
+    let html = d.html_body();
     let target = || reply_to.ok_or_else(|| AppError::Other("reply has no original message".into()));
     Ok(match d.kind {
         DraftKind::New => (
@@ -594,6 +605,7 @@ pub fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Me
                     "body": { "contentType": "HTML", "content": html },
                     "toRecipients": recipients(&d.to),
                     "ccRecipients": recipients(&d.cc),
+                    "bccRecipients": recipients(&d.bcc),
                 },
                 "saveToSentItems": true,
             }),
@@ -601,15 +613,18 @@ pub fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Me
         DraftKind::Reply | DraftKind::ReplyAll => {
             let action = if d.kind == DraftKind::Reply { "reply" } else { "replyAll" };
             let mut body = json!({ "comment": html });
-            if !d.to.is_empty() || !d.cc.is_empty() {
-                body["message"] = json!({ "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc) });
+            if !d.to.is_empty() || !d.cc.is_empty() || !d.bcc.is_empty() {
+                body["message"] = json!({ "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc), "bccRecipients": recipients(&d.bcc) });
             }
             (Method::POST, format!("{base}/me/messages/{}/{action}", target()?), body)
         }
         DraftKind::Forward => (
             Method::POST,
             format!("{base}/me/messages/{}/forward", target()?),
-            json!({ "comment": html, "toRecipients": recipients(&d.to) }),
+            json!({
+                "comment": html,
+                "message": { "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc), "bccRecipients": recipients(&d.bcc) },
+            }),
         ),
     })
 }
@@ -784,8 +799,20 @@ mod tests {
         let (m, url, body) = send_request("https://g", Some("R1"), &d).unwrap();
         assert_eq!(m, Method::POST);
         assert_eq!(url, "https://g/me/messages/R1/forward");
-        assert_eq!(body["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
+        assert_eq!(body["message"]["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
         assert!(body["comment"].as_str().unwrap().contains("fyi &lt;b&gt;"));
+        // Cc and Bcc go with every kind of message.
+        let d = Draft { cc: vec!["c@x.com".into()], bcc: vec!["hidden@x.com".into()], ..d };
+        let (_, _, body) = send_request("https://g", Some("R1"), &d).unwrap();
+        assert_eq!(body["message"]["ccRecipients"][0]["emailAddress"]["address"], "c@x.com");
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        let (_, _, body) = send_request("https://g", None, &Draft { kind: DraftKind::New, ..d.clone() }).unwrap();
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        let (_, _, body) = send_request("https://g", Some("R1"), &Draft { kind: DraftKind::Reply, to: vec![], cc: vec![], ..d.clone() }).unwrap();
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        // Rich text is sent as written (sanitized); without it, the plain text is converted.
+        let (_, _, body) = send_request("https://g", None, &Draft { kind: DraftKind::New, html: "<p><strong>Hi</strong></p>".into(), ..d.clone() }).unwrap();
+        assert!(body["message"]["body"]["content"].as_str().unwrap().contains("<div><strong>Hi</strong></div>"));
         assert!(send_request("https://g", None, &Draft { kind: DraftKind::Reply, ..d }).is_err());
     }
 }

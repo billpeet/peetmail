@@ -51,12 +51,12 @@ test(";name in the body inserts a snippet with the recipient's and your names fi
   await expect(page.getByTestId("snippet-option")).toContainText(";thanks");
   await snap(page, testInfo, "snippet-list");
   await page.keyboard.press("Enter");
-  await expect(body).toHaveValue("Hi Priya,\n\nThanks for this!\n\nBoris");
+  await expect(body).toHaveAttribute("data-text", "Hi Priya,\n\nThanks for this!\n\nBoris");
   await expect(page.getByTestId("snippet-list")).toHaveCount(0);
 
   // Typing carries on after the inserted text.
   await page.keyboard.type(" (sent from PeetMail)");
-  await expect(body).toHaveValue("Hi Priya,\n\nThanks for this!\n\nBoris (sent from PeetMail)");
+  await expect(body).toHaveAttribute("data-text", "Hi Priya,\n\nThanks for this!\n\nBoris (sent from PeetMail)");
   await page.keyboard.press("Control+Enter");
   await expect.poll(() => sentNew(fake).length, { timeout: 10_000 }).toBe(1);
   expect(sentNew(fake)[0].html).toContain("Thanks for this!");
@@ -78,19 +78,19 @@ test("Esc dismisses the list without closing the composer; plain semicolons stay
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("snippet-list")).toHaveCount(0);
   await expect(page.getByTestId("composer")).toBeVisible();
-  await expect(body).toHaveValue("one;two ;in");
+  await expect(body).toHaveAttribute("data-text", "one;two ;in");
 
   // No match: no list, so Enter is just a new line.
   await page.keyboard.type("x");
   await expect(page.getByTestId("snippet-list")).toHaveCount(0);
   await page.keyboard.press("Enter");
-  await expect(body).toHaveValue("one;two ;inx\n");
+  await expect(body).toHaveAttribute("data-text", "one;two ;inx\n");
 
   await page.keyboard.press("Control+;");
   await expect(page.getByTestId("snippet-option")).toHaveCount(2);
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await expect(body).toHaveValue("one;two ;inx\nMeet my colleague");
+  await expect(body).toHaveAttribute("data-text", "one;two ;inx\nMeet my colleague");
 });
 
 test("Ctrl+; with no snippets says where to make them", async ({ inbox: page }) => {

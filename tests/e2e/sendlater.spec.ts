@@ -27,7 +27,7 @@ test.describe("undo send", () => {
     await expect(page.getByTestId("toast")).toContainText("Send undone");
     await expect(page.getByTestId("compose-to")).toHaveValue("priya@fabrikam.io");
     await expect(page.getByTestId("compose-subject")).toHaveValue("Lunch?");
-    await expect(page.getByTestId("compose-body")).toHaveValue("See you there");
+    await expect(page.getByTestId("compose-body")).toHaveAttribute("data-text", "See you there");
     await page.waitForTimeout(4000);
     expect(sentNew(fake)).toEqual([]);
 

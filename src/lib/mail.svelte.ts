@@ -18,6 +18,7 @@ import {
   type QueuedSend,
   type SnoozedThread,
 } from "./api";
+import { textToHtml } from "./richtext";
 import type { HelpPage } from "./docs";
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
@@ -51,8 +52,12 @@ export type ComposerState = {
   conversationId: string | null;
   to: string;
   cc: string;
+  bcc: string;
   subject: string;
+  /** The text as plain text (kept in step with `html` by the composer). */
   body: string;
+  /** The text as the editor's HTML. */
+  html: string;
   /** Files attached so far. */
   attachments: DraftFile[];
   /** Forwards: names of the original's attachments taken out. */
@@ -738,7 +743,7 @@ class MailStore {
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", attachments: [], droppedAttachments: [] };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", bcc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", html: textToHtml(prefill.body ?? ""), attachments: [], droppedAttachments: [] };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -769,8 +774,10 @@ class MailStore {
       conversationId: t.conversationId,
       to: to.join(", "),
       cc: cc.join(", "),
+      bcc: "",
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
       body: "",
+      html: "",
       attachments: [],
       droppedAttachments: [],
     };
@@ -788,8 +795,10 @@ class MailStore {
         referenceMessageId: c.referenceMessageId,
         to: split(c.to),
         cc: split(c.cc),
+        bcc: split(c.bcc),
         subject: c.subject,
         body: c.body,
+        html: c.html,
         sendAt: sendAt?.toISOString(),
         attachments: c.attachments.map((f) => f.id),
         droppedAttachments: c.kind === "forward" ? c.droppedAttachments : [],
@@ -820,8 +829,10 @@ class MailStore {
       conversationId: this.thread.some((m) => m.id === d.referenceMessageId) ? this.threadFor : null,
       to: d.to.join(", "),
       cc: d.cc.join(", "),
+      bcc: (d.bcc ?? []).join(", "),
       subject: d.subject,
       body: d.body,
+      html: d.html || textToHtml(d.body),
       attachments: d.attachments ?? [],
       droppedAttachments: d.droppedAttachments ?? [],
     };

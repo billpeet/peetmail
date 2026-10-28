@@ -615,8 +615,14 @@ pub struct SendInput {
     #[serde(default)]
     cc: Vec<String>,
     #[serde(default)]
+    bcc: Vec<String>,
+    #[serde(default)]
     subject: String,
+    /// The text as plain text.
     body: String,
+    /// The text as the composer's rich text (HTML).
+    #[serde(default)]
+    html: String,
     /// Send later, at this time (RFC 3339). None: after the undo delay.
     #[serde(default)]
     send_at: Option<String>,
@@ -673,17 +679,19 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         kind: input.kind,
         to: clean(input.to),
         cc: clean(input.cc),
+        bcc: clean(input.bcc),
         subject: input.subject,
         body: input.body,
+        html: input.html,
         send_at: when.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         reference_message_id: input.reference_message_id,
         attachments,
         dropped_attachments: if input.kind == DraftKind::Forward { input.dropped_attachments } else { vec![] },
     };
-    if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
+    if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
     }
-    if let Some(bad) = draft.to.iter().chain(&draft.cc).find(|a| !a.contains('@')) {
+    if let Some(bad) = draft.to.iter().chain(&draft.cc).chain(&draft.bcc).find(|a| !a.contains('@')) {
         return Err(AppError::Other(format!("\"{bad}\" isn't an email address")));
     }
     let delay = state.preferences()?.undo_send_secs;

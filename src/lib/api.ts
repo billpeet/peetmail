@@ -87,8 +87,12 @@ export type SendInput = {
   referenceMessageId: number | null;
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
+  /** The text as plain text. */
   body: string;
+  /** The text as rich text (the composer's HTML). */
+  html: string;
   /** Send later (UTC ISO). Omitted: after the undo delay. */
   sendAt?: string;
   /** Ids of files from `addDraftFile`. */
@@ -103,8 +107,11 @@ export type Draft = {
   kind: DraftKind;
   to: string[];
   cc: string[];
+  bcc?: string[];
   subject: string;
   body: string;
+  /** Missing on drafts queued before the rich-text composer: `body` is all there is. */
+  html?: string;
   sendAt?: string;
   referenceMessageId?: number;
   attachments?: DraftFile[];
