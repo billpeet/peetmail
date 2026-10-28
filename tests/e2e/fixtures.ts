@@ -166,6 +166,18 @@ export function inboxConversations(pred: (m: ReturnType<typeof defaultMailbox>[n
 /** What the default view (the built-in Inbox tab: everything the default Other split doesn't claim) shows after a fresh sync. */
 export const DEFAULT_CONVERSATIONS = inboxConversations((m) => m.inferenceClassification === "focused");
 
+/** Opens Settings at a page ("accounts", "mail", "calendar", "notifications", "storage", "updates", "privacy", "apps"). */
+export async function openSettings(page: Page, section: string) {
+  await page.keyboard.press("Control+,");
+  await showSettingsPage(page, section);
+}
+
+/** Switches the open Settings dialog to a page. */
+export async function showSettingsPage(page: Page, section: string) {
+  await page.getByTestId(`settings-nav-${section}`).click();
+  await expect(page.getByTestId("settings")).toHaveAttribute("data-page", section);
+}
+
 export async function waitForSyncIdle(page: Page) {
   await expect(page.getByTestId("sync-status")).toHaveAttribute("data-state", "idle", { timeout: 15_000 });
 }

@@ -1,4 +1,4 @@
-import { test, expect, syncNow, waitForSyncIdle } from "./fixtures";
+import { test, expect, openSettings, showSettingsPage, syncNow, waitForSyncIdle } from "./fixtures";
 import { GMAIL_ACCOUNT } from "../harness/fake-gmail.ts";
 import type { Page } from "@playwright/test";
 
@@ -32,10 +32,10 @@ test.describe("with PeetMail's own apps built in", () => {
   });
 
   test("your own app sits under Advanced, and setting it signs nobody out", async ({ inbox: page }) => {
-    await page.keyboard.press("Control+,");
-    const advanced = page.getByTestId("advanced-apps");
-    await expect(page.getByTestId("client-id-input")).toBeHidden();
-    await advanced.locator("summary").click();
+    await openSettings(page, "accounts");
+    await expect(page.getByTestId("client-id-input")).toHaveCount(0);
+    await expect(page.getByTestId("settings-nav-apps")).toHaveText("Advanced");
+    await showSettingsPage(page, "apps");
     await page.getByTestId("client-id-input").fill(OTHER_APP);
     await page.getByTestId("client-id-input").press("Enter");
     await expect(page.getByTestId("account-add-custom")).toBeVisible();
@@ -52,8 +52,7 @@ test.describe("with PeetMail's own apps built in", () => {
     });
 
     test("a refresh uses the app the account signed in with, not the one set later", async ({ inbox: page, fake }) => {
-      await page.keyboard.press("Control+,");
-      await page.getByTestId("advanced-apps").locator("summary").click();
+      await openSettings(page, "apps");
       await page.getByTestId("client-id-input").fill(OTHER_APP);
       await page.getByTestId("client-id-input").press("Enter");
       await expect(page.getByTestId("account-add-custom")).toBeVisible();

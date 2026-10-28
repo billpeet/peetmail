@@ -1,4 +1,4 @@
-import { test, expect, selectedRow, selectWithKeys, snap } from "./fixtures";
+import { test, expect, selectedRow, selectWithKeys, snap, openSettings } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 type Fake = Parameters<Parameters<typeof test>[2]>[0]["fake"];
@@ -61,7 +61,7 @@ test.describe("a long undo window", () => {
 });
 
 test("the undo window is a setting", async ({ inbox: page, fake }) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await page.getByTestId("undo-send-select").selectOption("5");
   await page.keyboard.press("Escape");
   await draft(page, "Configured");

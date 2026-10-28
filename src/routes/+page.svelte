@@ -67,7 +67,7 @@
   function dismissPrivacyNotice(openSettings: boolean) {
     privacyNotice = false;
     api.dismissPrivacyNotice().catch(() => {});
-    if (openSettings) mail.overlay = "settings";
+    if (openSettings) mail.openSettings("privacy");
   }
 
   function focusSearch() {
@@ -167,7 +167,7 @@
       { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
-      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
+      { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => mail.openSettings() },
       { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
       // The event editor handles Esc itself (it asks before discarding changes).
       { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null && mail.overlay !== "editevent", run: () => {
@@ -351,7 +351,7 @@
             {mail.account.email}
           {/if}
         </span>
-        <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => (mail.overlay = "settings")} class="icon-btn size-6"><SettingsIcon size={14} /></button>
+        <button data-testid="footer-settings" title="Settings (Ctrl+,)" aria-label="Settings" onclick={() => mail.openSettings()} class="icon-btn size-6"><SettingsIcon size={14} /></button>
       </span>
     </footer>
   {/if}
@@ -369,7 +369,7 @@
     </div>
   {/if}
 
-  {#if mail.account && privacyNotice}
+  {#if mail.account && privacyNotice && mail.overlay === null}
     <div data-testid="privacy-notice" role="status" class="fixed bottom-10 left-4 z-30 max-w-sm space-y-2 rounded-lg border border-ink-700 bg-ink-900 p-4 text-sm text-ink-300 shadow-xl">
       <p>PeetMail sends crash reports and usage and performance data so problems get found and fixed. Mail, addresses, names and sign-in details are never included.</p>
       <div class="flex justify-end gap-2">

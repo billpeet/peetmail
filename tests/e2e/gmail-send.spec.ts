@@ -1,4 +1,4 @@
-import { test, expect, row, selectWithKeys, selectedRow, snap, waitForSyncIdle } from "./fixtures";
+import { test, expect, row, selectWithKeys, selectedRow, snap, waitForSyncIdle, openSettings, showSettingsPage } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { GMAIL_ACCOUNT, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, leaves, parseMime, type MimeEntity } from "../harness/fake-gmail.ts";
 
@@ -7,10 +7,11 @@ test.use({ withGmail: true });
 type Gmail = Parameters<Parameters<typeof test>[2]>[0]["gmail"];
 
 async function addGmail(page: Page) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "apps");
   await page.getByTestId("google-client-id").fill(GOOGLE_CLIENT_ID);
   await page.getByTestId("google-client-secret").fill(GOOGLE_CLIENT_SECRET);
   await page.getByTestId("google-client-save").click();
+  await showSettingsPage(page, "accounts");
   await page.getByTestId("account-add-google").click();
   await expect(page.locator(`[data-testid=account-row][data-email="${GMAIL_ACCOUNT.email}"]`)).toBeVisible({ timeout: 15_000 });
   await page.keyboard.press("Escape");

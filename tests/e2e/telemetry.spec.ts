@@ -1,4 +1,4 @@
-import { test, expect, waitForSyncIdle } from "./fixtures";
+import { test, expect, waitForSyncIdle, openSettings } from "./fixtures";
 import { hostname, userInfo } from "node:os";
 import type { Page } from "@playwright/test";
 import type { FakeOtlp } from "../harness/fake-otlp.ts";
@@ -44,7 +44,7 @@ async function flushed(page: Page, telemetry: FakeOtlp, pred: () => boolean) {
 }
 
 test("without an endpoint, usage data is off and says so", async ({ inbox: page }) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "privacy");
   await expect(page.getByTestId("usage-data")).toBeDisabled();
   await expect(page.getByTestId("usage-data-off")).toBeVisible();
 });
@@ -128,7 +128,7 @@ test.describe("with a telemetry collector", () => {
 
   test("turning usage data off stops it at once", async ({ inbox: page, telemetry }) => {
     await flushed(page, telemetry, () => telemetry.spans().length > 0);
-    await page.keyboard.press("Control+,");
+    await openSettings(page, "privacy");
     await expect(page.getByTestId("usage-data")).toBeChecked();
     await page.getByTestId("usage-data").uncheck();
     await page.keyboard.press("Escape");

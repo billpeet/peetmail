@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Settings is organised into pages (Accounts, Mail, Calendar, Notifications, Storage, Updates, Privacy) with a sidebar. **Ctrl+PageUp** and **Ctrl+PageDown** move between them, and **Ctrl+,** opens the one you used last.
 - After an update, **What's new** shows what changed since you last looked. The full list is in the command palette (What's new) and under Settings → Updates.
 - PeetMail has its own icon: a **P** whose bowl is a key with an envelope on it, in the taskbar, Start menu, tray and title bar.
 - Sign in with **Microsoft** or **Google** straight away, with no app registration to set up. Using your own sign-in app is still possible under Settings → Advanced.

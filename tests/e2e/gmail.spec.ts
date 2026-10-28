@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect, messageBody, row, selectedRow, selectWithKeys, snap, waitForSyncIdle } from "./fixtures";
+import { test, expect, messageBody, row, selectedRow, selectWithKeys, snap, waitForSyncIdle, openSettings, showSettingsPage } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { GMAIL_ACCOUNT, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from "../harness/fake-gmail.ts";
 
@@ -16,8 +16,9 @@ async function setGoogleClient(page: Page, secret = GOOGLE_CLIENT_SECRET) {
 
 /** Signed in to Microsoft already (the inbox fixture); adds the Gmail account. */
 async function addGmail(page: Page) {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "apps");
   await setGoogleClient(page);
+  await showSettingsPage(page, "accounts");
   await expect(page.getByTestId("account-add-google")).toBeEnabled();
   await page.getByTestId("account-add-google").click();
   await expect(page.locator(`[data-testid=account-row][data-email="${GMAIL_ACCOUNT.email}"]`)).toBeVisible({ timeout: 15_000 });
@@ -146,8 +147,9 @@ test("Gmail-only setup: no Microsoft client needed", async ({ page }) => {
 });
 
 test("a missing client secret is reported when Google insists on one", async ({ inbox: page }) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "apps");
   await setGoogleClient(page, "");
+  await showSettingsPage(page, "accounts");
   await page.getByTestId("account-add-google").click();
   await expect(page.getByTestId("account-error")).toContainText("client_secret is missing", { timeout: 15_000 });
 });

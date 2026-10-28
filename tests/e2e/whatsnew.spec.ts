@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, openSettings } from "./fixtures";
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { allIds, parseChangelog } from "../../src/lib/changelog.ts";
@@ -49,7 +49,7 @@ test("the whole changelog opens from the palette and from Settings, new lines ma
   await expect(panel.locator('[data-testid=whats-new-entry][data-new="true"]')).toHaveCount(0);
   await page.getByTestId("whats-new-ok").click();
 
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "updates");
   await page.getByTestId("settings-whats-new").click();
   await expect(page.getByTestId("whats-new")).toHaveAttribute("data-mode", "all");
 });

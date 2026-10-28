@@ -1,4 +1,4 @@
-import { test, expect, DEFAULT_CONVERSATIONS, inboxConversations, row, snap } from "./fixtures";
+import { test, expect, DEFAULT_CONVERSATIONS, inboxConversations, row, snap, openSettings } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 async function search(page: Page, text: string) {
@@ -58,7 +58,7 @@ test("Tab cycles split inboxes", async ({ inbox: page }) => {
 });
 
 test("a custom split from Settings shows up as a tab", async ({ inbox: page }, testInfo) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await page.getByTestId("split-add").click();
   await page.getByTestId("split-name").last().fill("Invites");
   await page.getByTestId("split-query").last().fill("is:invite from:calendar-noreply");
@@ -78,7 +78,7 @@ test("a custom split from Settings shows up as a tab", async ({ inbox: page }, t
 
 test("mail that matches no split stays in Inbox, and the first matching split wins", async ({ inbox: page }, testInfo) => {
   // Replace the defaults with splits that don't cover everything (the reported case).
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   const editor = page.getByTestId("split-editor");
   await editor.getByTestId("split-name").first().fill("GitHub");
   await editor.getByTestId("split-query").first().fill("from:github.com");
@@ -122,7 +122,7 @@ test("Ctrl+K runs any command by name", async ({ inbox: page }, testInfo) => {
 });
 
 test("empty splits can be hidden; the tab you're on stays until you leave it", async ({ inbox: page }, testInfo) => {
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   const editor = page.getByTestId("split-editor");
   for (const [name, query] of [["Invites", "is:invite from:calendar-noreply"], ["Nobody", "from:nobody@nowhere.test"]]) {
     await page.getByTestId("split-add").click();
@@ -154,7 +154,7 @@ test("empty splits can be hidden; the tab you're on stays until you leave it", a
   await expect(tabs.nth(0)).toHaveAttribute("data-active", "true");
 
   // Turning the option off brings empty splits back.
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await page.getByTestId("hide-empty-splits").uncheck();
   await page.keyboard.press("Escape");
   await expect(tabs).toHaveText([/Inbox/, /Other/, /Invites/, /Nobody/]);
@@ -162,7 +162,7 @@ test("empty splits can be hidden; the tab you're on stays until you leave it", a
 
 test("split tabs show their total, in bold only when something is unread", async ({ inbox: page }, testInfo) => {
   // An extra split that only ever holds read mail.
-  await page.keyboard.press("Control+,");
+  await openSettings(page, "mail");
   await page.getByTestId("split-add").click();
   const editor = page.getByTestId("split-editor");
   await editor.getByTestId("split-name").last().fill("Read");
