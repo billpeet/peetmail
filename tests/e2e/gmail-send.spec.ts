@@ -126,3 +126,24 @@ test("big forwards go through Gmail's upload endpoint", async ({ inbox: page, gm
   expect(big.body.length).toBe(4_500_000);
   expect(id).toBe("g-new-1");
 });
+
+test("a forward from Gmail leaves out a removed attachment and carries an attached file", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await selectWithKeys(page, "g-thread-photos");
+  await expect(selectedRow(page)).toHaveAttribute("data-conversation-id", "g-thread-photos");
+  await page.keyboard.press("f");
+  const forwarded = page.getByTestId("compose-forwarded");
+  await expect(forwarded).toContainText("plan.pdf");
+  await forwarded.getByTestId("compose-forwarded-remove").click();
+  await page.getByTestId("compose-file-input").setInputFiles([{ name: "Résumé.txt", mimeType: "text/plain", buffer: Buffer.from("my cv") }]);
+  await expect(page.getByTestId("compose-attachment")).toContainText("Résumé.txt");
+  await page.getByTestId("compose-to").fill("lee@friends.example");
+  await page.keyboard.press("Control+Enter");
+
+  const s = await sent(gmail);
+  const files = leaves(s.mime).filter((l) => l.filename);
+  // The inline image stays with the quote; plan.pdf was taken out; the new file is attached.
+  expect(files.map((f) => decodeWord(f.filename!))).toEqual(["pixel@mum", "Résumé.txt"]);
+  expect(files[1].body.toString()).toBe("my cv");
+  expect(files[1].contentType).toMatch(/^text\/plain/);
+});

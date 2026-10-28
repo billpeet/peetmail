@@ -91,7 +91,13 @@ export type SendInput = {
   body: string;
   /** Send later (UTC ISO). Omitted: after the undo delay. */
   sendAt?: string;
+  /** Ids of files from `addDraftFile`. */
+  attachments?: number[];
+  /** Forwards: names of the original's attachments to leave out. */
+  droppedAttachments?: string[];
 };
+/** A file attached in the composer (its bytes wait in Rust until the message has gone). */
+export type DraftFile = { id: number; name: string; mime: string; size: number };
 export type SendOutcome = { id: number; sendAt: string; scheduled: boolean };
 export type Draft = {
   kind: DraftKind;
@@ -101,6 +107,8 @@ export type Draft = {
   body: string;
   sendAt?: string;
   referenceMessageId?: number;
+  attachments?: DraftFile[];
+  droppedAttachments?: string[];
 };
 /** A send that hasn't gone out yet. */
 export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
@@ -260,6 +268,12 @@ export const api = {
   undo: () => invoke<string | null>("undo"),
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
   sendMessage: (input: SendInput) => invoke<SendOutcome>("send_message", { input }),
+  /** Hands a file's bytes to Rust as the raw request body. */
+  addDraftFile: async (file: File) =>
+    invoke<DraftFile>("add_draft_file", new Uint8Array(await file.arrayBuffer()), {
+      headers: { "x-file-name": encodeURIComponent(file.name), "x-file-type": file.type },
+    }),
+  removeDraftFiles: (ids: number[]) => invoke<void>("remove_draft_files", { ids }),
   cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
@@ -283,6 +297,9 @@ export const api = {
   setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
+  /** Opens an attachment in its default app (refused for files that run programs). */
+  openAttachment: (messageId: number, attachmentId: string, name: string) =>
+    invoke<void>("open_attachment", { messageId, attachmentId, name }),
   healthIssues: () => invoke<HealthIssue[]>("health_issues"),
   feedbackOptions: () => invoke<FeedbackOptions>("feedback_options"),
   /** Saves the diagnostics zip to Downloads; returns its path. */

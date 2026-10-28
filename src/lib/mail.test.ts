@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 // The list query is held open so the test can move the selection while it's in flight.
 let resolveRows: (rows: unknown[]) => void = () => {};
+const removed: number[] = [];
 vi.mock("./api", () => ({
   api: {
     listSplits: () => Promise.resolve([]),
     listThreads: () => new Promise((r) => (resolveRows = r)),
     recentOpens: () => Promise.resolve([]),
+    removeDraftFiles: (ids: number[]) => (removed.push(...ids), Promise.resolve()),
+    sendMessage: () => Promise.resolve({ id: 1, sendAt: new Date().toISOString(), scheduled: false }),
+    scheduledSends: () => Promise.resolve([]),
   },
 }));
 vi.mock("./bodies", () => ({ prefetchBody: () => Promise.resolve() }));
@@ -32,5 +36,32 @@ describe("list refresh", () => {
     await done;
 
     expect(mail.current?.conversationId).toBe("c");
+  });
+});
+
+describe("composer files", () => {
+  const file = (id: number) => ({ id, name: `f${id}.txt`, mime: "text/plain", size: 1 });
+  const composer = (ids: number[]) => ({
+    accountId: 1, kind: "new" as const, referenceMessageId: null, conversationId: null,
+    to: "p@x.com", cc: "", subject: "", body: "", attachments: ids.map(file), droppedAttachments: [],
+  });
+
+  it("closing or replacing the composer throws its files away", () => {
+    removed.length = 0;
+    mail.composer = composer([1, 2]);
+    mail.composer = null;
+    expect(removed).toEqual([1, 2]);
+    mail.composer = composer([3]);
+    mail.composer = composer([4]);
+    expect(removed).toEqual([1, 2, 3]);
+    mail.composer = null;
+  });
+
+  it("sending hands the files to the outbox instead", async () => {
+    mail.composer = composer([5]);
+    removed.length = 0;
+    await mail.send();
+    expect(mail.composer).toBeNull();
+    expect(removed).toEqual([]);
   });
 });

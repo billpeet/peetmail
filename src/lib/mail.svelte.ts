@@ -2,6 +2,7 @@ import {
   api,
   type Action,
   type Bootstrap,
+  type DraftFile,
   type DraftKind,
   type Folder,
   type Mailbox,
@@ -52,6 +53,10 @@ export type ComposerState = {
   cc: string;
   subject: string;
   body: string;
+  /** Files attached so far. */
+  attachments: DraftFile[];
+  /** Forwards: names of the original's attachments taken out. */
+  droppedAttachments: string[];
 };
 
 export type Toast = { text: string; undo?: boolean; error?: boolean };
@@ -139,7 +144,21 @@ class MailStore {
   /** Remote images allowed for the open conversation. */
   imagesFor = $state<string | null>(null);
 
-  composer = $state<ComposerState | null>(null);
+  #composer = $state<ComposerState | null>(null);
+  /** The open composer. Replacing or closing it throws away the files attached to it
+   * (sending hands them to the outbox instead; see `send`). */
+  get composer(): ComposerState | null {
+    return this.#composer;
+  }
+  set composer(next: ComposerState | null) {
+    const prev = this.#composer;
+    if (prev && prev !== next) {
+      const kept = new Set(next?.attachments.map((f) => f.id));
+      const drop = prev.attachments.filter((f) => !kept.has(f.id)).map((f) => f.id);
+      if (drop.length) api.removeDraftFiles(drop).catch(() => {});
+    }
+    this.#composer = next;
+  }
   /** Composer snippets (;name). */
   snippets = $state.raw<Snippet[]>([]);
   /** Snoozed conversations, soonest back first. */
@@ -719,7 +738,7 @@ class MailStore {
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", attachments: [], droppedAttachments: [] };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -752,6 +771,8 @@ class MailStore {
       cc: cc.join(", "),
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
       body: "",
+      attachments: [],
+      droppedAttachments: [],
     };
   }
 
@@ -770,8 +791,10 @@ class MailStore {
         subject: c.subject,
         body: c.body,
         sendAt: sendAt?.toISOString(),
+        attachments: c.attachments.map((f) => f.id),
+        droppedAttachments: c.kind === "forward" ? c.droppedAttachments : [],
       });
-      this.composer = null;
+      this.#composer = null; // not the setter: the outbox has the files now
       const delayMs = new Date(out.sendAt).getTime() - Date.now();
       // Undo works while the toast is up, and never after the message has gone.
       this.#lastSend = { id: out.id, until: Date.now() + (out.scheduled ? TOAST_MS : Math.max(0, delayMs)) };
@@ -799,6 +822,8 @@ class MailStore {
       cc: d.cc.join(", "),
       subject: d.subject,
       body: d.body,
+      attachments: d.attachments ?? [],
+      droppedAttachments: d.droppedAttachments ?? [],
     };
     return true;
   }

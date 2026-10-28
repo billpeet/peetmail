@@ -1,14 +1,17 @@
 <script lang="ts">
   // New message, reply, reply all, forward. Plain text in, HTML out (Rust converts).
-  // Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text, so
-  // nothing is lost by accident).
+  // Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text or a
+  // file, so nothing is lost by accident). Files come from Ctrl+Shift+A (a file picker),
+  // dropping them on the composer, or pasting; a forward lists the original's attachments,
+  // each removable.
   // `inline`: a reply or forward written in the reader, under the conversation it answers
   // (like Outlook). Otherwise it's a dialog over everything.
   import { onMount } from "svelte";
-  import { api, type Contact } from "#lib/api.js";
+  import { api, type Attachment, type Contact } from "#lib/api.js";
   import { keymap } from "#lib/keys.svelte.js";
   import { mail } from "#lib/mail.svelte.js";
-  import { X } from "@lucide/svelte";
+  import { Paperclip, X } from "@lucide/svelte";
+  import { attachmentRoom, fileSize } from "#lib/format.js";
   import { latestOnly, STALE } from "#lib/latest.js";
   import { narrow } from "#lib/contacts.js";
   import { parseSendTime } from "#lib/quickAdd.js";
@@ -27,6 +30,83 @@
   let showCc = $state(c.cc.length > 0);
   let from = $state(c.accountId);
   let armedDiscard = $state(false);
+
+  // ----- attachments -----
+  let fileInput: HTMLInputElement | undefined = $state();
+  /** Files still on their way to Rust. */
+  let attaching = $state(0);
+  /** A file is being dragged over the composer. */
+  let dragging = $state(false);
+  /** The original's attachments, when forwarding. */
+  let forwarded = $state<Attachment[]>([]);
+  const keptForwarded = $derived(forwarded.filter((a) => !c.droppedAttachments.includes(a.name)));
+
+  if (c.kind === "forward" && c.referenceMessageId !== null) {
+    api.listAttachments(c.referenceMessageId).then((a) => (forwarded = a), () => {});
+  }
+
+  async function addFiles(files: File[]) {
+    if (!files.length) return;
+    armedDiscard = false;
+    const tooMuch = attachmentRoom(c.attachments.map((f) => f.size), files.map((f) => f.size));
+    if (tooMuch) {
+      mail.showToast({ text: tooMuch, error: true });
+      return;
+    }
+    attaching += files.length;
+    for (const file of files) {
+      try {
+        const added = await api.addDraftFile(file);
+        // The composer may have been closed or replaced while the bytes went over.
+        if (mail.composer === c) c.attachments.push(added);
+        else api.removeDraftFiles([added.id]).catch(() => {});
+      } catch (e) {
+        mail.showToast({ text: `Couldn't attach ${file.name}: ${e}`, error: true });
+      } finally {
+        attaching--;
+      }
+    }
+  }
+
+  function removeFile(id: number) {
+    const i = c.attachments.findIndex((f) => f.id === id);
+    if (i < 0) return;
+    c.attachments.splice(i, 1);
+    api.removeDraftFiles([id]).catch(() => {});
+  }
+
+  function pickFiles() {
+    fileInput?.click();
+  }
+
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+
+  function ondragover(e: DragEvent) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    dragging = true;
+  }
+
+  function ondragleave(e: DragEvent) {
+    // Only when leaving the composer itself, not moving between its children.
+    if (!(e.currentTarget as Node).contains(e.relatedTarget as Node | null)) dragging = false;
+  }
+
+  function ondrop(e: DragEvent) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragging = false;
+    addFiles([...(e.dataTransfer?.files ?? [])]);
+  }
+
+  function onpaste(e: ClipboardEvent) {
+    const files = [...(e.clipboardData?.files ?? [])];
+    // Text copied with a picture of itself (Word, Excel) pastes as text.
+    if (!files.length || e.clipboardData?.types.includes("text/plain")) return;
+    e.preventDefault();
+    addFiles(files);
+  }
 
   // ----- send later -----
   /** Text of the send-later picker; null while it's closed. */
@@ -213,7 +293,7 @@
   }
 
   function close() {
-    if (body.trim() && !armedDiscard) {
+    if ((body.trim() || c.attachments.length) && !armedDiscard) {
       armedDiscard = true;
       return;
     }
@@ -231,9 +311,19 @@
       { id: "compose.snippet", keys: "ctrl+;", label: "Insert snippet", group: "Compose", when: () => !!mail.composer && later === null, run: openSnippets },
       { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null && !snipOpen, run: close },
       { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => !!mail.composer, run: () => (showCc = true) },
+      { id: "compose.attach", keys: "ctrl+shift+a", label: "Attach files", group: "Compose", when: () => !!mail.composer, run: pickFiles },
     ]);
   });
 </script>
+
+{#snippet chip(name: string, size: number, testid: string, remove: () => void)}
+  <span data-testid={testid} class="flex items-center gap-2 rounded-md border border-ink-700 bg-ink-800 py-0.5 pr-0.5 pl-2.5 text-xs text-ink-300">
+    <Paperclip size={12} class="shrink-0 text-ink-500" />
+    <span class="max-w-64 truncate">{name}</span>
+    <span class="text-ink-500">{fileSize(size)}</span>
+    <button data-testid="{testid}-remove" title="Remove {name}" aria-label="Remove {name}" onclick={remove} class="icon-btn size-6"><X size={12} /></button>
+  </span>
+{/snippet}
 
 {#snippet suggestionList(which: "to" | "cc")}
   {#if field === which && suggestions.length}
@@ -259,7 +349,19 @@
   bind:this={root}
   class={inline ? "mt-4 scroll-mb-6" : "fixed inset-x-0 top-9 bottom-0 z-20 flex items-end justify-center bg-black/40 p-6"}
 >
-  <div class={["@container flex flex-col rounded-xl border bg-ink-900", inline ? "border-ink-600" : "h-[70vh] w-full max-w-3xl border-ink-700 shadow-2xl"]}>
+  <div
+    role="group"
+    aria-label={title}
+    {ondragover}
+    {ondragleave}
+    {ondrop}
+    class={["@container relative flex flex-col rounded-xl border bg-ink-900", inline ? "border-ink-600" : "h-[70vh] w-full max-w-3xl border-ink-700 shadow-2xl"]}
+  >
+    {#if dragging}
+      <div data-testid="compose-drop" class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent bg-ink-950/80 text-sm text-ink-100">
+        Drop to attach
+      </div>
+    {/if}
     <div class="flex items-center justify-between border-b border-ink-800 px-4 py-2.5 text-sm">
       <span class="font-semibold text-ink-100">{title}</span>
       <span class="flex items-center gap-2 text-xs whitespace-nowrap text-ink-500">
@@ -344,6 +446,7 @@
           updateSnip();
         }}
         onkeydown={bodyKeys}
+        {onpaste}
         onclick={updateSnip}
         onblur={() => setTimeout(() => {
           if (document.activeElement !== bodyInput) snip = null;
@@ -383,6 +486,20 @@
         </div>
       {/if}
     </div>
+
+    {#if c.attachments.length || keptForwarded.length || attaching}
+      <div data-testid="compose-attachments" class="flex flex-wrap gap-2 border-t border-ink-800 px-4 py-2.5">
+        {#each keptForwarded as a (a.id)}
+          {@render chip(a.name, a.size, "compose-forwarded", () => c.droppedAttachments.push(a.name))}
+        {/each}
+        {#each c.attachments as f (f.id)}
+          {@render chip(f.name, f.size, "compose-attachment", () => removeFile(f.id))}
+        {/each}
+        {#if attaching}
+          <span data-testid="compose-attaching" class="px-1 py-1 text-xs text-ink-500">Attaching…</span>
+        {/if}
+      </div>
+    {/if}
 
     {#if later !== null}
       <div data-testid="compose-later" class="space-y-2 border-t border-ink-800 px-4 py-3 text-sm">
@@ -424,6 +541,22 @@
         {armedDiscard ? "Press Esc again to discard" : isReply ? (inline ? "The message above is quoted below your reply." : "The original message is quoted below your reply.") : ""}
       </span>
       <span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
+        <input
+          data-testid="compose-file-input"
+          bind:this={fileInput}
+          type="file"
+          multiple
+          class="hidden"
+          onchange={(e) => {
+            const input = e.currentTarget;
+            addFiles([...(input.files ?? [])]);
+            input.value = ""; // picking the same file again still fires
+            bodyInput?.focus();
+          }}
+        />
+        <button data-testid="compose-attach" title="Attach files (Ctrl+Shift+A)" aria-label="Attach files" onclick={pickFiles} class="icon-btn size-8">
+          <Paperclip size={15} />
+        </button>
         <button
           data-testid="compose-later-toggle"
           title="Send later (Ctrl+Shift+Enter)"

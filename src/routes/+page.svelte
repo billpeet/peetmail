@@ -219,7 +219,8 @@
   );
 </script>
 
-<svelte:window {onmouseup} bind:innerWidth={viewport} />
+<!-- Files dropped outside the composer are ignored; without this WebView2 would open them in place of the app. -->
+<svelte:window {onmouseup} ondragover={(e) => e.preventDefault()} ondrop={(e) => e.preventDefault()} bind:innerWidth={viewport} />
 
 <div class="flex h-full flex-col bg-ink-950 text-ink-100">
   {#if !mail.boot}

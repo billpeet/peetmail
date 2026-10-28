@@ -5,12 +5,14 @@ mod commands;
 mod crash;
 mod datadir;
 mod db;
+mod draft_files;
 mod error;
 mod event_edit;
 mod gcal;
 mod gmail;
 mod gmail_send;
 mod graph;
+mod graph_send;
 mod health;
 mod mail;
 mod meeting_links;
@@ -143,7 +145,9 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         // The title bar is drawn by the app (TitleBar.svelte); keep the native shadow.
         .decorations(false)
         .shadow(true)
-        .background_color(tauri::window::Color(38, 38, 42, 255));
+        .background_color(tauri::window::Color(38, 38, 42, 255))
+        // Files dropped on the window reach the page as HTML drag and drop (the composer).
+        .disable_drag_drop_handler();
     // Tests: WebView2's browser arguments (the DevTools port), set on the window itself.
     // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS can't be relied on: whether WebView2 lets it
     // override the app's own arguments varies (on CI it never did).
@@ -235,6 +239,11 @@ pub fn run() {
                 Err(e) => fatal_startup_error(&e.to_string()),
             };
             db.with(|c| outbox::reset_inflight(c))?;
+            match db.with(|c| draft_files::purge_orphans(c)) {
+                Ok(n) if n > 0 => log::info!("dropped {n} attached files no send needs"),
+                Ok(_) => {}
+                Err(e) => log::warn!("purging attached files: {e}"),
+            }
             crash::after_db(&db);
             match db.with(|c| Ok((crash::install_id(c)?, db::get_setting(c, telemetry::KEY_USAGE_DATA)?))) {
                 Ok((install_id, usage)) => telemetry::init(&install_id, usage.as_deref() != Some("off")),
@@ -330,6 +339,8 @@ pub fn run() {
             commands::debug_panic,
             commands::set_snippets,
             commands::cancel_send,
+            commands::add_draft_file,
+            commands::remove_draft_files,
             commands::scheduled_sends,
             commands::thread_action,
             commands::undo,
@@ -341,6 +352,7 @@ pub fn run() {
             commands::get_message_body_with_images,
             commands::list_attachments,
             commands::download_attachment,
+            commands::open_attachment,
             commands::update_status,
             commands::privacy,
             commands::set_crash_reports,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Attachment } from "#lib/api.js";
   import { mail } from "#lib/mail.svelte.js";
+  import { fileSize } from "#lib/format.js";
 
   let { messageId }: { messageId: number } = $props();
 
@@ -15,10 +16,24 @@
     );
   });
 
-  function size(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  // A click saves to Downloads and a double-click opens. The click waits out the
+  // double-click time, so a double-click doesn't save a copy as well.
+  const DOUBLE_CLICK_MS = 500; // Windows' default double-click time
+  let pendingClick: ReturnType<typeof setTimeout> | undefined;
+
+  function onclick(a: Attachment) {
+    clearTimeout(pendingClick);
+    pendingClick = setTimeout(() => download(a), DOUBLE_CLICK_MS);
+  }
+
+  async function open(a: Attachment) {
+    clearTimeout(pendingClick);
+    try {
+      await api.openAttachment(messageId, a.id, a.name);
+      mail.showToast({ text: `Opening ${a.name}` });
+    } catch (e) {
+      mail.showToast({ text: String(e), error: true });
+    }
   }
 
   async function download(a: Attachment) {
@@ -36,12 +51,13 @@
     {#each items as a (a.id)}
       <button
         data-testid="attachment"
-        onclick={() => download(a)}
-        title="Save to Downloads"
+        onclick={() => onclick(a)}
+        ondblclick={() => open(a)}
+        title="Click to save to Downloads, double-click to open"
         class="flex items-center gap-2 rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-ink-300 hover:border-ink-500 hover:text-ink-100"
       >
         <span>{a.name}</span>
-        <span class="text-ink-500">{size(a.size)}</span>
+        <span class="text-ink-500">{fileSize(a.size)}</span>
       </button>
     {/each}
   </div>

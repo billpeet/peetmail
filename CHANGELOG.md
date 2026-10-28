@@ -12,6 +12,8 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Double-click an attachment to open it in its app. A single click still saves it to Downloads. Files that can run programs (`.exe`, `.js` and the like) aren't opened this way.
+- Attach files to new messages, replies and forwards: **Ctrl+Shift+A** or the paperclip picks them, or drag them onto the message, or paste them (screenshots too). Forwards list the original's attachments, and you can remove any you don't want to send on.
 - Changes to a recurring meeting and to one of its occurrences (accept the series, then decline one day) reach the server in the order you made them, even when the connection drops in between.
 - Deleting an event you've only just created, while it's still being saved, now deletes it, instead of it coming back a moment later.
 - In the event editor, room and guest suggestions no longer close under you when you click back into the field straight after removing a room or guest.

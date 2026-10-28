@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::error::{AppError, Result};
 use crate::graph::{self, PREFER_IMMUTABLE};
 use crate::state::AppState;
+use crate::draft_files::DraftFile;
 use crate::{mail, sanitize};
 
 /// Triage ops wait this long before going out, so a quick undo never touches the server.
@@ -86,16 +87,17 @@ impl Rsvp {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftKind {
+    #[default]
     New,
     Reply,
     ReplyAll,
     Forward,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
     pub kind: DraftKind,
@@ -114,6 +116,19 @@ pub struct Draft {
     /// the composer as it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_message_id: Option<i64>,
+    /// Files attached in the composer; their bytes are in `draft_files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<DraftFile>,
+    /// Forwards: names of the original's attachments to leave out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_attachments: Vec<String>,
+}
+
+impl Draft {
+    /// Needs more than a single Graph call: files to add, or forwarded ones to take out.
+    pub fn has_file_changes(&self) -> bool {
+        !self.attachments.is_empty() || (self.kind == DraftKind::Forward && !self.dropped_attachments.is_empty())
+    }
 }
 
 /// A send waiting in the outbox (undo window or scheduled).
@@ -341,6 +356,12 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
         let calendar_op = matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. } | Op::DeleteEvent { .. });
         let calendar_touched = calendar_op && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
         state.db.with(|c| {
+            // A send's files are done with once it has gone, or failed for good.
+            if let Op::Send(d) = &row.op
+                && (result.is_ok() || result.as_ref().is_err_and(|e| is_permanent(e) || row.attempts + 1 >= MAX_ATTEMPTS)) {
+                let ids: Vec<i64> = d.attachments.iter().map(|f| f.id).collect();
+                crate::draft_files::remove(c, &ids)?;
+            }
             match &result {
                 Ok(response) => {
                     if let (Op::CreateEvent(_), Some(local)) = (&row.op, row.remote_id.as_deref()) {
@@ -466,6 +487,7 @@ async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
             };
             (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination }))
         }
+        Op::Send(d) if d.has_file_changes() => return crate::graph_send::send(state, row.account_id, row.remote_id.as_deref(), d).await,
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
         Op::Respond { response } => (
             Method::POST,
@@ -559,7 +581,7 @@ fn recipients(list: &[String]) -> Value {
 
 /// Graph request for a draft. Replies and forwards use the dedicated actions so Graph
 /// threads them and quotes the original.
-fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method, String, Value)> {
+pub fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method, String, Value)> {
     let html = sanitize::compose_html(&d.body);
     let target = || reply_to.ok_or_else(|| AppError::Other("reply has no original message".into()));
     Ok(match d.kind {
@@ -599,7 +621,7 @@ mod tests {
 
     #[test]
     fn op_json_round_trips() {
-        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into(), send_at: None, reference_message_id: Some(7) });
+        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into(), send_at: None, reference_message_id: Some(7), ..Default::default() });
         let s = serde_json::to_string(&op).unwrap();
         assert!(s.contains(r#""type":"send""#));
         assert!(s.contains(r#""kind":"replyAll""#));
@@ -643,7 +665,7 @@ mod tests {
             assert!(take_due(c)?.is_none(), "the unflag waits for the flag");
             let wait = next_due_in(c)?.expect("the flag is still pending");
             assert!(wait > Duration::from_secs(50), "the drain naps until the flag's backoff, not on the held-back unflag: {wait:?}");
-            let reply_now = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            let reply_now = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None, ..Default::default() };
             let reply_now = enqueue(c, a, Some("m1"), &Op::Send(reply_now), Duration::ZERO)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(reply_now), "a reply isn't held back by a flag on its message");
             c.execute("DELETE FROM outbox WHERE id = ?1", [reply_now])?;
@@ -654,7 +676,7 @@ mod tests {
             assert_eq!(take_due(c)?.map(|r| r.id), Some(unflag));
             c.execute("DELETE FROM outbox WHERE id = ?1", [unflag])?;
 
-            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None, ..Default::default() };
             enqueue_at(c, a, Some("m3"), &Op::Send(reply), chrono::Utc::now() + chrono::Duration::days(1))?;
             let archive = enqueue(c, a, Some("m3"), &Op::Move { destination: "archive".into() }, Duration::ZERO)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(archive), "a reply scheduled for tomorrow doesn't hold up archiving its message");
@@ -701,7 +723,7 @@ mod tests {
             let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
             let draft = |send_at: Option<&str>| Draft {
                 kind: DraftKind::New, to: vec!["p@x.com".into()], cc: vec![], subject: "Hi".into(), body: "b".into(),
-                send_at: send_at.map(String::from), reference_message_id: None,
+                send_at: send_at.map(String::from), ..Default::default()
             };
             let later = chrono::Utc::now() + chrono::Duration::hours(20);
             let undo_window = enqueue(c, a, None, &Op::Send(draft(None)), Duration::from_secs(10))?;
@@ -758,7 +780,7 @@ mod tests {
 
     #[test]
     fn builds_send_requests() {
-        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into(), send_at: None, reference_message_id: None };
+        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into(), send_at: None, reference_message_id: None, ..Default::default() };
         let (m, url, body) = send_request("https://g", Some("R1"), &d).unwrap();
         assert_eq!(m, Method::POST);
         assert_eq!(url, "https://g/me/messages/R1/forward");

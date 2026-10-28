@@ -17,6 +17,7 @@ import {
   makeMessage,
   ME,
   PIXEL_PNG,
+  type FakeAttachment,
   type FolderName,
   type GraphMessage,
   type Sender,
@@ -44,6 +45,10 @@ const FOLDER_NAMES: Record<FolderName, string> = {
 const b64url = (buf: Uint8Array) => Buffer.from(buf).toString("base64url");
 
 type Json = Record<string, any>;
+/** A message being put together (POST /me/messages, createReply...), not yet sent. */
+type Draft = { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; attachments: FakeAttachment[] };
+/** An attachment upload session: the chunks received so far. */
+type Upload = { draftId: string; name: string; contentType: string; size: number; chunks: Buffer[]; received: number; ranges: string[] };
 type ChangeKind = "upsert" | "partial" | "remove";
 type Change = { seq: number; id: string; kind: ChangeKind; fields?: Json; folders: string[] };
 type Session = { items: Json[]; pageSize: number; deltaLink: string };
@@ -76,6 +81,8 @@ export type FakeConfig = {
   omitODataType: boolean;
   /** Message delta rejects the derived-type select (eventMessage/meetingMessageType) with 400. */
   rejectMeetingSelect: boolean;
+  /** Adding an attachment to a draft fails with this status; 0 = off. */
+  failAttachments: number;
 };
 
 export type FakeOptions = {
@@ -106,13 +113,16 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     authorizations: [] as Record<string, string>[],
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
-    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, dropWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false } as FakeConfig,
+    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, dropWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false, failAttachments: 0 } as FakeConfig,
     requests: [] as RequestRecord[],
     events: new Map<string, GraphEvent>(),
     eventSeq: 0,
     eventChanges: [] as { seq: number; id: string; removed: boolean }[],
     /** Writes the app made: sends, replies, moves, patches. */
     sent: [] as Json[],
+    /** Messages being put together before sending, by id. */
+    drafts: new Map<string, Draft>(),
+    uploads: new Map<string, Upload>(),
     /** Folders the app created (POST /me/mailFolders), by id. */
     extraFolders: new Map<string, { id: string; displayName: string; isHidden: boolean }>(),
   };
@@ -126,6 +136,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     state.eventSeq = 0;
     for (const e of calendar ?? defaultCalendar()) state.events.set(e.id, e);
     state.sent = [];
+    state.drafts.clear();
+    state.uploads.clear();
     state.extraFolders.clear();
     state.sessions.clear();
     state.seq = 0;
@@ -182,6 +194,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       res.writeHead(200, { "Content-Type": "image/png" });
       return res.end(Buffer.from(PIXEL_PNG, "base64"));
     }
+    if (p.startsWith("/upload/")) return uploadChunk(req, url, reply);
     if (p.startsWith("/v1.0/") || p.startsWith("/beta/")) {
       if (state.config.latencyMs) await new Promise((r) => setTimeout(r, state.config.latencyMs));
       return graph(req, url, reply);
@@ -331,6 +344,15 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return delta(req, url, reply, id);
     }
 
+    if (method === "POST" && p === "/me/messages") {
+      const m = await readBody(req);
+      const id = `draft-${++draftCount}`;
+      state.drafts.set(id, { kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], attachments: [] });
+      return reply(201, { id, subject: m.subject ?? "" });
+    }
+    const draftRoute = p.match(/^\/me\/messages\/(draft-[^/]+)(?:\/(.*))?$/);
+    if (draftRoute) return draftRequest(req, method, decodeURIComponent(draftRoute[1]), draftRoute[2] ?? "", reply);
+
     if (method === "POST" && p === "/me/sendMail") {
       const b = await readBody(req);
       const m = b.message ?? {};
@@ -338,7 +360,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       return reply(202, "");
     }
 
-    const action = p.match(/^\/me\/messages\/([^/]+)\/(reply|replyAll|forward|move)$/);
+    const action = p.match(/^\/me\/messages\/([^/]+)\/(reply|replyAll|forward|move|createReply|createReplyAll|createForward)$/);
     if (action && method === "POST") {
       const msg = state.messages.get(decodeURIComponent(action[1]));
       if (!msg) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
@@ -352,14 +374,15 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         state.sent.push({ kind: "move", messageId: msg.id, destination: b.destinationId });
         return reply(201, metadata(msg));
       }
-      const kind = action[2] as "reply" | "replyAll" | "forward";
+      const create = action[2].startsWith("create");
+      const kind = (create ? action[2][6].toLowerCase() + action[2].slice(7) : action[2]) as "reply" | "replyAll" | "forward";
       const others = (list: GraphMessage["toRecipients"]) => list.filter((r) => r.emailAddress.address !== account.mail);
       const to =
         b.toRecipients ?? b.message?.toRecipients ??
         (kind === "forward" ? [] : kind === "reply" ? [msg.from] : [msg.from, ...others(msg.toRecipients)]);
       const cc = b.message?.ccRecipients ?? (kind === "replyAll" ? others(msg.ccRecipients) : []);
       const prefix = kind === "forward" ? "FW: " : "RE: ";
-      sendCopy({
+      const fields = {
         kind,
         messageId: msg.id,
         conversationId: msg.conversationId,
@@ -367,7 +390,15 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         html: `${b.comment ?? ""}<hr><blockquote>${msg.body.content}</blockquote>`,
         to,
         cc,
-      });
+      };
+      if (create) {
+        // Like Graph, a forward starts with the original's attachments (inline ones too).
+        const id = `draft-${++draftCount}`;
+        const attachments = kind === "forward" ? (msg.attachments ?? []).map((a, i) => ({ ...a, id: `${id}-fwd-${i}` })) : [];
+        state.drafts.set(id, { ...fields, attachments });
+        return reply(201, { id, subject: fields.subject });
+      }
+      sendCopy(fields);
       return reply(202, "");
     }
 
@@ -533,10 +564,82 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     return Object.values(FOLDER_IDS).find((v) => v === nameOrId);
   }
 
+  let draftCount = 0;
+  let uploadCount = 0;
+
+  /** /me/messages/{draft-id}/...: attachments, upload sessions, send, delete. */
+  async function draftRequest(req: IncomingMessage, method: string, id: string, rest: string, reply: Reply) {
+    const d = state.drafts.get(id);
+    if (!d) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+    if (rest === "" && method === "DELETE") {
+      state.drafts.delete(id);
+      state.sent.push({ kind: "delete-draft", id });
+      return reply(204, "");
+    }
+    if (rest === "attachments" && method === "GET") {
+      return reply(200, { value: d.attachments.map(({ contentBytes, ...a }) => ({ "@odata.type": "#microsoft.graph.fileAttachment", ...a })) });
+    }
+    if (rest === "attachments" && method === "POST") {
+      const b = await readBody(req);
+      if (state.config.failAttachments) return graphError(reply, state.config.failAttachments, "ErrorInvalidRequest", "Attachment refused (test)");
+      const bytes = Buffer.from(b.contentBytes ?? "", "base64");
+      // Graph refuses inline file attachments of 3 MB or more.
+      if (bytes.length >= 3 * 1024 * 1024) return graphError(reply, 413, "ErrorRequestEntityTooLarge", "Use an upload session for files of 3 MB or more");
+      const a: FakeAttachment = { id: `${id}-att-${d.attachments.length}`, name: b.name, contentType: b.contentType ?? "", size: bytes.length, isInline: false, contentBytes: bytes.toString("base64") };
+      d.attachments.push(a);
+      return reply(201, a);
+    }
+    const one = rest.match(/^attachments\/([^/]+)$/);
+    if (one && method === "DELETE") {
+      d.attachments = d.attachments.filter((a) => a.id !== decodeURIComponent(one[1]));
+      return reply(204, "");
+    }
+    if (rest === "attachments/createUploadSession" && method === "POST") {
+      const item = (await readBody(req)).AttachmentItem ?? {};
+      const sid = `up-${++uploadCount}`;
+      state.uploads.set(sid, { draftId: id, name: item.name, contentType: item.contentType ?? "", size: Number(item.size), chunks: [], received: 0, ranges: [] });
+      return reply(201, { uploadUrl: `${origin}/upload/${sid}?authtoken=secret`, expirationDateTime: new Date(Date.now() + 3600_000).toISOString(), nextExpectedRanges: ["0-"] });
+    }
+    if (rest === "send" && method === "POST") {
+      state.drafts.delete(id);
+      sendCopy(d);
+      return reply(202, "");
+    }
+    return graphError(reply, 404, "NotFound", `No fake route for ${method} draft ${rest}`);
+  }
+
+  /** PUT to an upload session URL. It's pre-authorized: a bearer token gets 401, like Graph. */
+  async function uploadChunk(req: IncomingMessage, url: URL, reply: Reply) {
+    const sid = url.pathname.split("/")[2];
+    const u = state.uploads.get(sid);
+    if (req.method !== "PUT" || !u || url.searchParams.get("authtoken") !== "secret") return reply(404, { error: { code: "itemNotFound", message: "No upload session" } });
+    if (req.headers.authorization) return reply(401, { error: { code: "InvalidAuthenticationToken", message: "Don't send a token to the upload URL" } });
+    const range = String(req.headers["content-range"] ?? "").match(/^bytes (\d+)-(\d+)\/(\d+)$/);
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    if (!range || Number(range[1]) !== u.received || Number(range[3]) !== u.size || Number(range[2]) - Number(range[1]) + 1 !== body.length) {
+      return reply(416, { error: { code: "InvalidRange", message: `Expected bytes ${u.received}- of ${u.size}` } });
+    }
+    if (u.received > 0 && body.length % (320 * 1024) !== 0 && u.received + body.length < u.size) {
+      return reply(400, { error: { code: "InvalidChunk", message: "Chunks must be multiples of 320 KiB" } });
+    }
+    u.chunks.push(body);
+    u.received += body.length;
+    u.ranges.push(range[0]);
+    if (u.received < u.size) return reply(200, { nextExpectedRanges: [`${u.received}-`] });
+    const d = state.drafts.get(u.draftId)!;
+    const data = Buffer.concat(u.chunks);
+    d.attachments.push({ id: `${u.draftId}-att-${d.attachments.length}`, name: u.name, contentType: u.contentType, size: data.length, isInline: false, contentBytes: data.toString("base64") });
+    state.uploads.delete(sid);
+    state.sent.push({ kind: "upload", draftId: u.draftId, name: u.name, chunks: u.ranges.length });
+    return reply(201, {});
+  }
+
   let sentCount = 0;
   let createdCount = 0;
   /** Puts a copy of something you sent into Sent Items and logs it for assertions. */
-  function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[] }) {
+  function sendCopy(s: { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; attachments?: FakeAttachment[] }) {
     const id = `msg-sent-new-${++sentCount}`;
     const msg = makeMessage({
       id,
@@ -551,9 +654,17 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     });
     msg.ccRecipients = s.cc as GraphMessage["ccRecipients"];
     msg.body = { contentType: "html", content: s.html };
+    const attachments = s.attachments ?? [];
+    if (attachments.length) {
+      msg.attachments = attachments;
+      msg.hasAttachments = attachments.some((a) => !a.isInline);
+    }
     state.messages.set(id, msg);
     change(id, "upsert");
-    state.sent.push({ kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc });
+    state.sent.push({
+      kind: s.kind, messageId: s.messageId, id, subject: s.subject, html: s.html, to: s.to, cc: s.cc,
+      attachments: attachments.map((a) => ({ name: a.name, contentType: a.contentType, size: a.size, isInline: a.isInline, content: a.contentBytes })),
+    });
   }
 
   const metadata = (m: GraphMessage): Json => {
@@ -735,7 +846,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         return ok({
           routes: [
             "POST /_test/reset {count?, seed?}",
-            "POST /_test/deliver {count?, subject?, from?: [name, address], to?: [[name, address]], cc?, conversationId?, body?: html, folder?, inference?}",
+            "POST /_test/deliver {count?, subject?, from?: [name, address], to?: [[name, address]], cc?, conversationId?, body?: html, folder?, inference?, attachments?: [{name, contentType?, text}]}",
             "POST /_test/update {id, fields: {isRead?, flag?, subject?...}}",
             "POST /_test/remove {id}",
             "POST /_test/throttle {count?=1, status?=429, retryAfter?=1}",
@@ -771,6 +882,13 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
           if (body.cc) msg.ccRecipients = (body.cc as Sender[]).map(([name, address]) => ({ emailAddress: { name, address } }));
           if (body.inference) msg.inferenceClassification = body.inference;
           if (body.body) msg.body = { contentType: "html", content: body.body };
+          if (body.attachments) {
+            msg.attachments = (body.attachments as { name: string; contentType?: string; text: string }[]).map((a, n) => {
+              const bytes = Buffer.from(a.text);
+              return { id: `${id}-att-${n}`, name: a.name, contentType: a.contentType ?? "application/octet-stream", size: bytes.length, isInline: false, contentBytes: bytes.toString("base64") };
+            });
+            msg.hasAttachments = true;
+          }
           state.messages.set(id, msg);
           change(id, "upsert");
           ids.push(id);

@@ -44,10 +44,12 @@ The mouse works too, everywhere.
 
 The icons down the left side are your mailboxes: Inbox, Done (what you've archived), Sent, Snoozed, Scheduled, All mail and Trash, each covering all your accounts. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it. Snoozed lists conversations by when they come back (**h** changes the time, **u** brings one back now), and Scheduled lists messages waiting to send (**Enter** edits one, **#** cancels it). Mail is kept for your mail window (**Settings → Storage**), so older mail isn't in these lists.
 
-A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something).
+A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something or attached a file).
+
+To attach files, press **Ctrl+Shift+A** (or the paperclip) to pick them, drag them from Explorer onto the message, or paste them, a screenshot included. A message can carry up to 25 MB of attachments. A forward lists the original's attachments; remove any you don't want to pass on with its **×**.
 
 ## Your mail on this PC
 
-PeetMail keeps recent mail on your PC, so it opens instantly and you can read it offline. How much it keeps is under **Settings → Storage**. Pictures in messages are blocked until you press **i**, so senders can't tell when you've read their mail.
+PeetMail keeps recent mail on your PC, so it opens instantly and you can read it offline. How much it keeps is under **Settings → Storage**. Pictures in messages are blocked until you press **i**, so senders can't tell when you've read their mail. A message's attachments are listed under it: click one to save it to your Downloads folder, or double-click it to open it. PeetMail won't open files that can run programs (such as `.exe` or `.js`) with a double-click; save them instead, and only open them if you trust the sender.
 
 Closing the window keeps PeetMail running in the tray, so you still get new-mail notifications. **Ctrl+Q** quits. **Settings → Notifications & startup** changes both, and can start PeetMail with Windows.

@@ -6,6 +6,7 @@ use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::actions::{self, Action, ActionOutcome};
+use crate::draft_files;
 use crate::db::{self, Account, Contact, Cursor, Folder, Mailbox, MessageRow, RecentOpen, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
@@ -619,6 +620,12 @@ pub struct SendInput {
     /// Send later, at this time (RFC 3339). None: after the undo delay.
     #[serde(default)]
     send_at: Option<String>,
+    /// Ids of files added with `add_draft_file`.
+    #[serde(default)]
+    attachments: Vec<i64>,
+    /// Forwards: names of the original's attachments to leave out.
+    #[serde(default)]
+    dropped_attachments: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -653,6 +660,15 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         }
         None => None,
     };
+    let attachments = state.db.with(|c| draft_files::describe(c, &input.attachments))?;
+    let total: i64 = attachments.iter().map(|f| f.size).sum();
+    if total > draft_files::MAX_TOTAL {
+        return Err(AppError::Other(format!(
+            "the attachments add up to {}; the most a message can carry is {}",
+            draft_files::megabytes(total),
+            draft_files::megabytes(draft_files::MAX_TOTAL)
+        )));
+    }
     let draft = Draft {
         kind: input.kind,
         to: clean(input.to),
@@ -661,6 +677,8 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         body: input.body,
         send_at: when.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         reference_message_id: input.reference_message_id,
+        attachments,
+        dropped_attachments: if input.kind == DraftKind::Forward { input.dropped_attachments } else { vec![] },
     };
     if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
@@ -675,6 +693,28 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
     outbox::kick(&app);
     let _ = app.emit(EVENT_SCHEDULED, ());
     Ok(SendOutcome { id, send_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), scheduled: when.is_some() })
+}
+
+/// Takes a file the composer picked, dropped or pasted. The bytes are the raw request body
+/// (no JSON or base64 round trip); the name and type come in `x-file-name` (percent-encoded)
+/// and `x-file-type` headers.
+#[tauri::command]
+pub fn add_draft_file(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<draft_files::DraftFile> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err(AppError::Other("expected the file's bytes".into()));
+    };
+    let header = |n: &str| request.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let name = url::form_urlencoded::parse(format!("n={}", header("x-file-name")).as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default();
+    state.db.with(|c| draft_files::add(c, &name, &header("x-file-type"), data))
+}
+
+/// Forgets files the composer no longer wants (removed, or the message discarded).
+#[tauri::command]
+pub fn remove_draft_files(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
+    state.db.with(|c| draft_files::remove(c, &ids))
 }
 
 /// Fired when the set of queued sends changes (scheduled list).
@@ -1028,6 +1068,27 @@ pub async fn download_attachment(
         let _ = app.opener().reveal_item_in_dir(&path);
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Opens an attachment in its default app (double-click), from a copy in PeetMail's temp
+/// folder. Tests (PEETMAIL_OPEN_LOG) get the copy's path logged instead of an app opening.
+#[tauri::command]
+pub async fn open_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    message_id: i64,
+    attachment_id: String,
+    name: String,
+) -> Result<()> {
+    let dir = tauri::Manager::path(&app).temp_dir().map_err(|e| AppError::Other(e.to_string()))?.join("PeetMail").join("attachments");
+    let path = mail::attachment_for_opening(&state, message_id, &attachment_id, &name, &dir).await?;
+    if let Some(log) = crate::testenv::get("PEETMAIL_OPEN_LOG") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
+        writeln!(f, "{}", path.display())?;
+        return Ok(());
+    }
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| AppError::Other(format!("couldn't open {name}: {e}")))
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@
 //! | PEETMAIL_FAKE_HEALTH          | Health check stand-ins: `disk_free_mb=50;clock_skew_secs=3600;webview=100.0;db_check=…;readonly=1` |
 //! | PEETMAIL_FEEDBACK_EMAIL       | Report a problem's "Prefer email?" address               |
 //! | PEETMAIL_UNDO_SEND_SECS       | Default undo-send delay (a saved setting still wins)     |
-//! | PEETMAIL_OPEN_LOG             | Links the UI opens are appended here, not opened         |
+//! | PEETMAIL_OPEN_LOG             | Links and attachments the UI opens are appended here, not opened |
 //! | PEETMAIL_NOTIFY_LOG           | Toasts are appended here as JSON lines, not shown        |
 //! | PEETMAIL_FAKE_AUTOSTART=1     | "Start with Windows" lives in settings, not the registry |
 //! | PEETMAIL_UPDATE_URL           | Update feeds: <url>/<channel>/latest.json (else GitHub)   |

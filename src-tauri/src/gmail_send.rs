@@ -275,6 +275,16 @@ async fn load_original(state: &AppState, account_id: i64, remote_id: &str, with_
     Ok((original, inline, attachments))
 }
 
+/// The forwarded attachments the user kept, then the files they attached.
+fn with_draft_files(state: &AppState, mut forwarded: Vec<Part>, d: &Draft) -> Result<Vec<Part>> {
+    forwarded.retain(|p| !d.dropped_attachments.contains(&p.filename));
+    for f in &d.attachments {
+        let data = state.db.with(|c| crate::draft_files::for_send(c, f))?;
+        forwarded.push(Part { filename: f.name.clone(), mime: f.mime.clone(), data, content_id: None });
+    }
+    Ok(forwarded)
+}
+
 /// Sends a draft from a Gmail account. `reply_to` is the original's Gmail id for replies
 /// and forwards.
 pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: &Draft) -> Result<Value> {
@@ -294,6 +304,7 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
         }
         (_, None) => return Err(AppError::Graph { status: 400, message: "reply has no original message".into() }),
     };
+    let attachments = with_draft_files(state, attachments, d)?;
 
     let mut to = d.to.clone();
     if to.is_empty() && matches!(d.kind, DraftKind::Reply | DraftKind::ReplyAll)
