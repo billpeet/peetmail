@@ -40,13 +40,7 @@ The gateway is `https://otlp.biap.cc`: Traefik basic auth in front of Alloy's OT
 
 ### The updater signing key
 
-The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); every installed copy only accepts updates signed by the private half. The key was generated with:
-
-```sh
-pnpm tauri signer generate -w %USERPROFILE%\.peetmail-release\updater.key -p <password>
-```
-
-**Keep the private key and password in a password manager as well as in GitHub.** GitHub secrets can't be read back. If the key is lost, no installed copy can ever update again; everyone would have to reinstall by hand. If it leaks, someone could sign an update, so rotate it: generate a new pair, ship one release signed with the old key that carries the new public key, then switch the secret.
+The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); every installed copy only accepts updates signed by the private half. The private key and its password live in the GitHub secrets and in the password manager, nowhere else. If both were lost, no installed copy could update again. Rotation, and every other credential: [docs/SECRETS.md](SECRETS.md).
 
 ## Canary
 
