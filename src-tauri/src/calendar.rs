@@ -633,7 +633,8 @@ pub fn finish_create(conn: &Connection, account_id: i64, local_id: &str, created
         // Ops queued against the placeholder while it was being created (a delete) now
         // target the real event.
         conn.execute(
-            "UPDATE outbox SET remote_id = ?3 WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'",
+            "UPDATE outbox SET remote_id = ?3, series_id = CASE WHEN series_id = ?2 THEN ?3 ELSE series_id END
+             WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'",
             params![account_id, local_id, e.remote_id],
         )?;
         // Deleted while it was being created: it's on its way out, so don't show it again.
@@ -652,7 +653,6 @@ pub fn finish_create(conn: &Connection, account_id: i64, local_id: &str, created
 
 /// Deletes an event at once and queues the delete for the server.
 pub fn remove(conn: &Connection, account_id: i64, remote_id: &str, cancel: bool, comment: Option<String>) -> Result<()> {
-    crate::event_edit::delete_locally(conn, account_id, remote_id)?;
     // A placeholder that never reached the server just goes. One being created right now
     // will be there in a moment: queue its delete, held behind the create, which then
     // points it at the real event (`finish_create`).
@@ -669,7 +669,8 @@ pub fn remove(conn: &Connection, account_id: i64, remote_id: &str, cancel: bool,
         let comment = comment.filter(|c| !c.trim().is_empty());
         crate::outbox::enqueue(conn, account_id, Some(remote_id), &crate::outbox::Op::DeleteEvent { cancel, comment }, std::time::Duration::ZERO)?;
     }
-    Ok(())
+    // Only now: queuing it looks up the series an occurrence belongs to.
+    crate::event_edit::delete_locally(conn, account_id, remote_id)
 }
 
 fn uuid_like() -> String {

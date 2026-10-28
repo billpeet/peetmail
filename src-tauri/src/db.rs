@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_snooze.sql"),
     include_str!("../migrations/0008_message_invites.sql"),
     include_str!("../migrations/0009_account_app.sql"),
+    include_str!("../migrations/0010_outbox_series.sql"),
 ];
 
 pub struct Db {

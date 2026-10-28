@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- Changes to a recurring meeting and to one of its occurrences (accept the series, then decline one day) reach the server in the order you made them, even when the connection drops in between.
 - Deleting an event you've only just created, while it's still being saved, now deletes it, instead of it coming back a moment later.
 - In the event editor, room and guest suggestions no longer close under you when you click back into the field straight after removing a room or guest.
 - A message whose send hits a brief network hiccup goes out a second later, instead of waiting up to a minute. Quick changes to one message (flag, then unflag) still reach the server in the order you made them when a connection drops.
