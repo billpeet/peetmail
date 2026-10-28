@@ -7,9 +7,9 @@
   // Help → Report a problem: feedback to the developers (Sentry user feedback, with the
   // diagnostics zip if wanted), an email instead, or just the diagnostics zip.
   import { onMount } from "svelte";
-  import { api, type FeedbackOptions } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
-  import { updates } from "$lib/updates.svelte";
+  import { api, type FeedbackOptions } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import { updates } from "#lib/updates.svelte.js";
   import SettingRow from "./SettingRow.svelte";
   import SettingsCard from "./SettingsCard.svelte";
 

@@ -3,12 +3,12 @@
   // the user's own app is an advanced option. Builds without them (local and dev builds)
   // need a client ID first, as before.
   import { onMount } from "svelte";
-  import { api } from "$lib/api";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { api } from "#lib/api.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
   import ClientIdForm from "./ClientIdForm.svelte";
   import GoogleClientForm from "./GoogleClientForm.svelte";
-  import type { OAuthApp, Provider } from "$lib/api";
+  import type { OAuthApp, Provider } from "#lib/api.js";
 
   let editing = $state(false);
   /** Showing the Google client form. */

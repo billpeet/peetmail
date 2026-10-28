@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { mail } from "$lib/mail.svelte";
+  import { mail } from "#lib/mail.svelte.js";
   import ShortcutList from "./ShortcutList.svelte";
 </script>
 

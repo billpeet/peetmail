@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { api, type Attachment } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
+  import { api, type Attachment } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let { messageId }: { messageId: number } = $props();
 

@@ -3,8 +3,8 @@
   // meeting is on (or starts within 10 minutes). Opens the meeting without opening the
   // event. A span with a button role: the block it sits in is a button itself.
   import { Video } from "@lucide/svelte";
-  import { api, type CalendarEvent } from "$lib/api";
-  import { eventTimes } from "$lib/calendar.svelte";
+  import { api, type CalendarEvent } from "#lib/api.js";
+  import { eventTimes } from "#lib/calendar.svelte.js";
 
   let { e, now, testid = "event-join-chip", compact = false }: { e: CalendarEvent; now: Date; testid?: string; compact?: boolean } = $props();
 

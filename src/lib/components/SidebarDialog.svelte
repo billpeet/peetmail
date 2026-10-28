@@ -8,7 +8,7 @@
   // A dialog with its sections down the left (Settings, Help). Arrow keys move through the
   // sections; Ctrl+PageDown / Ctrl+PageUp work from anywhere in it (registered by the owner).
   import type { Snippet } from "svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { mail } from "#lib/mail.svelte.js";
 
   let {
     testid,

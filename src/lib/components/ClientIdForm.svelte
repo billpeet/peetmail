@@ -1,7 +1,7 @@
 <script lang="ts">
   // Entra Application (client) ID editor, shared by the setup screen and Settings.
-  import { api } from "$lib/api";
-  import { mail } from "$lib/mail.svelte";
+  import { api } from "#lib/api.js";
+  import { mail } from "#lib/mail.svelte.js";
 
   let {
     autofocus = false,

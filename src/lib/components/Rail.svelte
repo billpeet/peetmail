@@ -2,8 +2,8 @@
   // Slim left sidebar, like Superhuman's: the mailboxes (each across every account), then
   // the calendar. Icons only; the tooltips name them and their keys.
   import { AlarmClock, CalendarDays, CircleCheck, Clock, Inbox, Mails, Send, Trash2 } from "@lucide/svelte";
-  import { mail } from "$lib/mail.svelte";
-  import type { MailView } from "$lib/mail.svelte";
+  import { mail } from "#lib/mail.svelte.js";
+  import type { MailView } from "#lib/mail.svelte.js";
 
   type Item = { id: string; label: string; key: string; Icon: typeof Inbox; go: () => void; active: boolean; dot?: boolean };
 

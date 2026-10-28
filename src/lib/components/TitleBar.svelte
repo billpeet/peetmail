@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { Copy, Minus, Search, Square, X } from "@lucide/svelte";
-  import { mail } from "$lib/mail.svelte";
+  import { mail } from "#lib/mail.svelte.js";
 
   const win = getCurrentWindow();
   let maximized = $state(false);

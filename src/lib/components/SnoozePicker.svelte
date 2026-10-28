@@ -3,9 +3,9 @@
   // snoozes. The conversation leaves the inbox and comes back on top when it's due.
   import { onMount } from "svelte";
   import { AlarmClock } from "@lucide/svelte";
-  import { formatSendAt, mail } from "$lib/mail.svelte";
-  import { parseSendTime } from "$lib/quickAdd";
-  import { snoozePresets } from "$lib/snooze";
+  import { formatSendAt, mail } from "#lib/mail.svelte.js";
+  import { parseSendTime } from "#lib/quickAdd.js";
+  import { snoozePresets } from "#lib/snooze.js";
 
   let text = $state("");
   let active = $state(0);

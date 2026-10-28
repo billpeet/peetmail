@@ -17,7 +17,7 @@
     type Recurrence,
     type RecurrenceEnd,
     type Weekday,
-  } from "$lib/recurrence";
+  } from "#lib/recurrence.js";
 
   let { value = $bindable(), start }: { value: Recurrence | null; start: string } = $props();
 

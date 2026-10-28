@@ -2,11 +2,11 @@
   // Quick add (Shift+C): type an event in plain words, see how it's understood, Enter creates it.
   import { onMount } from "svelte";
   import { CalendarPlus } from "@lucide/svelte";
-  import { api } from "$lib/api";
-  import { calendar, localDate } from "$lib/calendar.svelte";
-  import { keymap } from "$lib/keys.svelte";
-  import { mail } from "$lib/mail.svelte";
-  import { parseQuickEvent } from "$lib/quickAdd";
+  import { api } from "#lib/api.js";
+  import { calendar, localDate } from "#lib/calendar.svelte.js";
+  import { keymap } from "#lib/keys.svelte.js";
+  import { mail } from "#lib/mail.svelte.js";
+  import { parseQuickEvent } from "#lib/quickAdd.js";
 
   let text = $state("");
   let busy = $state(false);

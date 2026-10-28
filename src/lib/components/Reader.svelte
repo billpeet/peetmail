@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { mail } from "$lib/mail.svelte";
-  import { longDate, senderName } from "$lib/format";
-  import type { MessageRow, Recipient } from "$lib/api";
+  import { mail } from "#lib/mail.svelte.js";
+  import { longDate, senderName } from "#lib/format.js";
+  import type { MessageRow, Recipient } from "#lib/api.js";
   import MessageBody from "./MessageBody.svelte";
   import Attachments from "./Attachments.svelte";
   import InviteCard from "./InviteCard.svelte";

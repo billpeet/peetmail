@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { api } from "$lib/api";
+  import { api } from "#lib/api.js";
   // Sanitized HTML (an event description) in a sandboxed iframe: no scripts, no remote
   // loads (the page CSP), links open in the browser, keys keep working inside it.
   // Sized to its content and never scrolls itself, so the page around it has the only
   // scrollbar: fixed-width tables and blocks (Outlook signatures, Teams footers) are fitted
   // to the frame, and anything that still can't shrink scrolls sideways inside its own box.
-  import { keymap } from "$lib/keys.svelte";
+  import { keymap } from "#lib/keys.svelte.js";
 
   let { html, testid = "html-view" }: { html: string; testid?: string } = $props();
 
