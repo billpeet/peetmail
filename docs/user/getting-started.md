@@ -29,6 +29,7 @@ Everything has a keyboard shortcut. The ones to start with:
 | **e** | Archive (mark done) |
 | **#** | Delete |
 | **g i** / **g e** / **g t** | Inbox / Done / Sent |
+| **g h** / **g s** | Snoozed / Scheduled |
 | **g a** / **g #** | All mail / Trash |
 | **r** / **a** / **f** | Reply / reply all / forward |
 | **c** | Write a new message (**Ctrl+Enter** sends) |
@@ -41,7 +42,7 @@ Everything has a keyboard shortcut. The ones to start with:
 
 The mouse works too, everywhere.
 
-The icons down the left side are your mailboxes: Inbox, Done (what you've archived), Sent, Snoozed, Scheduled, All mail and Trash, each covering all your accounts. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it. Mail is kept for your mail window (**Settings → Storage**), so older mail isn't in these lists.
+The icons down the left side are your mailboxes: Inbox, Done (what you've archived), Sent, Snoozed, Scheduled, All mail and Trash, each covering all your accounts. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it. Snoozed lists conversations by when they come back (**h** changes the time, **u** brings one back now), and Scheduled lists messages waiting to send (**Enter** edits one, **#** cancels it). Mail is kept for your mail window (**Settings → Storage**), so older mail isn't in these lists.
 
 A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something).
 

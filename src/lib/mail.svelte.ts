@@ -33,7 +33,9 @@ const TOAST_MS = 5000;
 const PREVIEW_DWELL_MS = 1500;
 
 export type View = "list" | "reader" | "calendar";
-export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "scheduled" | "snooze" | "snoozed" | "editevent" | "whatsnew" | "changelog" | "docs";
+export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "snooze" | "editevent" | "whatsnew" | "changelog" | "docs";
+/** What the mail list shows: a mailbox, or messages scheduled to send. */
+export type MailView = Mailbox | "scheduled";
 
 /** The pages of Settings, in sidebar order. */
 export type SettingsPage = "accounts" | "mail" | "calendar" | "notifications" | "storage" | "updates" | "privacy" | "apps";
@@ -109,8 +111,8 @@ class MailStore {
   );
   /** Active search text; when non-null the list shows search results across all mail. */
   search = $state<string | null>(null);
-  /** The mailbox the list shows (the sidebar, g i / g e / g t / g a / g #). */
-  mailbox = $state<Mailbox>("inbox");
+  /** What the list shows (the sidebar, g i / g e / g t / g h / g s / g a / g #). */
+  mailbox = $state<MailView>("inbox");
 
   threads = $state.raw<ThreadRow[]>([]);
   selected = $state(0);
@@ -214,7 +216,29 @@ class MailStore {
     if (this.search !== null) return { mailbox: null, query: this.search, split: null };
     // The unified inbox of every signed-in account, by split tab.
     if (this.mailbox === "inbox") return { mailbox: "inbox", query: "", split: this.splitIndex };
-    return { mailbox: this.mailbox, query: "", split: null };
+    return { mailbox: this.mailbox === "scheduled" ? null : this.mailbox, query: "", split: null };
+  }
+
+  /**
+   * Snoozed lists soonest back first, each row with its time; Scheduled holds sends, not
+   * conversations. Both load whole, not page by page.
+   */
+  get #special(): "snoozed" | "scheduled" | null {
+    return this.search === null && (this.mailbox === "snoozed" || this.mailbox === "scheduled") ? this.mailbox : null;
+  }
+
+  async #rows(count: number): Promise<ThreadRow[]> {
+    if (this.#special === "scheduled") {
+      await this.refreshScheduled();
+      return [];
+    }
+    if (this.#special === "snoozed") {
+      const all = await api.listSnoozed();
+      this.snoozed = all;
+      return all.filter((t) => !this.hiddenIds.includes(t.accountId));
+    }
+    const { mailbox, query, split } = this.listQuery;
+    return api.listThreads(mailbox, query, split, null, count, this.hiddenIds);
   }
 
   /** Conversations opened from Trash show their deleted messages; elsewhere those stay hidden. */
@@ -309,11 +333,10 @@ class MailStore {
     if (!this.account) return;
     const seq = ++this.#listSeq;
     const folderForSplits = null; // split tabs count the unified inbox
-    const { mailbox, query, split } = this.listQuery;
     const count = Math.max(PAGE, this.threads.length);
     const [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits, this.hiddenIds),
-      api.listThreads(mailbox, query, split, null, count, this.hiddenIds),
+      this.#rows(count),
       api.recentOpens(),
     ]);
     if (seq !== this.#listSeq) return;
@@ -324,7 +347,7 @@ class MailStore {
     this.splits = splits;
     if (this.splitIndex >= splits.length) this.splitIndex = 0;
     this.threads = rows;
-    this.#exhausted = rows.length < count;
+    this.#exhausted = this.#special !== null || rows.length < count;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
     this.#schedulePrefetch();
@@ -466,7 +489,7 @@ class MailStore {
   // ---------- splits and search ----------
 
   /** Shows a mailbox (Inbox opens on the tab you were on). */
-  async goTo(mailbox: Mailbox) {
+  async goTo(mailbox: MailView) {
     this.search = null;
     this.pinned = null;
     if (this.mailbox !== mailbox) {
@@ -579,23 +602,18 @@ class MailStore {
     }
   }
 
-  async unsnooze(s: SnoozedThread) {
+  /** Wakes a snoozed conversation now (u in Snoozed). */
+  async unsnooze(t: ThreadRow | null = this.current) {
+    if (!t) return;
     try {
-      await api.unsnoozeThread(s.accountId, s.conversationId);
+      await api.unsnoozeThread(t.accountId, t.conversationId);
       this.showToast({ text: "Back in your inbox" });
       await this.refresh();
       this.refreshSnoozed();
+      await this.#afterRemoval();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
     }
-  }
-
-  /** Opens a snoozed conversation without waking it. */
-  async openSnoozed(s: SnoozedThread) {
-    this.overlay = null;
-    this.search = null;
-    this.pinned = s;
-    await this.open();
   }
 
   async refreshSnoozed() {

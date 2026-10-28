@@ -90,6 +90,8 @@ test("Ctrl+Shift+Enter schedules a message; g s lists it, Enter edits it, # canc
 
   await page.keyboard.press("g");
   await page.keyboard.press("s");
+  await expect(page.getByTestId("mailbox-title")).toHaveAttribute("data-mailbox", "scheduled");
+  await expect(page.getByTestId("rail-mailbox-scheduled")).toHaveAttribute("data-active", "true");
   const rows = page.getByTestId("scheduled-row");
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("Quarterly numbers");

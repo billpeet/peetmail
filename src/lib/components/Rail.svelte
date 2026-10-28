@@ -3,12 +3,12 @@
   // the calendar. Icons only; the tooltips name them and their keys.
   import { AlarmClock, CalendarDays, CircleCheck, Clock, Inbox, Mails, Send, Trash2 } from "@lucide/svelte";
   import { mail } from "$lib/mail.svelte";
-  import type { Mailbox } from "$lib/api";
+  import type { MailView } from "$lib/mail.svelte";
 
   type Item = { id: string; label: string; key: string; Icon: typeof Inbox; go: () => void; active: boolean; dot?: boolean };
 
   const inMail = $derived(mail.view !== "calendar" && mail.search === null);
-  const box = (id: Mailbox, label: string, key: string, Icon: typeof Inbox, dot = false): Item => ({
+  const box = (id: MailView, label: string, key: string, Icon: typeof Inbox, dot = false): Item => ({
     id: `mailbox-${id}`,
     label,
     key,
@@ -19,13 +19,12 @@
   });
   const inboxUnread = $derived(mail.splits.some((s) => s.unread > 0));
 
-  // Snoozed and Scheduled open their lists (dialogs for now).
   const mailItems = $derived<Item[]>([
     box("inbox", "Inbox", "g i", Inbox, inboxUnread),
     box("done", "Done", "g e", CircleCheck),
     box("sent", "Sent", "g t", Send),
-    { id: "snoozed", label: "Snoozed", key: "g h", Icon: AlarmClock, go: () => (mail.overlay = "snoozed"), active: false },
-    { id: "scheduled", label: "Scheduled", key: "g s", Icon: Clock, go: () => (mail.overlay = "scheduled"), active: false },
+    box("snoozed", "Snoozed", "g h", AlarmClock),
+    box("scheduled", "Scheduled", "g s", Clock),
     box("all", "All mail", "g a", Mails),
     box("trash", "Trash", "g #", Trash2),
   ]);

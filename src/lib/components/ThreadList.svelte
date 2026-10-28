@@ -1,8 +1,12 @@
 <script lang="ts">
   // Fixed-height virtual list: only the visible rows (plus overscan) are in the DOM,
   // so a 50k-thread inbox costs the same to render as a 50-thread one.
-  import { mail } from "$lib/mail.svelte";
+  import { formatSendAt, mail } from "$lib/mail.svelte";
   import { listDate, senderName } from "$lib/format";
+  import type { ThreadRow } from "$lib/api";
+
+  /** In Snoozed, rows show when they come back instead of when they arrived. */
+  const until = (t: ThreadRow): string | null => ("until" in t && typeof t.until === "string" ? t.until : null);
   import { AlarmClock, Archive, Flag, Mail, MailOpen, Paperclip, Trash2 } from "@lucide/svelte";
 
   // One line per row in the list layout; three (sender + date, subject, preview) in the
@@ -38,7 +42,7 @@
     <div data-testid="thread-list-empty" class="grid h-full place-items-center text-sm text-ink-500">
       {#if mail.search !== null}No matches.
       {:else if mail.sync.state === "syncing"}Syncing your mail…
-      {:else}{({ inbox: "Inbox zero.", done: "Nothing archived yet.", sent: "Nothing sent yet.", snoozed: "Nothing snoozed.", all: "No mail.", trash: "Trash is empty." })[mail.mailbox]}
+      {:else}{({ inbox: "Inbox zero.", done: "Nothing archived yet.", sent: "Nothing sent yet.", snoozed: "Nothing snoozed. Press h on a conversation to snooze it.", scheduled: "", all: "No mail.", trash: "Trash is empty." })[mail.mailbox]}
       {/if}
     </div>
   {:else}
@@ -74,7 +78,11 @@
                 {#if t.reminder}<span data-testid="thread-reminder" class="text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
                 {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={13} /></span>{/if}
                 {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={13} fill="currentColor" /></span>{/if}
-                <span class={["shrink-0 text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>{listDate(t.receivedAt)}</span>
+                {#if until(t)}
+                  <span data-testid="snoozed-until" class="shrink-0 text-xs text-accent group-hover:hidden">{formatSendAt(until(t)!)}</span>
+                {:else}
+                  <span class={["shrink-0 text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>{listDate(t.receivedAt)}</span>
+                {/if}
               </span>
               <span class={["truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>{t.subject || "(no subject)"}</span>
               <span class="truncate text-xs text-ink-500">{t.preview}</span>
@@ -91,19 +99,23 @@
             {#if t.reminder}<span data-testid="thread-reminder" class="shrink-0 text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
             {#if t.hasAttachments}<span class="text-ink-500" title="Has attachments"><Paperclip size={14} /></span>{/if}
             {#if t.isFlagged}<span class="text-amber-400" title="Flagged"><Flag size={14} fill="currentColor" /></span>{/if}
-            <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
-              {listDate(t.receivedAt)}
-            </span>
+            {#if until(t)}
+              <span data-testid="snoozed-until" class="w-40 shrink-0 text-right text-xs text-accent group-hover:hidden">{formatSendAt(until(t)!)}</span>
+            {:else}
+              <span class={["w-20 shrink-0 text-right text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>
+                {listDate(t.receivedAt)}
+              </span>
+            {/if}
           {/if}
           <!-- Quick actions replace the date on hover. -->
           <span data-testid="row-actions" class={["hidden shrink-0 justify-end group-hover:flex", mail.previewing ? "absolute top-1 right-3 rounded-md bg-ink-800" : "w-28"]}>
             <button data-testid="row-snooze" title="Snooze (H)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.selected = index; mail.startSnooze(t); }}>
               <AlarmClock size={15} />
             </button>
-            <button data-testid="row-archive" title="Archive (E)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "archive"); }}>
+            <button data-testid="row-archive" title="Archive (E)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, mail.triageFor("archive")); }}>
               <Archive size={15} />
             </button>
-            <button data-testid="row-trash" title="Delete (#)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "trash"); }}>
+            <button data-testid="row-trash" title="Delete (#)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, mail.triageFor("trash")); }}>
               <Trash2 size={15} />
             </button>
             <button

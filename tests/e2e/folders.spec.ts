@@ -51,8 +51,10 @@ test("the rail opens each mailbox", async ({ inbox: page }) => {
   await expect(page.getByTestId("week-view")).toBeVisible();
   await page.getByTestId("rail-mailbox-done").click();
   await expect(row(page, "conv-archived")).toBeVisible();
-  await page.getByTestId("rail-snoozed").click();
-  await expect(page.getByTestId("snoozed")).toBeVisible();
+  await page.getByTestId("rail-mailbox-snoozed").click();
+  await expect(page.getByTestId("mailbox-title")).toHaveAttribute("data-mailbox", "snoozed");
+  await page.getByTestId("rail-mailbox-scheduled").click();
+  await expect(page.getByTestId("scheduled-empty")).toBeVisible();
 });
 
 test("e in Done brings a conversation back to the inbox, and z takes it back", async ({ inbox: page, fake }) => {
