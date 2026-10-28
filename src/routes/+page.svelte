@@ -5,6 +5,8 @@
   import { keymap } from "$lib/keys.svelte";
   import { mail } from "$lib/mail.svelte";
   import { updates } from "$lib/updates.svelte";
+  import { whatsNew } from "$lib/whatsnew.svelte";
+  import WhatsNew from "$lib/components/WhatsNew.svelte";
   import Setup from "$lib/components/Setup.svelte";
   import ThreadList from "$lib/components/ThreadList.svelte";
   import Reader from "$lib/components/Reader.svelte";
@@ -48,6 +50,16 @@
   // Crash reports are on by default; say so once, with the way to turn them off.
   let privacyNotice = $state(false);
   api.privacy().then((p) => (privacyNotice = (p.configured || p.usageConfigured) && !p.noticeSeen)).catch(() => {});
+  // After an update: the changelog lines not seen yet, once, when nothing else is open.
+  whatsNew.init().catch(() => {});
+  let whatsNewShown = false;
+  $effect(() => {
+    if (!whatsNewShown && mail.account && whatsNew.seen !== null && mail.overlay === null && !mail.composer && whatsNew.fresh.length) {
+      whatsNewShown = true;
+      mail.overlay = "whatsnew";
+    }
+  });
+
   // Which view an action happened in, for its timing (read by the keymap hook in +layout).
   $effect(() => {
     document.body.dataset.view = mail.overlay ?? mail.view;
@@ -152,6 +164,7 @@
       { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
+      { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
       { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => (mail.overlay = "settings") },
@@ -375,6 +388,8 @@
 
 {#if mail.composer}<Composer />{/if}
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
+{#if mail.overlay === "whatsnew"}<WhatsNew mode="new" />{/if}
+{#if mail.overlay === "changelog"}<WhatsNew mode="all" />{/if}
 {#if mail.overlay === "settings"}<Settings />{/if}
 {#if mail.overlay === "palette"}<Palette />{/if}
 {#if mail.overlay === "event"}<EventDetails />{/if}

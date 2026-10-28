@@ -3,12 +3,17 @@
 //
 //   node scripts/version.ts check               all copies agree (CI runs this)
 //   node scripts/version.ts check --tag v1.2.3  ...and match the release tag
-//   node scripts/version.ts set 1.2.3           write the version everywhere
+//   node scripts/version.ts set 1.2.3           write the version everywhere; for a release
+//                                               (not a canary) also turn CHANGELOG.md's
+//                                               Unreleased section into 1.2.3's
 //   node scripts/version.ts canary 42           print the canary version for CI run 42
+//   node scripts/version.ts notes 1.2.3         print 1.2.3's changelog lines (release notes);
+//                                               fails if there are none
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { releaseUnreleased, sectionMarkdown } from "../src/lib/changelog.ts";
 
 /** The contents of the four files that carry the version. */
 export type Texts = { packageJson: string; tauriConf: string; cargoToml: string; cargoLock: string };
@@ -48,6 +53,14 @@ export function canaryVersion(base: string, run: number): string {
   return `${major}.${minor}.${m[4] ? patch : patch + 1}-canary.${run}`;
 }
 
+/**
+ * CHANGELOG.md for a new version: a release takes over the Unreleased lines; a canary
+ * build (CI sets one on every push) leaves the changelog alone.
+ */
+export function changelogFor(md: string, version: string, date: string): string {
+  return version.includes("-canary.") ? md : releaseUnreleased(md, version, date);
+}
+
 export function withVersion(t: Texts, version: string): Texts {
   if (!SEMVER.test(version)) throw new Error(`"${version}" isn't a semver version like 1.2.3 or 1.3.0-beta.1`);
   const swap = (text: string, re: RegExp, file: string) => {
@@ -85,12 +98,23 @@ function main() {
     console.log(`version ${JSON.parse(texts.packageJson).version} is consistent`);
   } else if (cmd === "set" && args[0]) {
     const next = withVersion(texts, args[0]);
+    const changelogPath = join(root, "CHANGELOG.md");
+    const changelog = readFileSync(changelogPath, "utf8");
+    const nextChangelog = changelogFor(changelog, args[0], new Date().toISOString().slice(0, 10));
     for (const k of keys) if (next[k] !== texts[k]) writeFileSync(paths[k], next[k]);
-    console.log(`version set to ${args[0]}`);
+    if (nextChangelog !== changelog) writeFileSync(changelogPath, nextChangelog);
+    console.log(`version set to ${args[0]}${nextChangelog !== changelog ? "; CHANGELOG.md's Unreleased lines are now its section" : ""}`);
+  } else if (cmd === "notes" && args[0]) {
+    const notes = sectionMarkdown(readFileSync(join(root, "CHANGELOG.md"), "utf8"), args[0]);
+    if (!notes) {
+      console.error(`CHANGELOG.md has no lines for ${args[0]}. Run \`pnpm version:set ${args[0]}\` before tagging.`);
+      process.exit(1);
+    }
+    console.log(notes);
   } else if (cmd === "canary" && args[0]) {
     console.log(canaryVersion(JSON.parse(texts.packageJson).version, Number(args[0])));
   } else {
-    console.error("usage: node scripts/version.ts check [--tag vX.Y.Z] | set <version> | canary <run number>");
+    console.error("usage: node scripts/version.ts check [--tag vX.Y.Z] | set <version> | canary <run number> | notes <version>");
     process.exit(2);
   }
 }

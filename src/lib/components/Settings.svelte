@@ -235,6 +235,7 @@
             >Check now</button>
           {/if}
         </div>
+        <button data-testid="settings-whats-new" type="button" onclick={() => (mail.overlay = "changelog")} class="text-xs text-accent hover:underline">What's new</button>
         <p class="text-xs text-ink-500">Canary gets every change as soon as it builds, so it can be rough. Moving back to Stable takes effect at the next stable release newer than the version you have.</p>
       </section>
     {/if}

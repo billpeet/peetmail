@@ -342,6 +342,8 @@ pub fn run() {
             commands::privacy,
             commands::set_crash_reports,
             commands::dismiss_privacy_notice,
+            commands::changelog_seen,
+            commands::set_changelog_seen,
             commands::report_error,
             commands::set_usage_data,
             commands::ui_events,

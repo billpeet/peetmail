@@ -81,8 +81,9 @@ export function needsBuild(): boolean {
   if (!existsSync(EXE) || !existsSync(STAMP)) return true;
   const built = statSync(STAMP).mtimeMs;
   if (statSync(EXE).mtimeMs > built + 1000) return true;
-  const sources = ["src", "src-tauri/src", "src-tauri/migrations", "static"].map((d) => join(ROOT, d)).filter(existsSync);
-  const files = ["src-tauri/tauri.conf.json", HARNESS_CONFIG, "src-tauri/Cargo.toml", "package.json", "vite.config.js", "svelte.config.js"].map((f) => join(ROOT, f));
+  const sources = ["src", "src-tauri/src", "src-tauri/migrations", "src-tauri/icons", "static"].map((d) => join(ROOT, d)).filter(existsSync);
+  // CHANGELOG.md is compiled into the app (What's new).
+  const files = ["src-tauri/tauri.conf.json", HARNESS_CONFIG, "CHANGELOG.md", "src-tauri/Cargo.toml", "package.json", "vite.config.js", "svelte.config.js"].map((f) => join(ROOT, f));
   return Math.max(...sources.map(newestMtime), ...files.filter(existsSync).map((f) => statSync(f).mtimeMs)) > built;
 }
 

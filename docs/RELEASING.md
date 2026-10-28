@@ -54,12 +54,13 @@ Nothing is committed: the canary version only exists in the build.
 
 ## Stable
 
-1. Pick the version (semver) and set it everywhere:
+1. Check `CHANGELOG.md`: everything users will notice is under `## Unreleased`, worded for them. Then set the version everywhere:
    ```sh
    pnpm version:set 0.2.0
    git commit -am "Release 0.2.0"
    git push
    ```
+   For a release (not a canary), this also turns the Unreleased lines into `## 0.2.0 — <date>`. That section becomes the GitHub release notes; a tag without one fails.
    This push also builds a canary (`0.2.1-canary.N`), which is expected.
 2. Tag and push the tag:
    ```sh
@@ -67,7 +68,7 @@ Nothing is committed: the canary version only exists in the build.
    git push origin v0.2.0
    ```
    The workflow fails early if the tag doesn't match `package.json`.
-3. When it finishes, the summary links a **draft** release with the installer, `.sig`, symbols, `latest.json` and checksums, and notes generated from the commits since the last tag.
+3. When it finishes, the summary links a **draft** release with the installer, `.sig`, symbols, `latest.json` and checksums. Its notes are the version's changelog section, followed by GitHub's list of commits since the last tag.
 4. Smoke-test the installer (below), edit the notes if you like, and click **Publish release**. Publishing makes it the repo's latest release, which is where the Stable channel reads `releases/latest/download/latest.json`. Within a few hours every stable install offers it.
 
 A tag with a pre-release suffix (`v0.3.0-beta.1`) is drafted as a GitHub pre-release. It's never "latest", so the Stable channel ignores it; share its installer link directly.

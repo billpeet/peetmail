@@ -12,7 +12,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 3 Sentry | Done in code and tests; uploads wait for the `SENTRY_AUTH_TOKEN` secret |
 | 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
 | 5 Built-in sign-in apps | Microsoft done (app registered, secret set); Google waits for its client ID and secret |
-| 6 Support and upkeep | In progress: Dependabot on; the rest planned below |
+| 6 Support and upkeep | In progress: secrets inventory, Dependabot, changelog and What's new done; the rest planned below |
 
 ## Decisions
 
@@ -178,9 +178,9 @@ Tests: Rust for the migration and for signing out only one app's accounts; E2E w
 
 Agreed plan, in order. The first-run privacy notice is already done (Stages 3 and 4).
 
-1. **Secrets inventory** (`docs/SECRETS.md`, no values): every credential the app and its releases depend on, where the live copy is, where the backup is, what breaks if it's lost or leaks, and how to rotate it. The urgent part is the updater signing key: it has to be in a password manager as well as GitHub, because losing it means no installed copy can update again.
+1. **Secrets inventory** (done: `docs/SECRETS.md`, no values): every credential the app and its releases depend on, where the live copy is, where the backup is, what breaks if it's lost or leaks, and how to rotate it. The urgent part is the updater signing key: it has to be in a password manager as well as GitHub, because losing it means no installed copy can update again.
 2. **Dependabot** (done): weekly, minor and patch grouped per ecosystem (cargo, npm, GitHub Actions), majors as their own PRs; vulnerability alerts and security updates on.
-3. **Changelog and "What's new".** `CHANGELOG.md` with `## Unreleased` and one section per version, written for users. AGENTS.md: every user-visible change adds a line in the same commit. `pnpm version:set` turns Unreleased into the version's section; a stable release fails without one and uses it as the release notes and the update's notes. The changelog is compiled into the app: Help shows it, and after an update a "What's new" panel shows the lines not seen yet (tracked per line, so it works for canary, stable and skipped versions alike).
+3. **Changelog and "What's new"** (done; `src/lib/changelog.ts`, `WhatsNew.svelte`). `CHANGELOG.md` with `## Unreleased` and one section per version, written for users. AGENTS.md: every user-visible change adds a line in the same commit. `pnpm version:set` turns Unreleased into the version's section; a stable release fails without one and uses it as the release notes and the update's notes. The changelog is compiled into the app: Help shows it, and after an update a "What's new" panel shows the lines not seen yet (tracked per line, so it works for canary, stable and skipped versions alike).
 4. **User docs** in `docs/user/` (getting started incl. SmartScreen, updates and channels, privacy, your own sign-in app, troubleshooting), rendered by GitHub and compiled into the app's Help view, so they match the installed version and work offline. Markdown is rendered through a sanitiser. AGENTS.md: docs change in the same commit as the behaviour. Keyboard shortcuts stay in the `?` overlay (generated from the keymap).
 5. **Diagnostics export**: a palette command writes a zip to Downloads with scrubbed recent logs, app/WebView2/Windows versions, settings without secrets, DB schema version, table sizes and integrity check, outbox op kinds and states, and update status.
 6. **Feedback**: Sentry user feedback from a form in the app (the text is the user's own words and isn't scrubbed; the form says it goes to the developers), linked to the install ID and recent breadcrumbs, optionally with the diagnostics zip. A "prefer email?" link opens a draft to the address in the `PEETMAIL_FEEDBACK_EMAIL` repo variable (compiled in; set to martin.w@metroid.net.au) with the version and install ID filled in. Builds without the variable hide it.

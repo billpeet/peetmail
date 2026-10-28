@@ -77,6 +77,10 @@ jobs:
             node scripts/version.ts check --tag $env:GITHUB_REF_NAME
             if ($LASTEXITCODE -ne 0) { exit 1 }
             $version = $env:GITHUB_REF_NAME.TrimStart('v')
+            # The release notes are the version's CHANGELOG.md section (pnpm version:set
+            # makes it); a release without one stops here.
+            node scripts/version.ts notes $version | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'notes.md')
+            if ($LASTEXITCODE -ne 0) { exit 1 }
             $tag = $env:GITHUB_REF_NAME
           } else {
             $version = node scripts/version.ts canary $env:GITHUB_RUN_NUMBER
@@ -208,7 +212,8 @@ jobs:
           } else {
             # A pre-release tag (v0.3.0-beta.1) never becomes "latest", so the stable channel ignores it.
             $pre = if ($env:VERSION.Contains('-')) { @('--prerelease') } else { @() }
-            gh release create $env:TAG @files --draft --verify-tag --generate-notes --title "PeetMail $env:VERSION" @pre
+            # The changelog section first, then GitHub's list of commits and PRs.
+            gh release create $env:TAG @files --draft --verify-tag --notes-file (Join-Path $env:RUNNER_TEMP 'notes.md') --generate-notes --title "PeetMail $env:VERSION" @pre
           }
           if ($LASTEXITCODE -ne 0) { throw "gh release failed" }
 
