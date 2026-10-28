@@ -354,8 +354,14 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
             let _ = app.emit(crate::calendar::EVENT_CALENDAR_CHANGED, json!({ "accountId": row.account_id }));
         }
         emit_status(app, state);
-        if result.is_err() && !is_permanent(result.as_ref().unwrap_err()) {
-            // Transient failure: stop for now; the next kick or sync tick retries.
+        if result.as_ref().is_err_and(|e| !is_permanent(e)) {
+            // A first failure is often a blip (a dropped or stale connection): stay and retry
+            // once its short backoff is up, rather than leaving a send waiting for the next sync.
+            // Anything that keeps failing is likely an outage; the next kick or sync tick
+            // retries it, which keeps the attempts spread out while offline.
+            if row.attempts == 0 {
+                continue;
+            }
             break;
         }
     }

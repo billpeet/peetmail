@@ -72,6 +72,16 @@ test("the undo window is a setting", async ({ inbox: page, fake }) => {
   await expect.poll(() => sentNew(fake).length, { timeout: 10_000 }).toBe(1);
 });
 
+test("a send whose connection drops goes out on a quick retry, not at the next sync", async ({ inbox: page, fake }) => {
+  await fake.control("config", { dropWrites: 1 });
+  await draft(page, "Dropped");
+  await page.keyboard.press("Control+Enter");
+  // The test app syncs hourly, so only the outbox's own retry can get it out in time.
+  await expect.poll(() => sentNew(fake).length, { timeout: 5000 }).toBe(1);
+  expect(sentNew(fake)[0].subject).toBe("Dropped");
+  await expect(page.getByTestId("outbox-pending")).toHaveCount(0);
+});
+
 test("Ctrl+Shift+Enter schedules a message; g s lists it, Enter edits it, # cancels it", async ({ inbox: page, fake }, testInfo) => {
   await draft(page, "Quarterly numbers");
   await page.keyboard.press("Control+Shift+Enter");
