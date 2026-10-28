@@ -179,6 +179,10 @@
   let rooms = $state<Room[]>([]);
   let roomsNeed = $state<RoomList["needs"]>(null);
   let roomOpen = $state(false);
+  // A list closes a moment after its field blurs (so a click on it still lands); coming
+  // back before then cancels that, or it would shut on what you type next.
+  let roomCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  let guestCloseTimer: ReturnType<typeof setTimeout> | undefined;
   let roomActive = $state(0);
   let granting = $state(false);
   let grantError = $state<string | null>(null);
@@ -569,11 +573,12 @@
                 bind:value={location}
                 oninput={onLocationInput}
                 onfocus={() => {
+                  clearTimeout(roomCloseTimer);
                   roomOpen = true;
                   typedSinceFocus = false;
                   roomArrowed = false;
                 }}
-                onblur={() => setTimeout(() => (roomOpen = false), 150)}
+                onblur={() => (roomCloseTimer = setTimeout(() => (roomOpen = false), 150))}
                 onkeydown={locationKeys}
                 disabled={guestMode}
                 placeholder={rooms.length ? "Add a room, a place or a meeting link" : "Add a place or a meeting link"}
@@ -660,7 +665,8 @@
                   bind:value={guestText}
                   oninput={suggest}
                   onkeydown={guestKeys}
-                  onblur={() => setTimeout(() => (suggestions = []), 150)}
+                  onfocus={() => clearTimeout(guestCloseTimer)}
+                  onblur={() => (guestCloseTimer = setTimeout(() => (suggestions = []), 150))}
                   placeholder={attendees.length ? "" : "Invite people (name or address)"}
                   spellcheck="false"
                   autocomplete="off"

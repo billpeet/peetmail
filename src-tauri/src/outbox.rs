@@ -152,11 +152,26 @@ pub fn enqueue(conn: &Connection, account_id: i64, remote_id: Option<&str>, op: 
     // ~15ms ahead of it on Windows, which made zero-delay ops look not-yet-due.
     let offset = format!("+{:.3} seconds", delay.as_secs_f64());
     Ok(conn.query_row(
-        "INSERT INTO outbox (account_id, remote_id, op, not_before)
-         VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4)) RETURNING id",
-        params![account_id, remote_id, serde_json::to_string(op)?, offset],
+        &format!(
+            "INSERT INTO outbox (account_id, remote_id, op, not_before, series_id)
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4), {SERIES_OF_TARGET}) RETURNING id"
+        ),
+        params![account_id, remote_id, serde_json::to_string(op)?, offset, op.is_event_change()],
         |r| r.get(0),
     )?)
+}
+
+/// SQL for an event op's `series_id` (params: ?1 account, ?2 target, ?5 whether it's one):
+/// the series an occurrence belongs to, or the target itself (a series master, a single
+/// event). Queue it before deleting the event locally, while the occurrence is still known.
+const SERIES_OF_TARGET: &str =
+    "CASE WHEN ?5 THEN COALESCE((SELECT series_master_id FROM events WHERE account_id = ?1 AND remote_id = ?2), ?2) END";
+
+impl Op {
+    /// Changes to an existing event, kept in order across its whole series.
+    fn is_event_change(&self) -> bool {
+        matches!(self, Op::Respond { .. } | Op::UpdateEvent { .. } | Op::DeleteEvent { .. })
+    }
 }
 
 /// Queues an op to run at an absolute time (UTC RFC 3339).
@@ -164,8 +179,8 @@ pub fn enqueue_at(conn: &Connection, account_id: i64, remote_id: Option<&str>, o
     // Same text format as strftime('%Y-%m-%dT%H:%M:%fZ'), since `take_due` compares strings.
     let at = at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     Ok(conn.query_row(
-        "INSERT INTO outbox (account_id, remote_id, op, not_before) VALUES (?1, ?2, ?3, ?4) RETURNING id",
-        params![account_id, remote_id, serde_json::to_string(op)?, at],
+        &format!("INSERT INTO outbox (account_id, remote_id, op, not_before, series_id) VALUES (?1, ?2, ?3, ?4, {SERIES_OF_TARGET}) RETURNING id"),
+        params![account_id, remote_id, serde_json::to_string(op)?, at, op.is_event_change()],
         |r| r.get(0),
     )?)
 }
@@ -246,12 +261,14 @@ pub fn status(conn: &Connection) -> Result<OutboxStatus> {
 
 /// SQL condition on outbox row `o`: no earlier op on the same message is still waiting.
 /// Changes to one message go out in the order they were made, so one waiting out a retry
-/// backoff holds back later ones (flag then unflag must not land reversed). Sends are out of
+/// backoff holds back later ones (flag then unflag must not land reversed). For events,
+/// "the same" is the whole series: accepting a series, then declining one occurrence, must
+/// not land as the decline overwritten by the accept. Sends are out of
 /// it both ways: their order against a flag or read change doesn't matter, and a reply
 /// scheduled for tomorrow carries its original's id and mustn't stall archiving it until then.
 const NOT_HELD_BACK: &str = "(json_extract(o.op, '$.type') = 'send' OR NOT EXISTS (
     SELECT 1 FROM outbox e
-    WHERE e.account_id = o.account_id AND e.remote_id = o.remote_id AND e.id < o.id
+    WHERE e.account_id = o.account_id AND (e.remote_id = o.remote_id OR e.series_id = o.series_id) AND e.id < o.id
       AND e.status IN ('pending', 'inflight') AND json_extract(e.op, '$.type') != 'send'))";
 
 fn take_due(conn: &Connection) -> Result<Option<Row>> {
@@ -641,6 +658,37 @@ mod tests {
             enqueue_at(c, a, Some("m3"), &Op::Send(reply), chrono::Utc::now() + chrono::Duration::days(1))?;
             let archive = enqueue(c, a, Some("m3"), &Op::Move { destination: "archive".into() }, Duration::ZERO)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(archive), "a reply scheduled for tomorrow doesn't hold up archiving its message");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn event_changes_keep_their_order_across_a_series_and_its_occurrences() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
+            for id in ["occ1", "occ2"] {
+                let v = serde_json::json!({
+                    "id": id, "type": "occurrence", "seriesMasterId": "master", "subject": "Standup",
+                    "start": { "dateTime": "2026-10-27T22:00:00.0000000", "timeZone": "UTC" },
+                    "end": { "dateTime": "2026-10-27T22:15:00.0000000", "timeZone": "UTC" },
+                });
+                crate::calendar::upsert_event(c, a, &crate::calendar::parse_event(&v).unwrap())?;
+            }
+            // Accept the series, decline one occurrence, delete another (gone locally at once).
+            crate::calendar::respond(c, a, "master", Rsvp::Accept)?;
+            crate::calendar::respond(c, a, "occ1", Rsvp::Decline)?;
+            crate::calendar::remove(c, a, "occ2", false, None)?;
+            let series: Vec<Option<String>> = c.prepare("SELECT series_id FROM outbox ORDER BY id")?
+                .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            assert_eq!(series, vec![Some("master".to_string()); 3], "a deleted occurrence still knows its series");
+            let mail = enqueue(c, a, Some("m1"), &Op::SetRead { value: true }, Duration::ZERO)?;
+
+            // The accept waits out a backoff: the occurrence changes wait with it; mail doesn't.
+            c.execute("UPDATE outbox SET not_before = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+60 seconds') WHERE remote_id = 'master'", [])?;
+            assert_eq!(take_due(c)?.map(|r| r.id), Some(mail));
+            assert!(take_due(c)?.is_none(), "the decline doesn't overtake the series accept");
             Ok(())
         })
         .unwrap();

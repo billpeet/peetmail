@@ -630,9 +630,47 @@ pub fn finish_create(conn: &Connection, account_id: i64, local_id: &str, created
     delete_event(conn, account_id, local_id)?;
     let parsed = if created["kind"] == "calendar#event" { crate::gcal::parse_event(created) } else { parse_event(created) };
     if let Some(e) = parsed {
-        upsert_event(conn, account_id, &e)?;
+        // Ops queued against the placeholder while it was being created (a delete) now
+        // target the real event.
+        conn.execute(
+            "UPDATE outbox SET remote_id = ?3, series_id = CASE WHEN series_id = ?2 THEN ?3 ELSE series_id END
+             WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'",
+            params![account_id, local_id, e.remote_id],
+        )?;
+        // Deleted while it was being created: it's on its way out, so don't show it again.
+        let deleting: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM outbox WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'
+                              AND json_extract(op, '$.type') = 'deleteEvent')",
+            params![account_id, e.remote_id],
+            |r| r.get(0),
+        )?;
+        if !deleting {
+            upsert_event(conn, account_id, &e)?;
+        }
     }
     Ok(())
+}
+
+/// Deletes an event at once and queues the delete for the server.
+pub fn remove(conn: &Connection, account_id: i64, remote_id: &str, cancel: bool, comment: Option<String>) -> Result<()> {
+    // A placeholder that never reached the server just goes. One being created right now
+    // will be there in a moment: queue its delete, held behind the create, which then
+    // points it at the real event (`finish_create`).
+    let local = remote_id.starts_with("local:");
+    let creating = local
+        && conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM outbox WHERE account_id = ?1 AND remote_id = ?2 AND status = 'inflight')",
+            params![account_id, remote_id],
+            |r| r.get::<_, bool>(0),
+        )?;
+    if local && !creating {
+        conn.execute("DELETE FROM outbox WHERE account_id = ?1 AND remote_id = ?2 AND status = 'pending'", params![account_id, remote_id])?;
+    } else {
+        let comment = comment.filter(|c| !c.trim().is_empty());
+        crate::outbox::enqueue(conn, account_id, Some(remote_id), &crate::outbox::Op::DeleteEvent { cancel, comment }, std::time::Duration::ZERO)?;
+    }
+    // Only now: queuing it looks up the series an occurrence belongs to.
+    crate::event_edit::delete_locally(conn, account_id, remote_id)
 }
 
 fn uuid_like() -> String {
@@ -823,6 +861,43 @@ mod tests {
             finish_create(c, a, &local.remote_id, &timed("srv-1", "2026-10-30T02:00:00", "2026-10-30T02:30:00"))?;
             let got = list_events(c, "2026-10-29T13:00:00Z", "2026-10-30T13:00:00Z", "2026-10-30", "2026-10-31")?;
             assert_eq!(got.iter().map(|e| e.remote_id.as_str()).collect::<Vec<_>>(), vec!["srv-1"]);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_event_deleted_while_being_created_is_deleted_on_the_server_and_stays_gone() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", Some("Boris"), b"t")?.id;
+            let new = crate::outbox::NewEvent {
+                subject: "Lunch with Sam".into(), start: "2026-10-30T02:00:00Z".into(), end: "2026-10-30T02:30:00Z".into(),
+                all_day: false, location: None, time_zone: "UTC".into(), details: Default::default(),
+            };
+            let window = |c: &Connection| list_events(c, "2026-10-29T13:00:00Z", "2026-10-30T13:00:00Z", "2026-10-30", "2026-10-31");
+            let queued = |c: &Connection| -> Result<Vec<(String, String, String)>> {
+                let mut s = c.prepare("SELECT remote_id, json_extract(op, '$.type'), status FROM outbox ORDER BY id")?;
+                let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            };
+
+            // Deleted before the create went out: both just go.
+            let early = create(c, a, &new, ("b@x.com", Some("Boris")))?;
+            remove(c, a, &early.remote_id, false, None)?;
+            assert!(queued(c)?.is_empty());
+            assert!(window(c)?.is_empty());
+
+            // Deleted while the create is on its way: the delete waits for it, then targets
+            // the real event, which doesn't come back in the meantime.
+            let local = create(c, a, &new, ("b@x.com", Some("Boris")))?;
+            c.execute("UPDATE outbox SET status = 'inflight' WHERE remote_id = ?1", [&local.remote_id])?;
+            remove(c, a, &local.remote_id, false, None)?;
+            assert!(window(c)?.is_empty());
+            finish_create(c, a, &local.remote_id, &timed("srv-1", "2026-10-30T02:00:00", "2026-10-30T02:30:00"))?;
+            c.execute("DELETE FROM outbox WHERE status = 'inflight'", [])?; // the drain's own cleanup
+            assert!(window(c)?.is_empty(), "the created event isn't shown again");
+            assert_eq!(queued(c)?, vec![("srv-1".to_string(), "deleteEvent".to_string(), "pending".to_string())]);
             Ok(())
         })
         .unwrap();
