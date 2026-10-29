@@ -93,7 +93,21 @@ async fn fill_and_send(state: &AppState, account_id: i64, msg: &str, d: &Draft) 
         }
     }
     // An empty JSON body rather than none, so the POST carries a Content-Length.
-    graph_call(state, account_id, Method::POST, &format!("{msg}/send"), Some(&json!({})), &[PREFER_IMMUTABLE]).await
+    match graph_call(state, account_id, Method::POST, &format!("{msg}/send"), Some(&json!({})), &[PREFER_IMMUTABLE]).await {
+        // No answer (or a server error): Graph may have sent it anyway, and a retry would
+        // send it twice. A sent draft leaves Drafts; one still there as a draft wasn't sent.
+        Err(e) if outcome_unknown(&e) => match graph_call(state, account_id, Method::GET, &format!("{msg}?$select=isDraft"), None, &[PREFER_IMMUTABLE]).await {
+            Err(AppError::Graph { status: 404, .. }) => Ok(Value::Null),
+            Ok(v) if v["isDraft"] == json!(false) => Ok(Value::Null),
+            _ => Err(e),
+        },
+        other => other,
+    }
+}
+
+/// An error that leaves it unknown whether Graph acted on the request.
+fn outcome_unknown(e: &AppError) -> bool {
+    matches!(e, AppError::Http(_)) || matches!(e, AppError::Graph { status, .. } if *status >= 500)
 }
 
 /// A big file through an upload session. The upload URL carries its own authorization, so

@@ -635,6 +635,9 @@ pub struct SendInput {
     /// The saved draft this is, which sending removes.
     #[serde(default)]
     draft_id: Option<i64>,
+    /// The conversation it answers, for the draft it's kept as until it has gone.
+    #[serde(default)]
+    conversation_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -700,14 +703,34 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
     }
     let delay = state.preferences()?.undo_send_secs;
     let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
+    let mut draft = draft;
     let id = state.db.with(|c| {
-        let id = outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at)?;
-        // Out of Drafts while it's sent: back if the send is taken back or fails, removed
-        // (with its server copy) once it has gone.
-        if let Some(d) = input.draft_id {
-            drafts::set_hidden(c, d, true)?;
-        }
-        Ok(id)
+        // Kept as a draft until it has gone, out of the Drafts list meanwhile: back there if
+        // the send is taken back or fails for good, removed (with its server copy) once it
+        // has gone. One not saved as a draft yet is saved now, in the same transaction.
+        let draft_id = match input.draft_id {
+            Some(d) => d,
+            None => {
+                let doc = drafts::DraftDoc {
+                    kind: draft.kind,
+                    reference_message_id: draft.reference_message_id,
+                    conversation_id: input.conversation_id.clone(),
+                    to: draft.to.join(", "),
+                    cc: draft.cc.join(", "),
+                    bcc: draft.bcc.join(", "),
+                    subject: draft.subject.clone(),
+                    body: draft.body.clone(),
+                    html: draft.html.clone(),
+                    attachments: draft.attachments.clone(),
+                    dropped_attachments: draft.dropped_attachments.clone(),
+                    imported: false,
+                };
+                drafts::save(c, None, input.account_id, &doc)?.id
+            }
+        };
+        drafts::set_hidden(c, draft_id, true)?;
+        draft.draft_id = Some(draft_id);
+        outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft.clone()), at)
     })?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
@@ -736,10 +759,14 @@ pub fn add_draft_file(state: State<'_, AppState>, request: tauri::ipc::Request<'
 #[tauri::command]
 pub fn save_draft(app: AppHandle, state: State<'_, AppState>, id: Option<i64>, account_id: i64, draft: drafts::DraftDoc) -> Result<i64> {
     let id = state.db.with(|c| {
-        let id = drafts::save(c, id, account_id, &draft)?;
+        let saved = drafts::save(c, id, account_id, &draft)?;
         // Up to the server a moment later (one push for a burst of typing).
-        outbox::enqueue_push_draft(c, account_id, id)?;
-        Ok(id)
+        outbox::enqueue_push_draft(c, account_id, saved.id)?;
+        // Moved to another account (From changed): its copy in the old one goes.
+        if let Some((old_account, remote_id)) = saved.moved_from {
+            outbox::enqueue(c, old_account, Some(&remote_id), &Op::DeleteDraft, std::time::Duration::ZERO)?;
+        }
+        Ok(saved.id)
     })?;
     outbox::kick(&app);
     Ok(id)
@@ -781,7 +808,7 @@ pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Resul
         let taken = outbox::take_send(c, id)?;
         // Its draft is back (the composer reopens on it).
         if let Some(d) = taken.as_ref().and_then(|q| q.draft.draft_id) {
-            drafts::set_hidden(c, d, false)?;
+            outbox::restore_draft(c, d)?;
         }
         Ok(taken)
     })?;

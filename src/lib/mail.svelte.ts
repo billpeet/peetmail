@@ -245,6 +245,8 @@ class MailStore {
   #draftOps: Promise<unknown> = Promise.resolve();
   /** The composer being sent: it mustn't be saved as a draft again meanwhile. */
   #sending: ComposerState | null = null;
+  /** Files the composer is still handing to Rust: sending waits for them. */
+  pendingFiles = $state(0);
   /** Focus is inside the composer (set by the composer). */
   composerFocused = $state(false);
   /** Bumped to put the cursor in the open composer (r on a conversation whose draft is showing). */
@@ -1059,6 +1061,8 @@ class MailStore {
   async send(sendAt?: Date) {
     const c = this.composer;
     if (!c) return;
+    // Sent now, it would go without the file still on its way.
+    if (this.pendingFiles > 0) return this.showToast({ text: "Still attaching: send again in a moment", error: true });
     const split = (s: string) => s.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
     this.#sending = c;
     try {
@@ -1078,8 +1082,11 @@ class MailStore {
         attachments: c.attachments.map((f) => f.id),
         droppedAttachments: c.kind === "forward" ? c.droppedAttachments : [],
         draftId: c.draftId,
+        conversationId: c.conversationId,
       });
-      this.#composer = null; // not the setter: the outbox has the files now, and the draft is gone
+      // Not the setter: the outbox has the files now, and the draft goes with the send. And
+      // only this one: another composer may have opened while the send was on its way.
+      if (this.#composer === c) this.#composer = null;
       this.refreshDrafts();
       const delayMs = new Date(out.sendAt).getTime() - Date.now();
       // Undo works while the toast is up, and never after the message has gone.

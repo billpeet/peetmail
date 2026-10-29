@@ -52,7 +52,8 @@ test("double-clicking an attachment opens it, without saving a copy to Downloads
   // The app opened a copy in its temp folder (tests log the path instead of launching an app).
   const opened = await readFile(join(app.dataDir, "opened.txt"), "utf8").then((t) => t.trim().split("\n").at(-1)!);
   expect(basename(opened)).toBe("Q4 plan.pdf");
-  expect(dirname(dirname(opened)).endsWith(join("PeetMail", "attachments"))).toBe(true);
+  // PeetMail\attachments\<message>\<attachment>\Q4 plan.pdf
+  expect(dirname(dirname(dirname(opened))).endsWith(join("PeetMail", "attachments"))).toBe(true);
   expect(await readFile(opened, "utf8")).toBe("%PDF-1.4 fake plan");
   // Marked as downloaded from the internet, so Office opens it in Protected View.
   expect(await readFile(`${opened}:Zone.Identifier`, "utf8")).toContain("ZoneId=3");

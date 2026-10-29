@@ -83,6 +83,8 @@ export type FakeConfig = {
   rejectMeetingSelect: boolean;
   /** Adding an attachment to a draft fails with this status; 0 = off. */
   failAttachments: number;
+  /** The next N draft sends go out, but their response is lost (the connection drops). */
+  dropSendResponse: number;
 };
 
 export type FakeOptions = {
@@ -113,7 +115,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     authorizations: [] as Record<string, string>[],
     refreshTokens: new Set<string>(),
     throttle: [] as { status: number; retryAfter: number }[],
-    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, dropWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false, failAttachments: 0 } as FakeConfig,
+    config: { rejectDeltaFilter: false, expireDelta: false, tokenTtl: 3600, latencyMs: 0, failBody: false, failWrites: 0, dropWrites: 0, expireCalendarDelta: false, omitODataType: false, rejectMeetingSelect: false, failAttachments: 0, dropSendResponse: 0 } as FakeConfig,
     requests: [] as RequestRecord[],
     events: new Map<string, GraphEvent>(),
     eventSeq: 0,
@@ -583,7 +585,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     const d = state.drafts.get(id);
     if (!d) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
     const view = () => ({
-      id, subject: d.subject, toRecipients: d.to, ccRecipients: d.cc, bccRecipients: d.bcc,
+      id, isDraft: true, subject: d.subject, toRecipients: d.to, ccRecipients: d.cc, bccRecipients: d.bcc,
       body: { contentType: "html", content: d.html }, lastModifiedDateTime: d.modified ?? "", conversationId: d.conversationId,
     });
     if (rest === "" && method === "GET") return reply(200, view());
@@ -638,6 +640,11 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (rest === "send" && method === "POST") {
       state.drafts.delete(id);
       sendCopy(d);
+      if (state.config.dropSendResponse > 0) {
+        state.config.dropSendResponse--;
+        req.socket.destroy();
+        return;
+      }
       return reply(202, "");
     }
     return graphError(reply, 404, "NotFound", `No fake route for ${method} draft ${rest}`);

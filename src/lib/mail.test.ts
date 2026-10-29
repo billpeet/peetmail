@@ -119,6 +119,34 @@ describe("drafts", () => {
   });
 });
 
+describe("sending", () => {
+  const composer = (subject: string) => ({
+    accountId: 1, kind: "new" as const, referenceMessageId: null, conversationId: null,
+    to: "p@x.com", cc: "", bcc: "", subject, body: "b", html: "", attachments: [], droppedAttachments: [], draftId: null,
+  });
+
+  it("waits while a file is still on its way", async () => {
+    const before = sentInputs.length;
+    mail.composer = composer("with a file coming");
+    mail.pendingFiles = 1;
+    await mail.send();
+    expect(sentInputs.length).toBe(before);
+    expect(mail.composer?.subject).toBe("with a file coming");
+    mail.pendingFiles = 0;
+    await mail.send();
+    expect(sentInputs.length).toBe(before + 1);
+  });
+
+  it("closes only the composer it sent, not one opened while it was on its way", async () => {
+    mail.composer = composer("first");
+    const sending = mail.send();
+    mail.composer = composer("second"); // opened before the send came back
+    await sending;
+    expect(mail.composer?.subject).toBe("second");
+    mail.composer = null;
+  });
+});
+
 describe("drafts in the Inbox", () => {
   const conv = (id: string, at: string) => ({ accountId: 1, conversationId: id, sortAt: at, messageId: 1 }) as never;
   const draft = (id: number, at: string, conversationId: string | null = null) =>

@@ -105,6 +105,8 @@ export type SendInput = {
   droppedAttachments?: string[];
   /** The saved draft this is (sending removes it). */
   draftId?: number | null;
+  /** The conversation it answers (kept with its draft until it has gone). */
+  conversationId?: string | null;
 };
 /** The composer's state as a draft keeps it. */
 export type DraftDoc = {

@@ -213,3 +213,17 @@ test("a file dropped outside the composer is ignored, not opened in place of the
   expect(cancelled).toEqual([true, true]);
   await expect(page.getByTestId("compose-attachment")).toHaveCount(0);
 });
+
+test("a send Graph took but whose answer was lost isn't sent twice", async ({ inbox: page, fake }) => {
+  await fake.control("config", { dropSendResponse: 1 });
+  await startNew(page, "priya@fabrikam.io", "Only once");
+  await page.getByTestId("compose-file-input").setInputFiles([file("a.txt", "a")]);
+  await expect(page.getByTestId("compose-attachment")).toHaveCount(1);
+  await page.getByTestId("compose-body").focus();
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => sentOfKind(fake, "new").length, { timeout: 10_000 }).toBe(1);
+  // Past the outbox's quick retry: still the one.
+  await page.waitForTimeout(5000);
+  expect(sentOfKind(fake, "new")).toHaveLength(1);
+  expect(fake.state.drafts.size).toBe(0); // and nothing left half-built in Drafts
+});

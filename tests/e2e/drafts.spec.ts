@@ -162,3 +162,19 @@ test("what you were writing survives PeetMail being killed, attachment included"
     killTree(again.proc.pid);
   }
 });
+
+test("a send that fails for good comes back to Drafts, even one never saved as a draft", async ({ inbox: page, fake }) => {
+  await fake.control("config", { failWrites: 400 });
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-to").fill("priya@fabrikam.io");
+  await page.getByTestId("compose-subject").fill("Refused");
+  await page.getByTestId("compose-body").click();
+  await page.keyboard.type("Typed and sent at once");
+  await page.keyboard.press("Control+Enter"); // before any save of it
+  await expect(page.getByTestId("composer")).toHaveCount(0);
+  await goToDrafts(page);
+  await expect(draftRows(page)).toContainText("Refused", { timeout: 15_000 });
+  await fake.control("config", { failWrites: 0 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("compose-body")).toHaveAttribute("data-text", "Typed and sent at once");
+});

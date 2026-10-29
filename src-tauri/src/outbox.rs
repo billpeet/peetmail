@@ -65,6 +65,17 @@ pub fn enqueue_push_draft(conn: &Connection, account_id: i64, draft: i64) -> Res
     Ok(())
 }
 
+/// A draft back in Drafts (its send taken back, or failed for good): if it has changes the
+/// server doesn't (its push was skipped while it was being sent), they go up.
+pub fn restore_draft(conn: &Connection, id: i64) -> Result<()> {
+    crate::drafts::set_hidden(conn, id, false)?;
+    if let Some(row) = crate::drafts::get(conn, id)?
+        && row.dirty {
+        enqueue_push_draft(conn, row.account_id, id)?;
+    }
+    Ok(())
+}
+
 /// Server drafts with a delete still to go out: a pull mustn't bring them back meanwhile.
 pub fn drafts_being_deleted(conn: &Connection, account_id: i64) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare(
@@ -408,7 +419,7 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
                 // Failed for good: back in Drafts, files and all, to fix and send again.
                 let back_to_drafts = result.is_err() && d.draft_id.map(|id| crate::drafts::get(c, id)).transpose()?.flatten().is_some();
                 if back_to_drafts {
-                    crate::drafts::set_hidden(c, d.draft_id.unwrap_or_default(), false)?;
+                    restore_draft(c, d.draft_id.unwrap_or_default())?;
                 } else {
                     // A send's files are done with once it has gone.
                     let ids: Vec<i64> = d.attachments.iter().map(|f| f.id).collect();
@@ -541,7 +552,9 @@ async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
     if let Op::Send(d) = &row.op
         && let Some(rid) = crate::draft_sync::remote_of(state, d)?
         && let Err(e) = crate::draft_sync::delete_remote(state, row.account_id, &rid).await {
-        log::warn!("sent, but couldn't delete the server's draft: {e}");
+        // Tried again later; meanwhile a pull leaves it alone rather than bringing it back.
+        log::warn!("sent, but couldn't delete the server's draft yet: {e}");
+        state.db.with(|c| enqueue(c, row.account_id, Some(&rid), &Op::DeleteDraft, Duration::from_secs(30)))?;
     }
     Ok(sent)
 }

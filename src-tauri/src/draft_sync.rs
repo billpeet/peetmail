@@ -309,9 +309,11 @@ struct Pulled {
 /// changed here.
 pub async fn pull(state: &AppState, account_id: i64) -> Result<bool> {
     let google = is_google(state, account_id)?;
+    // Held from the listing on: a push finishing after the list was read would otherwise
+    // look like a draft deleted on the server.
+    let _lock = state.drafts_lock.lock().await;
     let listed = if google { gmail_list(state, account_id).await? } else { graph_list(state, account_id).await? };
     let Some(listed) = listed else { return Ok(false) };
-    let _lock = state.drafts_lock.lock().await;
     let transient = state.transient_drafts.lock().expect("transient drafts").clone();
     let deleting = state.db.with(|c| crate::outbox::drafts_being_deleted(c, account_id))?;
     let locals = state.db.with(|c| drafts::with_remote(c, account_id))?;
@@ -357,24 +359,48 @@ pub async fn pull(state: &AppState, account_id: i64) -> Result<bool> {
         }
         let body = sanitize::html_to_text(&pulled.html);
         let doc = DraftDoc { to: pulled.to, cc: pulled.cc, bcc: pulled.bcc, subject: pulled.subject, html: pulled.html, body, attachments: files, ..base };
-        state.db.with(|c| drafts::apply_remote(c, account_id, rid, version, &pulled.meta, &doc))?;
-        changed = true;
+        // Edited here while it was fetched: the local edit is the later save; drop what came in.
+        let applied = state.db.with(|c| {
+            let applied = drafts::apply_remote(c, account_id, rid, version, &pulled.meta, &doc)?;
+            if applied.is_none() {
+                let kept: Vec<i64> = local.map(|l| l.doc.attachments.iter().map(|f| f.id).collect()).unwrap_or_default();
+                draft_files::remove(c, &doc.attachments.iter().map(|f| f.id).filter(|id| !kept.contains(id)).collect::<Vec<_>>())?;
+            }
+            Ok(applied)
+        })?;
+        changed |= applied.is_some();
     }
 
     // Gone from the server (sent or deleted elsewhere), and not changed here since.
     for l in locals.iter().filter(|l| !l.dirty && !l.hidden) {
         let rid = l.remote_id.as_deref().unwrap_or_default();
         if !listed.iter().any(|(r, _)| r == rid) {
-            state.db.with(|c| drafts::delete(c, l.id, false))?;
-            changed = true;
+            changed |= state.db.with(|c| drafts::delete_if_unchanged(c, l.id))?;
         }
     }
     Ok(changed)
 }
 
 /// Files of a pulled draft: the local copy's where the name matches (no download for a
-/// text-only edit), else downloaded.
+/// text-only edit), else downloaded. All or nothing: a draft is never brought in short of
+/// a file (sending it through its server copy would then drop that file there too).
 async fn fetch_files(state: &AppState, account_id: i64, google: bool, local: Option<&DraftRow>, wanted: &[(String, String, String)]) -> Result<Vec<DraftFile>> {
+    let mut added = Vec::new();
+    let result = fetch_files_into(state, account_id, google, local, wanted, &mut added).await;
+    if result.is_err() {
+        state.db.with(|c| draft_files::remove(c, &added))?;
+    }
+    result
+}
+
+async fn fetch_files_into(
+    state: &AppState,
+    account_id: i64,
+    google: bool,
+    local: Option<&DraftRow>,
+    wanted: &[(String, String, String)],
+    added: &mut Vec<i64>,
+) -> Result<Vec<DraftFile>> {
     let mut out = Vec::new();
     for (name, mime, source) in wanted {
         if let Some(f) = local.and_then(|l| l.doc.attachments.iter().find(|f| f.name == *name)) {
@@ -388,10 +414,9 @@ async fn fetch_files(state: &AppState, account_id: i64, google: bool, local: Opt
             let token = state.access_token(account_id).await?;
             graph::get_bytes(&state.http, &token, source).await?
         };
-        match state.db.with(|c| draft_files::add(c, name, mime, &data)) {
-            Ok(f) => out.push(f),
-            Err(e) => log::warn!("a draft's attachment wasn't brought in: {e}"),
-        }
+        let f = state.db.with(|c| draft_files::add(c, name, mime, &data))?;
+        added.push(f.id);
+        out.push(f);
     }
     Ok(out)
 }

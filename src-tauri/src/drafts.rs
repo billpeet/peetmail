@@ -65,27 +65,56 @@ pub struct DraftRow {
 
 const NEXT_SEQ: &str = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM drafts)";
 
+/// A saved draft, and the server copy it left behind if it moved to another account.
+#[derive(Debug, PartialEq)]
+pub struct Saved {
+    pub id: i64,
+    /// (account, server id) of a copy in the account it used to be in: delete it there.
+    pub moved_from: Option<(i64, String)>,
+}
+
 /// Saves a local edit: updates `id` if it's still there, else adds a new draft. Marks it
-/// as changed here, so the next push sends it. Returns its id.
-pub fn save(conn: &Connection, id: Option<i64>, account_id: i64, doc: &DraftDoc) -> Result<i64> {
+/// as changed here, so the next push sends it. A draft moved to another account (From
+/// changed) gets a new server copy there; the old one is returned to delete.
+pub fn save(conn: &Connection, id: Option<i64>, account_id: i64, doc: &DraftDoc) -> Result<Saved> {
     let data = serde_json::to_string(doc)?;
     if let Some(id) = id {
-        let updated = conn.execute(
-            &format!(
-                "UPDATE drafts SET account_id = ?2, data = ?3, dirty = 1, hidden = 0, seq = {NEXT_SEQ},
-                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1"
-            ),
-            params![id, account_id, data],
-        )?;
-        if updated == 1 {
-            return Ok(id);
+        let before: Option<(i64, Option<String>)> =
+            conn.query_row("SELECT account_id, remote_id FROM drafts WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((old_account, old_remote)) = before {
+            let moved = old_account != account_id;
+            // NEXT_SEQ is a constant subquery; the values are all bound.
+            conn.execute(
+                &format!(
+                    "UPDATE drafts SET account_id = ?2, data = ?3, dirty = 1, hidden = 0, seq = {NEXT_SEQ},
+                       remote_id = CASE WHEN ?4 THEN NULL ELSE remote_id END,
+                       remote_version = CASE WHEN ?4 THEN NULL ELSE remote_version END,
+                       remote_meta = CASE WHEN ?4 THEN NULL ELSE remote_meta END,
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1"
+                ),
+                params![id, account_id, data, moved],
+            )?;
+            let moved_from = old_remote.filter(|_| moved).map(|r| (old_account, r));
+            return Ok(Saved { id, moved_from });
         }
     }
-    Ok(conn.query_row(
+    let id = conn.query_row(
         &format!("INSERT INTO drafts (account_id, data, seq, dirty) VALUES (?1, ?2, {NEXT_SEQ}, 1) RETURNING id"),
         params![account_id, data],
         |r| r.get(0),
-    )?)
+    )?;
+    Ok(Saved { id, moved_from: None })
+}
+
+/// Removes a draft deleted on the server, unless it was changed here (or is being sent)
+/// since the caller looked: then the local copy is the later save. Returns whether it went.
+pub fn delete_if_unchanged(conn: &Connection, id: i64) -> Result<bool> {
+    let data: Option<String> =
+        conn.query_row("DELETE FROM drafts WHERE id = ?1 AND dirty = 0 AND hidden = 0 RETURNING data", [id], |r| r.get(0)).optional()?;
+    let Some(data) = data else { return Ok(false) };
+    let doc: DraftDoc = serde_json::from_str(&data).unwrap_or_default();
+    draft_files::remove(conn, &doc.attachments.iter().map(|f| f.id).collect::<Vec<_>>())?;
+    Ok(true)
 }
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<(DraftRow, String)> {
@@ -186,16 +215,22 @@ pub fn set_hidden(conn: &Connection, id: i64, hidden: bool) -> Result<()> {
     Ok(())
 }
 
-/// The server's version of a draft, pulled: replaces what's here (which wasn't changed
-/// since the last push, or the caller wouldn't pull it). New drafts are added. Returns the id.
-pub fn apply_remote(conn: &Connection, account_id: i64, remote_id: &str, version: &str, meta: &RemoteMeta, doc: &DraftDoc) -> Result<i64> {
+/// The server's version of a draft, pulled: replaces what's here, or adds it if it's new.
+/// Checked again here, in the same write: a draft changed here (or being sent) since the
+/// pull looked keeps its local version (the later save), and None is returned.
+pub fn apply_remote(conn: &Connection, account_id: i64, remote_id: &str, version: &str, meta: &RemoteMeta, doc: &DraftDoc) -> Result<Option<i64>> {
     let data = serde_json::to_string(doc)?;
     let meta = serde_json::to_string(meta)?;
-    let existing: Option<(i64, String)> = conn
-        .query_row("SELECT id, data FROM drafts WHERE account_id = ?1 AND remote_id = ?2", params![account_id, remote_id], |r| Ok((r.get(0)?, r.get(1)?)))
+    let existing: Option<(i64, String, bool, bool)> = conn
+        .query_row(
+            "SELECT id, data, dirty, hidden FROM drafts WHERE account_id = ?1 AND remote_id = ?2",
+            params![account_id, remote_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
         .optional()?;
     match existing {
-        Some((id, old)) => {
+        Some((_, _, dirty, hidden)) if dirty || hidden => Ok(None),
+        Some((id, old, _, _)) => {
             // Files the new version no longer has go.
             let old: DraftDoc = serde_json::from_str(&old).unwrap_or_default();
             let gone: Vec<i64> = old.attachments.iter().filter(|f| !doc.attachments.iter().any(|n| n.id == f.id)).map(|f| f.id).collect();
@@ -207,16 +242,16 @@ pub fn apply_remote(conn: &Connection, account_id: i64, remote_id: &str, version
                 ),
                 params![id, data, version, meta],
             )?;
-            Ok(id)
+            Ok(Some(id))
         }
-        None => Ok(conn.query_row(
+        None => Ok(Some(conn.query_row(
             &format!(
                 "INSERT INTO drafts (account_id, data, seq, remote_id, remote_version, remote_meta, dirty)
                  VALUES (?1, ?2, {NEXT_SEQ}, ?3, ?4, ?5, 0) RETURNING id"
             ),
             params![account_id, data, remote_id, version, meta],
             |r| r.get(0),
-        )?),
+        )?)),
     }
 }
 
@@ -234,14 +269,14 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.with(|c| {
             let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
-            let first = save(c, None, a, &doc("one"))?;
-            let second = save(c, None, a, &doc("two"))?;
-            assert_eq!(save(c, Some(first), a, &doc("one, edited"))?, first, "an update keeps its id");
+            let first = save(c, None, a, &doc("one"))?.id;
+            let second = save(c, None, a, &doc("two"))?.id;
+            assert_eq!(save(c, Some(first), a, &doc("one, edited"))?.id, first, "an update keeps its id");
             let list = list(c)?;
             assert_eq!(list.iter().map(|d| (d.id, d.draft.subject.as_str())).collect::<Vec<_>>(), vec![(first, "one, edited"), (second, "two")]);
             // Saving a draft that was deleted meanwhile starts a new one, never reusing the id.
             delete(c, second, false)?;
-            let again = save(c, Some(second), a, &doc("two"))?;
+            let again = save(c, Some(second), a, &doc("two"))?.id;
             assert_ne!(again, second);
             Ok(())
         })
@@ -255,8 +290,8 @@ mod tests {
             let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
             let f1 = draft_files::add(c, "a.txt", "text/plain", b"a")?;
             let f2 = draft_files::add(c, "b.txt", "text/plain", b"b")?;
-            let discarded = save(c, None, a, &DraftDoc { attachments: vec![f1.clone()], ..doc("x") })?;
-            let sent = save(c, None, a, &DraftDoc { attachments: vec![f2.clone()], ..doc("y") })?;
+            let discarded = save(c, None, a, &DraftDoc { attachments: vec![f1.clone()], ..doc("x") })?.id;
+            let sent = save(c, None, a, &DraftDoc { attachments: vec![f2.clone()], ..doc("y") })?.id;
             // A saved draft's files survive the startup clean-up.
             assert_eq!(draft_files::purge_orphans(c)?, 0);
             delete(c, discarded, false)?;
@@ -287,7 +322,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.with(|c| {
             let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
-            let id = save(c, None, a, &doc("x"))?;
+            let id = save(c, None, a, &doc("x"))?.id;
             let pushing = get(c, id)?.unwrap();
             assert!(pushing.dirty);
             mark_pushed(c, id, pushing.seq, "R1", "v1")?;
@@ -311,10 +346,10 @@ mod tests {
             let old = draft_files::add(c, "old.txt", "text/plain", b"o")?;
             let new = draft_files::add(c, "new.txt", "text/plain", b"n")?;
             let meta = RemoteMeta::default();
-            let id = apply_remote(c, a, "R1", "v1", &meta, &DraftDoc { attachments: vec![old.clone()], imported: true, ..doc("from Outlook") })?;
+            let id = apply_remote(c, a, "R1", "v1", &meta, &DraftDoc { attachments: vec![old.clone()], imported: true, ..doc("from Outlook") })?.unwrap();
             let row = get(c, id)?.unwrap();
             assert!(!row.dirty && row.doc.imported);
-            assert_eq!(apply_remote(c, a, "R1", "v2", &meta, &DraftDoc { attachments: vec![new.clone()], imported: true, ..doc("edited in Outlook") })?, id);
+            assert_eq!(apply_remote(c, a, "R1", "v2", &meta, &DraftDoc { attachments: vec![new.clone()], imported: true, ..doc("edited in Outlook") })?, Some(id));
             let row = get(c, id)?.unwrap();
             assert_eq!((row.doc.subject.as_str(), row.remote_version.as_deref()), ("edited in Outlook", Some("v2")));
             assert!(draft_files::data(c, old.id)?.is_none(), "the replaced file goes");
@@ -325,6 +360,42 @@ mod tests {
             set_hidden(c, id, false)?;
             assert_eq!(list(c)?.len(), 1);
             assert_eq!(delete(c, id, false)?, Some((a, "R1".to_string())));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_pull_never_overwrites_or_deletes_a_draft_edited_here_meanwhile() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
+            let meta = RemoteMeta::default();
+            let id = apply_remote(c, a, "R1", "v1", &meta, &doc("server"))?.unwrap();
+            // Edited here after the pull read the row, before it wrote.
+            save(c, Some(id), a, &doc("typed here"))?;
+            assert_eq!(apply_remote(c, a, "R1", "v2", &meta, &doc("server, newer"))?, None);
+            assert_eq!(get(c, id)?.unwrap().doc.subject, "typed here");
+            assert!(!delete_if_unchanged(c, id)?, "deleted on the server, but edited here since: kept");
+            assert!(get(c, id)?.is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_draft_moved_to_another_account_starts_a_new_server_copy_there() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            let work = db::upsert_account(c, "microsoft", "b@work.com", None, b"t")?.id;
+            let home = db::upsert_account(c, "google", "b@gmail.com", None, b"t")?.id;
+            let id = save(c, None, work, &doc("x"))?.id;
+            mark_pushed(c, id, get(c, id)?.unwrap().seq, "R-work", "v1")?;
+            assert_eq!(save(c, Some(id), work, &doc("x, edited"))?.moved_from, None);
+            let saved = save(c, Some(id), home, &doc("x, from home"))?;
+            assert_eq!(saved.moved_from, Some((work, "R-work".to_string())));
+            let row = get(c, id)?.unwrap();
+            assert_eq!((row.account_id, row.remote_id, row.dirty), (home, None, true));
             Ok(())
         })
         .unwrap();

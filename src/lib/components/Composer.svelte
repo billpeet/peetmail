@@ -60,8 +60,8 @@
 
   // ----- attachments -----
   let fileInput: HTMLInputElement | undefined = $state();
-  /** Files still on their way to Rust. */
-  let attaching = $state(0);
+  /** Files still on their way to Rust (sending waits for them). */
+  const attaching = $derived(mail.pendingFiles);
   /** A file is being dragged over the composer. */
   let dragging = $state(false);
   /** The original's attachments, when forwarding. */
@@ -79,7 +79,7 @@
       mail.showToast({ text: tooMuch, error: true });
       return;
     }
-    attaching += files.length;
+    mail.pendingFiles += files.length;
     for (const file of files) {
       try {
         const added = await api.addDraftFile(file);
@@ -89,7 +89,7 @@
       } catch (e) {
         mail.showToast({ text: `Couldn't attach ${file.name}: ${e}`, error: true });
       } finally {
-        attaching--;
+        mail.pendingFiles--;
       }
     }
   }

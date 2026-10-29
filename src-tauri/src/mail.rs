@@ -604,27 +604,32 @@ pub async fn attachment_for_opening(
             "PeetMail doesn't open .{ext} files directly, because they can run programs. Click it to save it to Downloads instead."
         )));
     }
-    let bytes = attachment_bytes(state, message_id, attachment_id).await?;
-    let dir = dir.join(message_id.to_string());
-    std::fs::create_dir_all(&dir)?;
+    // A folder per attachment (two can share a name), and an existing copy is opened as it
+    // is: it may be open in its app, with edits not to be overwritten.
+    use sha2::Digest;
+    let key: String = sha2::Sha256::digest(attachment_id.as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let dir = dir.join(message_id.to_string()).join(key);
     let path = dir.join(safe_file_name(name));
-    if let Err(e) = std::fs::write(&path, &bytes) {
-        if !path.exists() {
-            return Err(e.into());
-        }
-        log::info!("attachment already open, reusing its file: {e}");
+    if !path.exists() {
+        let bytes = attachment_bytes(state, message_id, attachment_id).await?;
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, &bytes)?;
     }
-    mark_from_internet(&path);
+    // Without the mark, Office would open it with its macros allowed: don't open it at all.
+    if let Err(e) = mark_from_internet(&path) {
+        log::warn!("couldn't mark an opened attachment as from the internet: {e}");
+        return Err(AppError::Other(format!(
+            "PeetMail couldn't mark {name} as downloaded from the internet, so it won't open it directly. Click it to save it to Downloads instead."
+        )));
+    }
     Ok(path)
 }
 
 /// The Mark of the Web: a Zone.Identifier stream saying the file came from the internet.
-fn mark_from_internet(path: &std::path::Path) {
+fn mark_from_internet(path: &std::path::Path) -> std::io::Result<()> {
     let mut stream = path.as_os_str().to_owned();
     stream.push(":Zone.Identifier");
-    if let Err(e) = std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n") {
-        log::warn!("couldn't mark an opened attachment as from the internet: {e}");
-    }
+    std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
 }
 
 fn safe_file_name(name: &str) -> String {
