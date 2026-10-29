@@ -30,6 +30,9 @@
     else if (top + ROW > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = top + ROW - viewport.clientHeight;
   });
 
+  /** A conversation with a reply or forward drafted (here, in Outlook or in Gmail). */
+  const hasDraft = (t: ThreadRow) => t.draftId === undefined && !!mail.draftFor(t.accountId, t.conversationId);
+
   function onScroll() {
     if (!viewport) return;
     scrollTop = viewport.scrollTop;
@@ -37,12 +40,16 @@
   }
 </script>
 
+{#snippet who(t: ThreadRow)}
+  {#if t.draftId !== undefined}<span data-testid="draft-label" class="text-red-400">Draft</span> {t.draftTo || "(no recipients)"}{:else}{senderName(t.fromName, t.fromAddress)}{/if}
+{/snippet}
+
 <div bind:this={viewport} bind:clientHeight={height} onscroll={onScroll} data-testid="thread-list" class="h-full overflow-y-auto">
   {#if mail.threads.length === 0}
     <div data-testid="thread-list-empty" class="grid h-full place-items-center text-sm text-ink-500">
       {#if mail.search !== null}No matches.
       {:else if mail.sync.state === "syncing"}Syncing your mail…
-      {:else}{({ inbox: "Inbox zero.", done: "Nothing archived yet.", sent: "Nothing sent yet.", snoozed: "Nothing snoozed. Press h on a conversation to snooze it.", scheduled: "", all: "No mail.", trash: "Trash is empty." })[mail.mailbox]}
+      {:else}{({ inbox: "Inbox zero.", done: "Nothing archived yet.", sent: "Nothing sent yet.", snoozed: "Nothing snoozed. Press h on a conversation to snooze it.", scheduled: "", drafts: "", all: "No mail.", trash: "Trash is empty." })[mail.mailbox]}
       {/if}
     </div>
   {:else}
@@ -58,6 +65,7 @@
           data-conversation-id={t.conversationId}
           data-account-id={t.accountId}
           data-unread={unread}
+          data-draft={t.draftId !== undefined}
           tabindex="-1"
           aria-selected={selected}
           onclick={() => mail.openAt(index)}
@@ -72,7 +80,7 @@
             <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
               <span class="flex items-baseline gap-2">
                 <span class={["min-w-0 flex-1 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-                  {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
+                  {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{@render who(t)}
                   {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
                 </span>
                 {#if t.reminder}<span data-testid="thread-reminder" class="text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
@@ -84,16 +92,16 @@
                   <span class={["shrink-0 text-xs tabular-nums group-hover:hidden", unread ? "text-ink-100" : "text-ink-500"]}>{listDate(t.receivedAt)}</span>
                 {/if}
               </span>
-              <span class={["truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>{t.subject || "(no subject)"}</span>
+              <span class={["truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>{#if hasDraft(t)}<span data-testid="thread-draft-badge" class="mr-1.5 font-normal text-red-400">Draft</span>{/if}{t.subject || "(no subject)"}</span>
               <span class="truncate text-xs text-ink-500">{t.preview}</span>
             </span>
           {:else}
             <span class={["w-48 shrink-0 truncate", unread ? "font-semibold text-ink-100" : "text-ink-300"]}>
-              {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{senderName(t.fromName, t.fromAddress)}
+              {#if mail.accounts.length > 1}<span data-testid="row-account" title={mail.accountOf(t.accountId)?.email} class={["mr-2 inline-block size-2 rounded-full align-middle", mail.accountColor(t.accountId)]}></span>{/if}{@render who(t)}
               {#if t.messageCount > 1}<span class="ml-1 text-xs font-normal text-ink-500">{t.messageCount}</span>{/if}
             </span>
             <span class="min-w-0 flex-1 truncate">
-              <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{t.subject || "(no subject)"}</span>
+              <span class={unread ? "font-semibold text-ink-100" : "text-ink-300"}>{#if hasDraft(t)}<span data-testid="thread-draft-badge" class="mr-1.5 font-normal text-red-400">Draft</span>{/if}{t.subject || "(no subject)"}</span>
               <span class="ml-2 text-ink-500">{t.preview}</span>
             </span>
             {#if t.reminder}<span data-testid="thread-reminder" class="shrink-0 text-xs text-accent" title="Back from a snooze">Reminder</span>{/if}
@@ -109,6 +117,11 @@
           {/if}
           <!-- Quick actions replace the date on hover. -->
           <span data-testid="row-actions" class={["hidden shrink-0 justify-end group-hover:flex", mail.previewing ? "absolute top-1 right-3 rounded-md bg-ink-800" : "w-28"]}>
+            {#if t.draftId !== undefined}
+              <button data-testid="row-trash" title="Discard draft (#)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.actAt(index, "trash"); }}>
+                <Trash2 size={15} />
+              </button>
+            {:else}
             <button data-testid="row-snooze" title="Snooze (H)" class="icon-btn size-7" onclick={(e) => { e.stopPropagation(); mail.selected = index; mail.startSnooze(t); }}>
               <AlarmClock size={15} />
             </button>
@@ -126,6 +139,7 @@
             >
               {#if unread}<MailOpen size={15} />{:else}<Mail size={15} />{/if}
             </button>
+            {/if}
           </span>
         </div>
       {/each}

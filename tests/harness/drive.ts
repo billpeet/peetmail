@@ -135,7 +135,10 @@ async function printState(page: Page) {
 const KEY_ALIASES: Record<string, string> = { esc: "Escape", enter: "Enter", up: "ArrowUp", down: "ArrowDown", space: "Space", tab: "Tab" };
 function normalizeKey(k: string): string {
   if (KEY_ALIASES[k.toLowerCase()]) return KEY_ALIASES[k.toLowerCase()];
-  return k.replace(/^ctrl\+/i, "Control+").replace(/^alt\+/i, "Alt+").replace(/^shift\+/i, "Shift+");
+  // Every modifier, not just the first: "ctrl+shift+b" -> "Control+Shift+b".
+  const MODS: Record<string, string> = { ctrl: "Control", control: "Control", alt: "Alt", shift: "Shift", meta: "Meta" };
+  const parts = k.split("+");
+  return parts.map((p, i) => (i < parts.length - 1 ? (MODS[p.toLowerCase()] ?? p) : p)).join("+");
 }
 
 // ---------- commands ----------

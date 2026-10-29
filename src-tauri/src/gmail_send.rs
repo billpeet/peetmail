@@ -15,7 +15,7 @@ use crate::sanitize;
 use crate::state::AppState;
 
 /// Above this a message goes through the upload endpoint instead of a JSON body.
-const JSON_LIMIT: usize = 4 * 1024 * 1024;
+pub const JSON_LIMIT: usize = 4 * 1024 * 1024;
 
 // ---------- MIME building (pure) ----------
 
@@ -74,6 +74,8 @@ pub struct Outgoing<'a> {
     pub from: String,
     pub to: &'a [String],
     pub cc: &'a [String],
+    /// Gmail delivers to these and takes the header out of what recipients get.
+    pub bcc: &'a [String],
     pub subject: &'a str,
     pub text: String,
     pub html: String,
@@ -120,6 +122,9 @@ pub fn build(m: &Outgoing) -> String {
     }
     if !m.cc.is_empty() {
         head.push(format!("Cc: {}", m.cc.join(", ")));
+    }
+    if !m.bcc.is_empty() {
+        head.push(format!("Bcc: {}", m.bcc.join(", ")));
     }
     head.push(format!("Subject: {}", encode_header(m.subject)));
     if let Some(id) = &m.in_reply_to {
@@ -174,9 +179,9 @@ pub struct Original {
     pub text: String,
 }
 
-/// Your text plus the quoted original, as (plain text, HTML).
-pub fn compose_bodies(kind: DraftKind, typed: &str, original: Option<&Original>) -> (String, String) {
-    let mine_html = sanitize::compose_html(typed);
+/// Your text (`typed`: plain text, `mine_html`: its HTML) plus the quoted original, as
+/// (plain text, HTML).
+pub fn compose_bodies(kind: DraftKind, typed: &str, mine_html: String, original: Option<&Original>) -> (String, String) {
     let Some(o) = original else { return (typed.to_string(), mine_html) };
     match kind {
         DraftKind::Forward => {
@@ -217,7 +222,7 @@ pub fn subject_for(kind: DraftKind, typed: &str, original: &str) -> String {
 
 // ---------- sending ----------
 
-fn header_of<'a>(payload: &'a Value, name: &str) -> Option<&'a str> {
+pub(crate) fn header_of<'a>(payload: &'a Value, name: &str) -> Option<&'a str> {
     payload["headers"]
         .as_array()?
         .iter()
@@ -275,6 +280,16 @@ async fn load_original(state: &AppState, account_id: i64, remote_id: &str, with_
     Ok((original, inline, attachments))
 }
 
+/// The forwarded attachments the user kept, then the files they attached.
+fn with_draft_files(state: &AppState, mut forwarded: Vec<Part>, d: &Draft) -> Result<Vec<Part>> {
+    forwarded.retain(|p| !d.dropped_attachments.contains(&p.filename));
+    for f in &d.attachments {
+        let data = state.db.with(|c| crate::draft_files::for_send(c, f))?;
+        forwarded.push(Part { filename: f.name.clone(), mime: f.mime.clone(), data, content_id: None });
+    }
+    Ok(forwarded)
+}
+
 /// Sends a draft from a Gmail account. `reply_to` is the original's Gmail id for replies
 /// and forwards.
 pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: &Draft) -> Result<Value> {
@@ -294,6 +309,7 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
         }
         (_, None) => return Err(AppError::Graph { status: 400, message: "reply has no original message".into() }),
     };
+    let attachments = with_draft_files(state, attachments, d)?;
 
     let mut to = d.to.clone();
     if to.is_empty() && matches!(d.kind, DraftKind::Reply | DraftKind::ReplyAll)
@@ -301,7 +317,7 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
         to.push(o.from.clone());
     }
     let subject = subject_for(d.kind, &d.subject, original.as_ref().map(|o| o.subject.as_str()).unwrap_or(""));
-    let (text, html) = compose_bodies(d.kind, &d.body, original.as_ref());
+    let (text, html) = compose_bodies(d.kind, &d.body, d.html_body(), original.as_ref());
     let threading = original.as_ref().filter(|_| d.kind != DraftKind::Forward);
     let in_reply_to = threading.and_then(|o| o.message_id.clone());
     let references = threading.and_then(|o| match (&o.references, &o.message_id) {
@@ -309,7 +325,7 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
         (None, Some(id)) => Some(id.clone()),
         _ => None,
     });
-    let raw = build(&Outgoing { from, to: &to, cc: &d.cc, subject: &subject, text, html, in_reply_to, references, inline, attachments });
+    let raw = build(&Outgoing { from, to: &to, cc: &d.cc, bcc: &d.bcc, subject: &subject, text, html, in_reply_to, references, inline, attachments });
     // Replies stay in the original's Gmail thread; forwards start a new one, like Gmail does.
     let thread_id = threading.and_then(|o| o.thread_id.clone());
 
@@ -326,12 +342,18 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
 
 /// Big messages: the upload endpoint, multipart (JSON metadata + the message).
 async fn upload(state: &AppState, account_id: i64, raw: &str, thread_id: Option<&str>) -> Result<Value> {
-    let url = format!("{}/messages/send?uploadType=multipart", base().replacen("/gmail/v1/", "/upload/gmail/v1/", 1));
-    let b = boundary("up");
     let meta = match thread_id {
         Some(t) => json!({ "threadId": t }),
         None => json!({}),
     };
+    upload_to(state, account_id, Method::POST, "/messages/send", &meta, raw).await
+}
+
+/// The upload endpoint's version of `path` (under users/me), multipart: `meta` as JSON plus
+/// the raw message. For messages and drafts too big for a JSON body.
+pub async fn upload_to(state: &AppState, account_id: i64, method: Method, path: &str, meta: &Value, raw: &str) -> Result<Value> {
+    let url = format!("{}{path}?uploadType=multipart", base().replacen("/gmail/v1/", "/upload/gmail/v1/", 1));
+    let b = boundary("up");
     let body = format!(
         "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{b}\r\nContent-Type: message/rfc822\r\n\r\n{raw}\r\n--{b}--\r\n"
     );
@@ -339,7 +361,7 @@ async fn upload(state: &AppState, account_id: i64, raw: &str, thread_id: Option<
         let token = state.access_token(account_id).await?;
         let res = state
             .http
-            .post(&url)
+            .request(method.clone(), &url)
             .bearer_auth(&token)
             .header("Content-Type", format!("multipart/related; boundary={b}"))
             .body(body.clone())
@@ -401,10 +423,10 @@ mod tests {
 
     #[test]
     fn replies_quote_and_forwards_carry_the_original() {
-        let (text, html) = compose_bodies(DraftKind::Reply, "Yes!", Some(&original()));
+        let (text, html) = compose_bodies(DraftKind::Reply, "Yes!", sanitize::compose_html("Yes!"), Some(&original()));
         assert!(text.starts_with("Yes!\r\n\r\nOn Mon, 26 Oct 2026 10:00:00 +1100, Kim Park <kim@x> wrote:\r\n> Keen?\r\n>\r\n> Kim"), "{text}");
         assert!(html.contains("<blockquote") && html.contains("<p>Keen?</p>") && html.contains("Kim Park &lt;kim@x&gt; wrote:"));
-        let (text, html) = compose_bodies(DraftKind::Forward, "FYI", Some(&original()));
+        let (text, html) = compose_bodies(DraftKind::Forward, "FYI", sanitize::compose_html("FYI"), Some(&original()));
         assert!(text.contains("---------- Forwarded message ---------\r\nFrom: Kim Park <kim@x>"));
         assert!(html.contains("Subject: Trip") && html.contains("<p>Keen?</p>"));
     }
@@ -416,6 +438,7 @@ mod tests {
             from: "Boris <b@gmail.com>".into(),
             to: &to,
             cc: &[],
+            bcc: &["hidden@x".to_string()],
             subject: "Re: Café",
             text: "Yes".into(),
             html: "<p>Yes</p>".into(),
@@ -427,6 +450,7 @@ mod tests {
         let (head, body) = raw.split_once("\r\n\r\n").expect("blank line after the headers");
         assert!(head.contains("Subject: =?UTF-8?B?UmU6IENhZsOp?="));
         assert!(head.contains("In-Reply-To: <a@x>\r\nReferences: <z@x> <a@x>"));
+        assert!(head.contains("Bcc: hidden@x\r\n"), "{head}");
         assert!(head.contains("MIME-Version: 1.0\r\nContent-Type: multipart/mixed;"), "{head}");
         assert!(body.contains("Content-Type: multipart/related;") && body.contains("Content-Type: multipart/alternative;"));
         assert!(body.contains("Content-ID: <logo@x>") && body.contains("filename=\"plan.pdf\""));

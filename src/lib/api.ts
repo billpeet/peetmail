@@ -47,6 +47,10 @@ export type ThreadRow = {
   sortAt: string;
   /** Back from a snooze. */
   reminder: boolean;
+  /** A new-message draft shown in the Inbox among the conversations (its local id). */
+  draftId?: number;
+  /** For a draft row: who it's to. */
+  draftTo?: string;
 };
 
 /** A snoozed conversation and when it comes back (UTC). */
@@ -87,20 +91,59 @@ export type SendInput = {
   referenceMessageId: number | null;
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
+  /** The text as plain text. */
   body: string;
+  /** The text as rich text (the composer's HTML). */
+  html: string;
   /** Send later (UTC ISO). Omitted: after the undo delay. */
   sendAt?: string;
+  /** Ids of files from `addDraftFile`. */
+  attachments?: number[];
+  /** Forwards: names of the original's attachments to leave out. */
+  droppedAttachments?: string[];
+  /** The saved draft this is (sending removes it). */
+  draftId?: number | null;
+  /** The conversation it answers (kept with its draft until it has gone). */
+  conversationId?: string | null;
 };
+/** The composer's state as a draft keeps it. */
+export type DraftDoc = {
+  kind: DraftKind;
+  referenceMessageId: number | null;
+  conversationId: string | null;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  html: string;
+  attachments: DraftFile[];
+  droppedAttachments: string[];
+  /** Started in Outlook or Gmail (sent through the server's copy). */
+  imported?: boolean;
+};
+/** A saved draft. */
+export type SavedDraft = { id: number; accountId: number; updatedAt: string; draft: DraftDoc };
+/** A file attached in the composer (its bytes wait in Rust until the message has gone). */
+export type DraftFile = { id: number; name: string; mime: string; size: number };
 export type SendOutcome = { id: number; sendAt: string; scheduled: boolean };
 export type Draft = {
   kind: DraftKind;
   to: string[];
   cc: string[];
+  bcc?: string[];
   subject: string;
   body: string;
+  /** Missing on drafts queued before the rich-text composer: `body` is all there is. */
+  html?: string;
   sendAt?: string;
   referenceMessageId?: number;
+  attachments?: DraftFile[];
+  droppedAttachments?: string[];
+  /** The saved draft it was, back in Drafts if the send is taken back. */
+  draftId?: number;
 };
 /** A send that hasn't gone out yet. */
 export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
@@ -260,6 +303,17 @@ export const api = {
   undo: () => invoke<string | null>("undo"),
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
   sendMessage: (input: SendInput) => invoke<SendOutcome>("send_message", { input }),
+  /** Hands a file's bytes to Rust as the raw request body. */
+  addDraftFile: async (file: File) =>
+    invoke<DraftFile>("add_draft_file", new Uint8Array(await file.arrayBuffer()), {
+      headers: { "x-file-name": encodeURIComponent(file.name), "x-file-type": file.type },
+    }),
+  removeDraftFiles: (ids: number[]) => invoke<void>("remove_draft_files", { ids }),
+  /** Saves (or updates, with its id) a draft. Returns its id. */
+  saveDraft: (id: number | null, accountId: number, draft: DraftDoc) => invoke<number>("save_draft", { id, accountId, draft }),
+  listDrafts: () => invoke<SavedDraft[]>("list_drafts"),
+  /** Discards a draft and its files. */
+  deleteDraft: (id: number) => invoke<void>("delete_draft", { id }),
   cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
@@ -283,6 +337,9 @@ export const api = {
   setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>("set_update_channel", { channel }),
   downloadAttachment: (messageId: number, attachmentId: string, name: string) =>
     invoke<string>("download_attachment", { messageId, attachmentId, name }),
+  /** Opens an attachment in its default app (refused for files that run programs). */
+  openAttachment: (messageId: number, attachmentId: string, name: string) =>
+    invoke<void>("open_attachment", { messageId, attachmentId, name }),
   healthIssues: () => invoke<HealthIssue[]>("health_issues"),
   feedbackOptions: () => invoke<FeedbackOptions>("feedback_options"),
   /** Saves the diagnostics zip to Downloads; returns its path. */
@@ -391,6 +448,9 @@ export type Invite = {
 };
 
 export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => listen("scheduled-changed", () => cb());
+
+/** A sync brought drafts in from Outlook or Gmail (new, changed or deleted there). */
+export const onDraftsChanged = (cb: () => void): Promise<UnlistenFn> => listen("drafts-changed", () => cb());
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 

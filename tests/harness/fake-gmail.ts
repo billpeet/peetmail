@@ -29,6 +29,9 @@ export type FakeGmailMessage = {
   from: string;
   to: string;
   cc?: string;
+  /** Drafts keep their Bcc header. */
+  bcc?: string;
+  inReplyTo?: string;
   subject: string;
   snippet: string;
   html?: string;
@@ -160,6 +163,8 @@ function payloadOf(m: FakeGmailMessage, format: string): Json {
     { name: "From", value: m.from },
     { name: "To", value: m.to },
     ...(m.cc ? [{ name: "Cc", value: m.cc }] : []),
+    ...(m.bcc ? [{ name: "Bcc", value: m.bcc }] : []),
+    ...(m.inReplyTo ? [{ name: "In-Reply-To", value: m.inReplyTo }] : []),
     { name: "Subject", value: m.subject },
     { name: "Date", value: new Date(m.internalDate).toUTCString().replace("GMT", "+0000") },
     { name: "Message-ID", value: `<${m.id}@mail.example>` },
@@ -190,6 +195,22 @@ function payloadOf(m: FakeGmailMessage, format: string): Json {
     return { mimeType: payload.mimeType, headers: headers.filter((h) => ["From", "To", "Cc", "Subject"].includes(h.name)) };
   }
   return payload;
+}
+
+/** A message as the app wrote it (raw RFC 2822), as the fake stores messages. */
+function fromRaw(raw: string, id: string, threadId: string, labelIds: string[]): FakeGmailMessage {
+  const mime = parseMime(raw);
+  const parts = leaves(mime);
+  const decode = (h?: string) => (h ?? "").replace(/=\?UTF-8\?B\?([^?]+)\?=\s*/g, (_, b) => Buffer.from(b, "base64").toString("utf8"));
+  return {
+    id, threadId, labelIds, internalDate: Date.now(),
+    from: mime.headers["from"] ?? GMAIL_ACCOUNT.email, to: mime.headers["to"] ?? "", cc: mime.headers["cc"], bcc: mime.headers["bcc"],
+    inReplyTo: mime.headers["in-reply-to"], references: mime.headers["references"], subject: decode(mime.headers["subject"]), snippet: "",
+    text: parts.find((l) => l.contentType === "text/plain" && !l.filename)?.body.toString("utf8"),
+    html: parts.find((l) => l.contentType === "text/html" && !l.filename)?.body.toString("utf8"),
+    attachments: parts.filter((l) => l.filename).map((l) => ({ filename: decode(l.filename!), mimeType: l.contentType, data: l.body, cid: l.headers["content-id"]?.replace(/[<>]/g, "") })),
+    raw,
+  };
 }
 
 /** `n` filler inbox messages (one per thread), newest after the default mailbox. */
@@ -242,7 +263,20 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
     requests: [] as { method: string; path: string; status: number }[],
     /** Writes the app made (modify, trash, label creation). */
     sent: [] as Json[],
+    /** draft id -> its message id (which changes on every update, like Gmail's). */
+    drafts: new Map<string, string>(),
   };
+  let draftSeq = 0;
+  let draftMessageSeq = 0;
+  /** Stores a draft's message, replacing its previous one. Returns the draft resource. */
+  function putDraft(draftId: string, m: Omit<FakeGmailMessage, "id" | "labelIds"> & Partial<Pick<FakeGmailMessage, "id">>) {
+    const old = state.drafts.get(draftId);
+    if (old) state.messages.delete(old);
+    const id = `g-draft-msg-${++draftMessageSeq}`;
+    state.messages.set(id, { ...m, id, labelIds: ["DRAFT"] });
+    state.drafts.set(draftId, id);
+    return { id: draftId, message: { id, threadId: m.threadId, labelIds: ["DRAFT"] } };
+  }
   for (const m of [...(mailbox ?? defaultGmail()), ...fillerGmail(extra)]) state.messages.set(m.id, m);
   for (const e of defaultGcal()) state.events.set(e.id, e);
   function touchEvent(id: string) {
@@ -336,12 +370,14 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
     }
 
     if (p.startsWith("/calendar/v3/")) return calendar(req, url, reply);
+    const uploadBase = "/upload/gmail/v1/users/me";
+    const upload = p.startsWith(uploadBase + "/");
     const uploadSend = p === "/upload/gmail/v1/users/me/messages/send";
     const base = "/gmail/v1/users/me";
-    if (!p.startsWith(base) && !uploadSend) return reply(404, err(404, "Not found"));
+    if (!p.startsWith(base) && !upload) return reply(404, err(404, "Not found"));
     const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     if (!state.tokens.has(token)) return reply(401, err(401, "Request had invalid authentication credentials."));
-    const rest = uploadSend ? "/messages/send" : p.slice(base.length);
+    const rest = upload ? p.slice(uploadBase.length) : p.slice(base.length);
 
     // Quota, like Google: per-user units over a rolling second and minute.
     const now = Date.now();
@@ -443,6 +479,60 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
       state.sent.push({ kind: "send", id, threadId, upload: uploadSend, raw });
       return reply(200, { id, threadId: msg.threadId, labelIds: msg.labelIds });
     }
+    // ----- drafts -----
+    /** A draft's message from the request: {message: {raw, threadId}} as JSON, or the upload endpoint's multipart. */
+    async function draftBody(): Promise<{ raw: string; threadId?: string }> {
+      if (upload) {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const body = Buffer.concat(chunks).toString("latin1");
+        const boundary = (req.headers["content-type"] ?? "").match(/boundary=([^;]+)/)?.[1] ?? "";
+        const parts = body.split(`--${boundary}`).slice(1, -1).map((s) => s.replace(/^\r\n/, ""));
+        const meta = JSON.parse(parts[0].slice(parts[0].indexOf("\r\n\r\n") + 4).trim() || "{}");
+        return { raw: parts[1].slice(parts[1].indexOf("\r\n\r\n") + 4).replace(/\r\n$/, ""), threadId: meta.message?.threadId ?? undefined };
+      }
+      const b = await readBody(req);
+      return { raw: Buffer.from(b.message?.raw ?? "", "base64url").toString("latin1"), threadId: b.message?.threadId };
+    }
+    if (rest === "/drafts" && method === "GET") {
+      return reply(200, { drafts: [...state.drafts].map(([id, mid]) => ({ id, message: { id: mid, threadId: state.messages.get(mid)?.threadId } })) });
+    }
+    if (rest === "/drafts" && method === "POST") {
+      const { raw, threadId } = await draftBody();
+      const id = `r-${++draftSeq}`;
+      const d = putDraft(id, fromRaw(raw, "", threadId ?? `g-thread-draft-${id}`, []));
+      state.sent.push({ kind: "draft-create", id, threadId, upload, raw });
+      return reply(200, d);
+    }
+    if (rest === "/drafts/send" && method === "POST") {
+      const b = await readBody(req);
+      const mid = state.drafts.get(b.id);
+      const msg = mid && state.messages.get(mid);
+      if (!msg) return reply(404, err(404, "Requested entity was not found."));
+      state.drafts.delete(b.id);
+      msg.labelIds = ["SENT"];
+      log({ messagesAdded: [{ message: { id: msg.id, threadId: msg.threadId, labelIds: msg.labelIds } }] });
+      state.sent.push({ kind: "send", id: msg.id, threadId: msg.threadId, raw: msg.raw, draftId: b.id });
+      return reply(200, { id: msg.id, threadId: msg.threadId, labelIds: msg.labelIds });
+    }
+    if ((m = rest.match(/^\/drafts\/([^/]+)$/))) {
+      const id = m[1];
+      const mid = state.drafts.get(id);
+      if (!mid) return reply(404, err(404, "Requested entity was not found."));
+      if (method === "GET") return reply(200, { id, message: resource(state.messages.get(mid)!, url.searchParams.get("format") ?? "full") });
+      if (method === "PUT") {
+        const { raw, threadId } = await draftBody();
+        const d = putDraft(id, fromRaw(raw, "", threadId ?? state.messages.get(mid)!.threadId, []));
+        state.sent.push({ kind: "draft-update", id, threadId, upload, raw });
+        return reply(200, d);
+      }
+      if (method === "DELETE") {
+        state.messages.delete(mid);
+        state.drafts.delete(id);
+        state.sent.push({ kind: "draft-delete", id });
+        return reply(204, "");
+      }
+    }
     if (rest === "/history") {
       const start = Number(url.searchParams.get("startHistoryId"));
       if (start < state.minHistory) return reply(404, err(404, "Requested entity was not found."));
@@ -538,6 +628,28 @@ export async function startFakeGmail({ mailbox, extra = 0 }: { mailbox?: FakeGma
         state.messages.set(id, msg);
         log({ messagesAdded: [{ message: { id, threadId: msg.threadId, labelIds: msg.labelIds } }] });
         return reply(200, { id });
+      }
+      case "draft": {
+        // A draft written in Gmail.
+        const id = `r-${++draftSeq}`;
+        const d = putDraft(id, {
+          threadId: b.threadId ?? `g-thread-draft-${id}`, internalDate: Date.now(), from: `${GMAIL_ACCOUNT.name} <${GMAIL_ACCOUNT.email}>`,
+          to: b.to ?? "", bcc: b.bcc, subject: b.subject ?? "", snippet: "", html: b.html, text: b.text, inReplyTo: b.inReplyTo,
+          attachments: ((b.attachments ?? []) as { name: string; text: string }[]).map((a) => ({ filename: a.name, mimeType: "text/plain", data: Buffer.from(a.text) })),
+        });
+        return reply(200, d);
+      }
+      case "draft-update": {
+        const mid = state.drafts.get(b.id);
+        const old = mid && state.messages.get(mid);
+        if (!old) return reply(404, { error: "no such draft" });
+        return reply(200, putDraft(b.id, { ...old, ...(b.subject !== undefined ? { subject: b.subject } : {}), ...(b.html !== undefined ? { html: b.html } : {}) }));
+      }
+      case "draft-remove": {
+        const mid = state.drafts.get(b.id);
+        if (mid) state.messages.delete(mid);
+        state.drafts.delete(b.id);
+        return reply(200, { ok: true });
       }
       case "label": {
         const msg = state.messages.get(b.id);

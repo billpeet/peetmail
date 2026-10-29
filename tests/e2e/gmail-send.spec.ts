@@ -45,7 +45,7 @@ test("a new message from the Gmail account is a proper MIME message", async ({ i
   expect(s.mime.headers["subject"]).toMatch(/^=\?UTF-8\?B\?/);
   expect(decodeWord(s.mime.headers["subject"])).toBe("Café on Friday ☕");
   expect(textPart(s.mime, "text/plain")).toBe("Shall we?\n\nB");
-  expect(textPart(s.mime, "text/html")).toContain("<p>Shall we?</p><p>B</p>");
+  expect(textPart(s.mime, "text/html")).toContain("<div>Shall we?</div><div><br></div><div>B</div>");
 });
 
 test("a reply threads in Gmail, quotes the original, and shows up in the conversation", async ({ inbox: page, gmail }, testInfo) => {
@@ -125,4 +125,104 @@ test("big forwards go through Gmail's upload endpoint", async ({ inbox: page, gm
   const big = leaves(s.mime).find((l) => l.filename === "big.bin")!;
   expect(big.body.length).toBe(4_500_000);
   expect(id).toBe("g-new-1");
+});
+
+test("a forward from Gmail leaves out a removed attachment and carries an attached file", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await selectWithKeys(page, "g-thread-photos");
+  await expect(selectedRow(page)).toHaveAttribute("data-conversation-id", "g-thread-photos");
+  await page.keyboard.press("f");
+  const forwarded = page.getByTestId("compose-forwarded");
+  await expect(forwarded).toContainText("plan.pdf");
+  await forwarded.getByTestId("compose-forwarded-remove").click();
+  await page.getByTestId("compose-file-input").setInputFiles([{ name: "Résumé.txt", mimeType: "text/plain", buffer: Buffer.from("my cv") }]);
+  await expect(page.getByTestId("compose-attachment")).toContainText("Résumé.txt");
+  await page.getByTestId("compose-to").fill("lee@friends.example");
+  await page.keyboard.press("Control+Enter");
+
+  const s = await sent(gmail);
+  const files = leaves(s.mime).filter((l) => l.filename);
+  // The inline image stays with the quote; plan.pdf was taken out; the new file is attached.
+  expect(files.map((f) => decodeWord(f.filename!))).toEqual(["pixel@mum", "Résumé.txt"]);
+  expect(files[1].body.toString()).toBe("my cv");
+  expect(files[1].contentType).toMatch(/^text\/plain/);
+});
+
+test("Bcc and formatting from the Gmail account: a Bcc header Gmail removes on delivery, and a plain-text part", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-from").selectOption({ label: `${GMAIL_ACCOUNT.name} <${GMAIL_ACCOUNT.email}>` });
+  await page.getByTestId("compose-to").fill("kim@friends.example");
+  await page.getByTestId("compose-show-bcc").click();
+  await page.getByTestId("compose-bcc").fill("lee@friends.example");
+  await page.getByTestId("compose-subject").fill("Plans");
+  await page.getByTestId("compose-body").click();
+  await page.keyboard.press("Control+B");
+  await page.keyboard.type("Saturday");
+  await page.keyboard.press("Control+B");
+  await page.keyboard.type(" works.");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("1. bring snacks");
+  await page.keyboard.press("Control+Enter");
+
+  const s = await sent(gmail);
+  expect(s.mime.headers["bcc"]).toBe("lee@friends.example");
+  expect(textPart(s.mime, "text/plain")).toBe("Saturday works.\n1. bring snacks");
+  const html = textPart(s.mime, "text/html");
+  expect(html).toContain("<div><strong>Saturday</strong> works.</div><ol><li><div>bring snacks</div></li></ol>");
+});
+
+test("drafts written here go to Gmail, a reply's in its thread", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-from").selectOption({ label: `${GMAIL_ACCOUNT.name} <${GMAIL_ACCOUNT.email}>` });
+  await page.getByTestId("compose-to").fill("kim@friends.example");
+  await page.getByTestId("compose-show-bcc").click();
+  await page.getByTestId("compose-bcc").fill("lee@friends.example");
+  await page.getByTestId("compose-subject").fill("Gmail draft");
+  await page.getByTestId("compose-body").click();
+  await page.keyboard.type("Draft text");
+  await expect.poll(() => gmail.state.drafts.size, { timeout: 10_000 }).toBe(1);
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind.startsWith("draft-")).at(-1)?.raw ?? "", { timeout: 10_000 }).toContain(
+    Buffer.from("Draft text").toString("base64").slice(0, 8),
+  );
+  const created = parseMime(gmail.state.sent.find((s) => s.kind === "draft-create")!.raw);
+  expect(created.headers["bcc"]).toBe("lee@friends.example");
+  expect(created.headers["subject"]).toBe("Gmail draft");
+  await page.keyboard.press("Control+Shift+D");
+  await expect.poll(() => gmail.state.drafts.size, { timeout: 10_000 }).toBe(0);
+
+  await selectWithKeys(page, "g-thread-trip");
+  await page.keyboard.press("r");
+  await expect(page.getByTestId("compose-body")).toBeFocused();
+  await page.keyboard.type("Reply draft");
+  await expect.poll(() => gmail.state.sent.filter((s) => s.kind === "draft-create").length, { timeout: 10_000 }).toBe(2);
+  const reply = gmail.state.sent.filter((s) => s.kind === "draft-create").at(-1)!;
+  expect(reply.threadId).toBe("g-thread-trip");
+  expect(parseMime(reply.raw).headers["in-reply-to"]).toBe("<g-2@mail.example>");
+});
+
+test("a Gmail draft comes in and is sent through Gmail's copy, in its thread", async ({ inbox: page, gmail }) => {
+  await addGmail(page);
+  const { id } = await gmail.control("draft", { subject: "Re: Trip", to: "lee@friends.example", html: "<div>Started on my <b>phone</b></div>", threadId: "g-thread-trip", inReplyTo: "<g-2@mail.example>" });
+  await page.keyboard.press("Control+r");
+  await waitForSyncIdle(page);
+  await page.keyboard.press("g");
+  await page.keyboard.press("d");
+  await expect(page.getByTestId("draft-row")).toContainText("Re: Trip");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("compose-body").locator("b, strong")).toHaveText("phone");
+  await page.getByTestId("compose-body").click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(", sending from PeetMail");
+  await page.keyboard.press("Control+Enter");
+
+  const s = await sent(gmail);
+  expect(gmail.state.sent.at(-1)!.draftId).toBe(id);
+  expect(s.threadId).toBe("g-thread-trip");
+  expect(s.mime.headers["in-reply-to"]).toBe("<g-2@mail.example>");
+  const html = textPart(s.mime, "text/html");
+  expect(html).toContain("Started on my <strong>phone");
+  expect(html).toContain(", sending from PeetMail");
+  expect(gmail.state.drafts.size).toBe(0);
 });

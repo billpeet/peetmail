@@ -2,7 +2,10 @@ import {
   api,
   type Action,
   type Bootstrap,
+  type DraftDoc,
+  type DraftFile,
   type DraftKind,
+  type SavedDraft,
   type Folder,
   type Mailbox,
   type MessageRow,
@@ -17,6 +20,7 @@ import {
   type QueuedSend,
   type SnoozedThread,
 } from "./api";
+import { textToHtml } from "./richtext";
 import type { HelpPage } from "./docs";
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
@@ -35,7 +39,7 @@ const PREVIEW_DWELL_MS = 1500;
 export type View = "list" | "reader" | "calendar";
 export type Overlay = null | "help" | "settings" | "palette" | "event" | "quickadd" | "snooze" | "editevent" | "whatsnew" | "changelog" | "docs";
 /** What the mail list shows: a mailbox, or messages scheduled to send. */
-export type MailView = Mailbox | "scheduled";
+export type MailView = Mailbox | "scheduled" | "drafts";
 
 /** The pages of Settings, in sidebar order. */
 export type SettingsPage = "accounts" | "mail" | "calendar" | "notifications" | "storage" | "updates" | "privacy" | "apps";
@@ -50,9 +54,92 @@ export type ComposerState = {
   conversationId: string | null;
   to: string;
   cc: string;
+  bcc: string;
   subject: string;
+  /** The text as plain text (kept in step with `html` by the composer). */
   body: string;
+  /** The text as the editor's HTML. */
+  html: string;
+  /** Files attached so far. */
+  attachments: DraftFile[];
+  /** Forwards: names of the original's attachments taken out. */
+  droppedAttachments: string[];
+  /** The saved draft it's kept in, once it has been saved. */
+  draftId: number | null;
+  /** A draft started in Outlook or Gmail. */
+  imported?: boolean;
+  /** false: don't take focus when it appears (a draft shown again under its conversation). */
+  focus?: boolean;
 };
+
+/**
+ * Whether a composer holds anything worth keeping as a draft: something you wrote or
+ * attached. A reply's own To and subject are filled in for you, so they don't count.
+ */
+export function worthKeeping(c: ComposerState): boolean {
+  const typed = (s: string) => s.trim().length > 0;
+  if (typed(c.body) || c.attachments.length) return true;
+  if (c.kind === "new") return typed(c.to) || typed(c.cc) || typed(c.bcc) || typed(c.subject);
+  if (c.kind === "forward") return typed(c.to) || typed(c.cc) || typed(c.bcc) || c.droppedAttachments.length > 0;
+  return typed(c.bcc);
+}
+
+/** A new-message draft as a row of the Inbox list. */
+function draftRow(d: SavedDraft): ThreadRow {
+  return {
+    messageId: -d.id,
+    accountId: d.accountId,
+    conversationId: `draft:${d.id}`,
+    subject: d.draft.subject,
+    fromName: null,
+    fromAddress: null,
+    receivedAt: d.updatedAt,
+    preview: d.draft.body.split("\n").find((l) => l.trim()) ?? "",
+    messageCount: 1,
+    unreadCount: 0,
+    isFlagged: false,
+    hasAttachments: d.draft.attachments.length > 0,
+    sortAt: d.updatedAt,
+    reminder: false,
+    draftId: d.id,
+    draftTo: d.draft.to.replace(/[,;\s]+$/, "") || d.draft.bcc.replace(/[,;\s]+$/, ""),
+  };
+}
+
+/**
+ * The Inbox list with new-message drafts among the conversations, newest first, like
+ * Superhuman. Drafts older than the oldest loaded conversation wait until more loads
+ * (`complete`: nothing more to load).
+ */
+export function withDraftRows(rows: ThreadRow[], drafts: SavedDraft[], complete: boolean): ThreadRow[] {
+  const plain = rows.filter((r) => r.draftId === undefined);
+  const oldest = plain.at(-1)?.sortAt;
+  const time = (s: string) => Date.parse(s);
+  const extra = drafts
+    .filter((d) => d.draft.conversationId === null)
+    .map(draftRow)
+    .filter((r) => complete || oldest === undefined || time(r.sortAt) >= time(oldest));
+  return [...plain, ...extra].sort((a, b) => time(b.sortAt) - time(a.sortAt));
+}
+
+/** What each open composer last saved (or opened with), so closing one unchanged doesn't
+ * save over a newer version of its draft from Outlook or Gmail. */
+const lastSaved = new WeakMap<ComposerState, string>();
+
+const draftDoc = (c: ComposerState): DraftDoc => ({
+  kind: c.kind,
+  referenceMessageId: c.referenceMessageId,
+  conversationId: c.conversationId,
+  to: c.to,
+  cc: c.cc,
+  bcc: c.bcc,
+  subject: c.subject,
+  body: c.body,
+  html: c.html,
+  attachments: c.attachments,
+  droppedAttachments: c.droppedAttachments,
+  imported: c.imported,
+});
 
 export type Toast = { text: string; undo?: boolean; error?: boolean };
 
@@ -139,7 +226,35 @@ class MailStore {
   /** Remote images allowed for the open conversation. */
   imagesFor = $state<string | null>(null);
 
-  composer = $state<ComposerState | null>(null);
+  #composer = $state<ComposerState | null>(null);
+  /** The open composer. Closing it, or opening another, keeps what's in it as a draft
+   * (or, when there's nothing worth keeping, throws it away with its files). Sending and
+   * discarding go round this (see `send`, `discardComposer`). */
+  get composer(): ComposerState | null {
+    return this.#composer;
+  }
+  set composer(next: ComposerState | null) {
+    const prev = this.#composer;
+    this.#composer = next;
+    if (prev && prev !== next) this.#putAway(prev, next);
+  }
+  /** Saved drafts, most recently edited first. */
+  drafts = $state.raw<SavedDraft[]>([]);
+  /** Draft saves and deletes, one at a time and in order (a new draft's id must be known
+   * before the next save of it). */
+  #draftOps: Promise<unknown> = Promise.resolve();
+  /** The composer being sent: it mustn't be saved as a draft again meanwhile. */
+  #sending: ComposerState | null = null;
+  /** Files the composer is still handing to Rust: sending waits for them. */
+  pendingFiles = $state(0);
+  /** Focus is inside the composer (set by the composer). */
+  composerFocused = $state(false);
+  /** Bumped to put the cursor in the open composer (r on a conversation whose draft is showing). */
+  composerFocusTick = $state(0);
+  /** Composers that have sat under their conversation: leaving it puts them away. */
+  #wasInline = new WeakSet<ComposerState>();
+  /** The conversation whose draft was closed while it showed: not shown again until it's left. */
+  #dismissed: string | null = null;
   /** Composer snippets (;name). */
   snippets = $state.raw<Snippet[]>([]);
   /** Snoozed conversations, soonest back first. */
@@ -184,11 +299,52 @@ class MailStore {
    * messages it answers. Anything else (new mail, or the conversation isn't showing)
    * opens as a dialog.
    */
+  /**
+   * The composer has the keyboard: a dialog always; one under its conversation only while
+   * focus is in it, so j/k, e and Esc still work in the reader around a draft.
+   */
+  get composerActive(): boolean {
+    return !!this.composer && (!this.composerInline || this.composerFocused);
+  }
+
+  /**
+   * Keeps a reply with its conversation (an effect calls this whenever the screen changes):
+   * leaving the conversation puts its reply away as a draft, rather than popping it out over
+   * everything; coming back shows it under the messages again, without taking focus.
+   */
+  followScreen() {
+    const c = this.#composer;
+    const t = this.current;
+    const showing = !!t && t.draftId === undefined && this.threadFor === t.conversationId && (this.view === "reader" || (this.view === "list" && this.previewing));
+    const here = showing ? `${t!.accountId}:${t!.conversationId}` : null;
+    if (this.#dismissed !== here) this.#dismissed = null;
+    if (c) {
+      if (this.composerInline) this.#wasInline.add(c);
+      else if (this.#wasInline.has(c)) {
+        this.#composer = null;
+        this.composerFocused = false;
+        this.#putAway(c, null, { quiet: true });
+      }
+      return;
+    }
+    if (!showing || this.#dismissed === here) return;
+    const d = this.draftFor(t!.accountId, t!.conversationId);
+    if (!d) return;
+    const shown: ComposerState = { ...d.draft, accountId: d.accountId, draftId: d.id, focus: false };
+    this.#composer = shown;
+    lastSaved.set(this.#composer!, JSON.stringify([shown.accountId, draftDoc(shown)]));
+  }
+
+  /** Puts the cursor in the open composer. */
+  focusComposer() {
+    this.composerFocusTick++;
+  }
+
   get composerInline(): boolean {
     const c = this.composer;
     return (
       !!c &&
-      c.kind !== "new" &&
+      // A reply, a forward, or a draft that answers this conversation (one started in Outlook).
       c.conversationId !== null &&
       c.conversationId === this.threadFor &&
       c.conversationId === this.current?.conversationId &&
@@ -216,20 +372,44 @@ class MailStore {
     if (this.search !== null) return { mailbox: null, query: this.search, split: null };
     // The unified inbox of every signed-in account, by split tab.
     if (this.mailbox === "inbox") return { mailbox: "inbox", query: "", split: this.splitIndex };
-    return { mailbox: this.mailbox === "scheduled" ? null : this.mailbox, query: "", split: null };
+    return { mailbox: this.mailbox === "scheduled" || this.mailbox === "drafts" ? null : this.mailbox, query: "", split: null };
   }
 
   /**
    * Snoozed lists soonest back first, each row with its time; Scheduled holds sends, not
    * conversations. Both load whole, not page by page.
    */
-  get #special(): "snoozed" | "scheduled" | null {
-    return this.search === null && (this.mailbox === "snoozed" || this.mailbox === "scheduled") ? this.mailbox : null;
+  /** The list shows drafts among conversations: the Inbox's own tab, not a split or search. */
+  get #draftRowsHere(): boolean {
+    return this.search === null && this.mailbox === "inbox" && this.splitIndex === 0;
+  }
+
+  #mergeDrafts(rows: ThreadRow[], complete: boolean): ThreadRow[] {
+    if (!this.#draftRowsHere) return rows.filter((r) => r.draftId === undefined);
+    return withDraftRows(rows, this.drafts.filter((d) => !this.hiddenIds.includes(d.accountId)), complete);
+  }
+
+  /** Conversations in the list (not the drafts shown among them). */
+  get conversationCount(): number {
+    return this.threads.filter((t) => t.draftId === undefined).length;
+  }
+
+  /** The draft that answers a conversation (a reply or forward, from here or elsewhere). */
+  draftFor(accountId: number, conversationId: string): SavedDraft | undefined {
+    return this.drafts.find((d) => d.accountId === accountId && d.draft.conversationId === conversationId);
+  }
+
+  get #special(): "snoozed" | "scheduled" | "drafts" | null {
+    return this.search === null && (this.mailbox === "snoozed" || this.mailbox === "scheduled" || this.mailbox === "drafts") ? this.mailbox : null;
   }
 
   async #rows(count: number): Promise<ThreadRow[]> {
     if (this.#special === "scheduled") {
       await this.refreshScheduled();
+      return [];
+    }
+    if (this.#special === "drafts") {
+      await this.refreshDrafts();
       return [];
     }
     if (this.#special === "snoozed") {
@@ -334,7 +514,7 @@ class MailStore {
     const seq = ++this.#listSeq;
     const folderForSplits = null; // split tabs count the unified inbox
     const count = Math.max(PAGE, this.threads.length);
-    const [splits, rows, recent] = await Promise.all([
+    let [splits, rows, recent] = await Promise.all([
       api.listSplits(folderForSplits, this.hiddenIds),
       this.#rows(count),
       api.recentOpens(),
@@ -346,8 +526,9 @@ class MailStore {
     this.recent = recent;
     this.splits = splits;
     if (this.splitIndex >= splits.length) this.splitIndex = 0;
-    this.threads = rows;
     this.#exhausted = this.#special !== null || rows.length < count;
+    rows = this.#mergeDrafts(rows, this.#exhausted);
+    this.threads = rows;
     const idx = keep ? rows.findIndex((t) => t.conversationId === keep) : -1;
     this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, rows.length - 1));
     this.#schedulePrefetch();
@@ -370,7 +551,7 @@ class MailStore {
 
   async loadMore() {
     if (!this.account || this.#exhausted || this.#loadingMore) return;
-    const last = this.threads.at(-1);
+    const last = this.threads.findLast((t) => t.draftId === undefined);
     if (!last) return;
     this.#loadingMore = true;
     const seq = this.#listSeq;
@@ -378,8 +559,8 @@ class MailStore {
       const { mailbox, query, split } = this.listQuery;
       const rows = await api.listThreads(mailbox, query, split, { sortAt: last.sortAt, messageId: last.messageId }, PAGE, this.hiddenIds);
       if (seq !== this.#listSeq) return; // the list was reloaded meanwhile
-      this.threads = [...this.threads, ...rows];
       this.#exhausted = rows.length < PAGE;
+      this.threads = this.#mergeDrafts([...this.threads, ...rows], this.#exhausted);
     } finally {
       this.#loadingMore = false;
     }
@@ -402,6 +583,7 @@ class MailStore {
   async open() {
     const t = this.current;
     if (!t) return;
+    if (t.draftId !== undefined) return this.#openDraftRow(t.draftId);
     const nav = this.#navSeq;
     // Load the thread first (a local query) so the reader never flashes empty or stale.
     const rows = await api.getThread(t.accountId, t.conversationId, this.#withTrash);
@@ -432,7 +614,7 @@ class MailStore {
   async preview() {
     clearTimeout(this.#dwellTimer);
     const t = this.current;
-    if (!t) {
+    if (!t || t.draftId !== undefined) {
       this.thread = [];
       this.threadFor = null;
       this.invite = null;
@@ -550,6 +732,11 @@ class MailStore {
   async act(action: Action, { undoable = true, quiet = false } = {}) {
     const t = this.current;
     if (!t) return;
+    if (t.draftId !== undefined) {
+      if (action === "trash") await this.deleteDraft(t.draftId);
+      else this.showToast({ text: "That's a draft: Enter opens it, # discards it" });
+      return;
+    }
     try {
       const out = await api.threadAction(t.accountId, t.conversationId, action, undoable);
       if (out.label && !quiet) this.showToast({ text: out.label, undo: undoable });
@@ -580,6 +767,7 @@ class MailStore {
   /** Opens the snooze picker for `t` (default: the current conversation). */
   startSnooze(t: ThreadRow | null = this.current) {
     if (!t) return;
+    if (t.draftId !== undefined) return this.showToast({ text: "That's a draft: Enter opens it, # discards it" });
     this.snoozeTarget = t;
     this.overlay = "snooze";
   }
@@ -715,11 +903,111 @@ class MailStore {
     this.#toastTimer = setTimeout(() => (this.toast = null), TOAST_MS);
   }
 
+  // ---------- drafts ----------
+
+  #queueDraftOp<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.#draftOps.then(op, op);
+    this.#draftOps = run.catch(() => {});
+    return run;
+  }
+
+  /** Saves a composer as a draft (or removes its draft once it's empty again). */
+  #saveDraft(c: ComposerState): Promise<void> {
+    return this.#queueDraftOp(async () => {
+      if (this.#sending === c) return;
+      if (!worthKeeping(c)) {
+        if (c.draftId !== null) await api.deleteDraft(c.draftId);
+        c.draftId = null;
+        lastSaved.delete(c);
+        return;
+      }
+      const doc = $state.snapshot(draftDoc(c)) as DraftDoc;
+      const json = JSON.stringify([c.accountId, doc]);
+      if (c.draftId !== null && lastSaved.get(c) === json) return; // nothing new
+      c.draftId = await api.saveDraft(c.draftId, c.accountId, doc);
+      lastSaved.set(c, json);
+    })
+      .then(() => this.refreshDrafts())
+      .catch((e) => this.showToast({ text: `Couldn't save the draft: ${e}`, error: true }));
+  }
+
+  /** Saves the open composer as you type (the composer debounces). */
+  autosave(c: ComposerState) {
+    if (this.#composer === c) this.#saveDraft(c);
+  }
+
+  /** A composer closed or replaced: kept as a draft, or thrown away if it's empty. */
+  #putAway(c: ComposerState, next: ComposerState | null, { quiet = false } = {}) {
+    // Closed while its conversation shows: the draft stays a card there until you leave.
+    if (!quiet && next === null && c.conversationId !== null && this.threadFor === c.conversationId) {
+      this.#dismissed = `${c.accountId}:${c.conversationId}`;
+    }
+    if (worthKeeping(c)) {
+      this.#saveDraft(c);
+      if (!quiet) this.showToast({ text: "Saved to Drafts" });
+      return;
+    }
+    const kept = new Set(next?.attachments.map((f) => f.id));
+    const drop = c.attachments.filter((f) => !kept.has(f.id)).map((f) => f.id);
+    if (drop.length) api.removeDraftFiles(drop).catch(() => {});
+    if (c.draftId !== null) this.#saveDraft(c); // empty now: removes the draft
+  }
+
+  /** Throws away the open composer: its draft and its files. */
+  async discardComposer() {
+    const c = this.#composer;
+    if (!c) return;
+    this.#composer = null;
+    await this.#queueDraftOp(async () => {
+      if (c.draftId !== null) await api.deleteDraft(c.draftId);
+      // Files added since the last save aren't in the draft yet.
+      if (c.attachments.length) await api.removeDraftFiles(c.attachments.map((f) => f.id));
+    }).catch(() => {});
+    this.refreshDrafts();
+    this.showToast({ text: "Draft discarded" });
+  }
+
+  /** Reopens a saved draft in the composer. */
+  openDraft(d: SavedDraft) {
+    if (this.#composer?.draftId === d.id) return;
+    const c: ComposerState = { ...d.draft, accountId: d.accountId, draftId: d.id };
+    this.composer = c;
+    lastSaved.set(this.composer!, JSON.stringify([c.accountId, draftDoc(c)]));
+  }
+
+  /** Discards a saved draft from the Drafts list. */
+  async deleteDraft(id: number) {
+    if (this.#composer?.draftId === id) return this.discardComposer();
+    await this.#queueDraftOp(() => api.deleteDraft(id)).catch((e) => this.showToast({ text: String(e), error: true }));
+    await this.refreshDrafts();
+    this.showToast({ text: "Draft discarded" });
+  }
+
+  async refreshDrafts() {
+    try {
+      this.drafts = await api.listDrafts();
+    } catch {
+      return;
+    }
+    // The Inbox's draft rows follow, the selection staying where it was.
+    if (this.#draftRowsHere || this.threads.some((t) => t.draftId !== undefined)) {
+      const keep = this.current?.conversationId;
+      this.threads = this.#mergeDrafts(this.threads, this.#exhausted);
+      const idx = keep ? this.threads.findIndex((t) => t.conversationId === keep) : -1;
+      this.selected = idx >= 0 ? idx : Math.min(this.selected, Math.max(0, this.threads.length - 1));
+    }
+  }
+
+  #openDraftRow(id: number) {
+    const d = this.drafts.find((x) => x.id === id);
+    if (d) this.openDraft(d);
+  }
+
   // ---------- compose ----------
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", subject: prefill.subject ?? "", body: prefill.body ?? "" };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", bcc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", html: textToHtml(prefill.body ?? ""), attachments: [], droppedAttachments: [], draftId: null };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -728,6 +1016,15 @@ class MailStore {
     // Reply from the account the conversation belongs to.
     const account = this.accountOf(t?.accountId ?? -1);
     if (!t || !account) return;
+    if (t.draftId !== undefined) return this.#openDraftRow(t.draftId);
+    // Already started one here: that's the reply to carry on with, like Superhuman.
+    // Already writing one of these here (r and a share a reply; f a forward): carry on with
+    // it, like Superhuman. Something else starts anew, keeping that one as a draft.
+    const family = (k: DraftKind) => (k === "forward" ? "forward" : "reply");
+    const open = this.#composer;
+    if (open && this.composerInline && family(open.kind) === family(kind)) return this.focusComposer();
+    const existing = this.draftFor(t.accountId, t.conversationId);
+    if (existing && family(existing.draft.kind) === family(kind)) return this.openDraft(existing);
     const msgs = this.threadFor === t.conversationId ? this.thread : await api.getThread(t.accountId, t.conversationId, this.#withTrash);
     // Reply to the newest message someone else sent, if there is one.
     const me = account.email.toLowerCase();
@@ -750,8 +1047,13 @@ class MailStore {
       conversationId: t.conversationId,
       to: to.join(", "),
       cc: cc.join(", "),
+      bcc: "",
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
       body: "",
+      html: "",
+      attachments: [],
+      droppedAttachments: [],
+      draftId: null,
     };
   }
 
@@ -759,19 +1061,33 @@ class MailStore {
   async send(sendAt?: Date) {
     const c = this.composer;
     if (!c) return;
+    // Sent now, it would go without the file still on its way.
+    if (this.pendingFiles > 0) return this.showToast({ text: "Still attaching: send again in a moment", error: true });
     const split = (s: string) => s.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+    this.#sending = c;
     try {
+      // A save still on its way would bring the draft back after the send removed it.
+      await this.#draftOps;
       const out = await api.sendMessage({
         accountId: c.accountId,
         kind: c.kind,
         referenceMessageId: c.referenceMessageId,
         to: split(c.to),
         cc: split(c.cc),
+        bcc: split(c.bcc),
         subject: c.subject,
         body: c.body,
+        html: c.html,
         sendAt: sendAt?.toISOString(),
+        attachments: c.attachments.map((f) => f.id),
+        droppedAttachments: c.kind === "forward" ? c.droppedAttachments : [],
+        draftId: c.draftId,
+        conversationId: c.conversationId,
       });
-      this.composer = null;
+      // Not the setter: the outbox has the files now, and the draft goes with the send. And
+      // only this one: another composer may have opened while the send was on its way.
+      if (this.#composer === c) this.#composer = null;
+      this.refreshDrafts();
       const delayMs = new Date(out.sendAt).getTime() - Date.now();
       // Undo works while the toast is up, and never after the message has gone.
       this.#lastSend = { id: out.id, until: Date.now() + (out.scheduled ? TOAST_MS : Math.max(0, delayMs)) };
@@ -780,6 +1096,8 @@ class MailStore {
       this.refreshScheduled();
     } catch (e) {
       this.showToast({ text: String(e), error: true });
+    } finally {
+      if (this.#sending === c) this.#sending = null;
     }
   }
 
@@ -797,9 +1115,16 @@ class MailStore {
       conversationId: this.thread.some((m) => m.id === d.referenceMessageId) ? this.threadFor : null,
       to: d.to.join(", "),
       cc: d.cc.join(", "),
+      bcc: (d.bcc ?? []).join(", "),
       subject: d.subject,
       body: d.body,
+      html: d.html || textToHtml(d.body),
+      attachments: d.attachments ?? [],
+      droppedAttachments: d.droppedAttachments ?? [],
+      // Back on its draft (out of Drafts while it was being sent).
+      draftId: d.draftId ?? null,
     };
+    this.refreshDrafts();
     return true;
   }
 
@@ -829,7 +1154,7 @@ class MailStore {
       const s = this.selected;
       for (const i of [s, s + 1, s + 2, s + 3, s - 1]) {
         const t = this.threads[i];
-        if (t) prefetchBody(t.messageId);
+        if (t && t.draftId === undefined) prefetchBody(t.messageId);
       }
     }, PREFETCH_DELAY_MS);
   }

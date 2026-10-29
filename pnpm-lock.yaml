@@ -23,6 +23,9 @@ importers:
       '@tiptap/extension-placeholder':
         specifier: ^3.32.0
         version: 3.32.0(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))
+      '@tiptap/pm':
+        specifier: ^3.32.0
+        version: 3.32.0
       '@tiptap/starter-kit':
         specifier: ^3.32.0
         version: 3.32.0

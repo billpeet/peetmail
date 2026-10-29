@@ -6,6 +6,7 @@ use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::actions::{self, Action, ActionOutcome};
+use crate::{draft_files, drafts};
 use crate::db::{self, Account, Contact, Cursor, Folder, Mailbox, MessageRow, RecentOpen, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
@@ -614,11 +615,29 @@ pub struct SendInput {
     #[serde(default)]
     cc: Vec<String>,
     #[serde(default)]
+    bcc: Vec<String>,
+    #[serde(default)]
     subject: String,
+    /// The text as plain text.
     body: String,
+    /// The text as the composer's rich text (HTML).
+    #[serde(default)]
+    html: String,
     /// Send later, at this time (RFC 3339). None: after the undo delay.
     #[serde(default)]
     send_at: Option<String>,
+    /// Ids of files added with `add_draft_file`.
+    #[serde(default)]
+    attachments: Vec<i64>,
+    /// Forwards: names of the original's attachments to leave out.
+    #[serde(default)]
+    dropped_attachments: Vec<String>,
+    /// The saved draft this is, which sending removes.
+    #[serde(default)]
+    draft_id: Option<i64>,
+    /// The conversation it answers, for the draft it's kept as until it has gone.
+    #[serde(default)]
+    conversation_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -653,28 +672,137 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         }
         None => None,
     };
+    let attachments = state.db.with(|c| draft_files::describe(c, &input.attachments))?;
+    let total: i64 = attachments.iter().map(|f| f.size).sum();
+    if total > draft_files::MAX_TOTAL {
+        return Err(AppError::Other(format!(
+            "the attachments add up to {}; the most a message can carry is {}",
+            draft_files::megabytes(total),
+            draft_files::megabytes(draft_files::MAX_TOTAL)
+        )));
+    }
     let draft = Draft {
         kind: input.kind,
         to: clean(input.to),
         cc: clean(input.cc),
+        bcc: clean(input.bcc),
         subject: input.subject,
         body: input.body,
+        html: input.html,
         send_at: when.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         reference_message_id: input.reference_message_id,
+        attachments,
+        dropped_attachments: if input.kind == DraftKind::Forward { input.dropped_attachments } else { vec![] },
+        draft_id: input.draft_id,
     };
-    if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() {
+    if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
     }
-    if let Some(bad) = draft.to.iter().chain(&draft.cc).find(|a| !a.contains('@')) {
+    if let Some(bad) = draft.to.iter().chain(&draft.cc).chain(&draft.bcc).find(|a| !a.contains('@')) {
         return Err(AppError::Other(format!("\"{bad}\" isn't an email address")));
     }
     let delay = state.preferences()?.undo_send_secs;
     let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
-    let id = state.db.with(|c| outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at))?;
+    let mut draft = draft;
+    let id = state.db.with(|conn| {
+        // Kept as a draft until it has gone, out of the Drafts list meanwhile: back there if
+        // the send is taken back or fails for good, removed (with its server copy) once it
+        // has gone. One not saved as a draft yet is saved now. All or nothing: never a hidden
+        // draft without its send.
+        let tx = conn.transaction()?;
+        let c = &tx;
+        let draft_id = match input.draft_id {
+            Some(d) => d,
+            None => {
+                let doc = drafts::DraftDoc {
+                    kind: draft.kind,
+                    reference_message_id: draft.reference_message_id,
+                    conversation_id: input.conversation_id.clone(),
+                    to: draft.to.join(", "),
+                    cc: draft.cc.join(", "),
+                    bcc: draft.bcc.join(", "),
+                    subject: draft.subject.clone(),
+                    body: draft.body.clone(),
+                    html: draft.html.clone(),
+                    attachments: draft.attachments.clone(),
+                    dropped_attachments: draft.dropped_attachments.clone(),
+                    imported: false,
+                };
+                drafts::save(c, None, input.account_id, &doc)?.id
+            }
+        };
+        drafts::set_hidden(c, draft_id, true)?;
+        draft.draft_id = Some(draft_id);
+        let id = outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft.clone()), at)?;
+        tx.commit()?;
+        Ok(id)
+    })?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
     let _ = app.emit(EVENT_SCHEDULED, ());
     Ok(SendOutcome { id, send_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), scheduled: when.is_some() })
+}
+
+/// Takes a file the composer picked, dropped or pasted. The bytes are the raw request body
+/// (no JSON or base64 round trip); the name and type come in `x-file-name` (percent-encoded)
+/// and `x-file-type` headers.
+#[tauri::command]
+pub fn add_draft_file(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<draft_files::DraftFile> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err(AppError::Other("expected the file's bytes".into()));
+    };
+    let header = |n: &str| request.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let name = url::form_urlencoded::parse(format!("n={}", header("x-file-name")).as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default();
+    state.db.with(|c| draft_files::add(c, &name, &header("x-file-type"), data))
+}
+
+/// Saves the composer's message as a draft (as it's typed, and when it's closed). Returns
+/// the draft's id, which later saves pass back.
+#[tauri::command]
+pub fn save_draft(app: AppHandle, state: State<'_, AppState>, id: Option<i64>, account_id: i64, draft: drafts::DraftDoc) -> Result<i64> {
+    let id = state.db.with(|conn| {
+        let tx = conn.transaction()?;
+        let c = &tx;
+        let saved = drafts::save(c, id, account_id, &draft)?;
+        // Up to the server a moment later (one push for a burst of typing).
+        outbox::enqueue_push_draft(c, account_id, saved.id)?;
+        // Moved to another account (From changed): its copy in the old one goes.
+        if let Some((old_account, remote_id)) = saved.moved_from {
+            outbox::enqueue(c, old_account, Some(&remote_id), &Op::DeleteDraft, std::time::Duration::ZERO)?;
+        }
+        tx.commit()?;
+        Ok(saved.id)
+    })?;
+    outbox::kick(&app);
+    Ok(id)
+}
+
+/// Saved drafts, most recently edited first.
+#[tauri::command]
+pub fn list_drafts(state: State<'_, AppState>) -> Result<Vec<drafts::SavedDraft>> {
+    state.db.with(|c| drafts::list(c))
+}
+
+/// Discards a draft and its attached files.
+#[tauri::command]
+pub fn delete_draft(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.db.with(|c| {
+        if let Some((account_id, remote_id)) = drafts::delete(c, id, false)? {
+            outbox::enqueue(c, account_id, Some(&remote_id), &Op::DeleteDraft, std::time::Duration::ZERO)?;
+        }
+        Ok(())
+    })?;
+    outbox::kick(&app);
+    Ok(())
+}
+
+/// Forgets files the composer no longer wants (removed, or the message discarded).
+#[tauri::command]
+pub fn remove_draft_files(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
+    state.db.with(|c| draft_files::remove(c, &ids))
 }
 
 /// Fired when the set of queued sends changes (scheduled list).
@@ -684,7 +812,16 @@ pub const EVENT_SCHEDULED: &str = "scheduled-changed";
 /// Returns the draft so the composer can reopen, or None if it has already gone.
 #[tauri::command]
 pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<Option<outbox::QueuedSend>> {
-    let taken = state.db.with(|c| outbox::take_send(c, id))?;
+    let taken = state.db.with(|conn| {
+        let tx = conn.transaction()?;
+        let taken = outbox::take_send(&tx, id)?;
+        // Its draft is back (the composer reopens on it).
+        if let Some(d) = taken.as_ref().and_then(|q| q.draft.draft_id) {
+            outbox::restore_draft(&tx, d)?;
+        }
+        tx.commit()?;
+        Ok(taken)
+    })?;
     outbox::emit_status(&app, &state);
     let _ = app.emit(EVENT_SCHEDULED, ());
     Ok(taken)
@@ -1028,6 +1165,27 @@ pub async fn download_attachment(
         let _ = app.opener().reveal_item_in_dir(&path);
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Opens an attachment in its default app (double-click), from a copy in PeetMail's temp
+/// folder. Tests (PEETMAIL_OPEN_LOG) get the copy's path logged instead of an app opening.
+#[tauri::command]
+pub async fn open_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    message_id: i64,
+    attachment_id: String,
+    name: String,
+) -> Result<()> {
+    let dir = tauri::Manager::path(&app).temp_dir().map_err(|e| AppError::Other(e.to_string()))?.join("PeetMail").join("attachments");
+    let path = mail::attachment_for_opening(&state, message_id, &attachment_id, &name, &dir).await?;
+    if let Some(log) = crate::testenv::get("PEETMAIL_OPEN_LOG") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
+        writeln!(f, "{}", path.display())?;
+        return Ok(());
+    }
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| AppError::Other(format!("couldn't open {name}: {e}")))
 }
 
 #[cfg(test)]

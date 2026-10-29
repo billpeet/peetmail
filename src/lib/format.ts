@@ -43,3 +43,23 @@ export function recentTime(iso: string, now = new Date()): string {
   const d = new Date(iso);
   return now.getTime() - d.getTime() < 7 * DAY ? weekdayTime.format(d) : weekdayDate.format(d);
 }
+
+/** "68 B", "12 KB", "3.4 MB". */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** The most a message's attached files may add up to (Rust enforces it too: draft_files.rs). */
+export const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Whether files of these sizes still fit beside what's already attached; if not, a sentence
+ * saying why, for a toast.
+ */
+export function attachmentRoom(attached: number[], adding: number[]): string | null {
+  const total = [...attached, ...adding].reduce((a, b) => a + b, 0);
+  if (total <= MAX_ATTACHMENTS_BYTES) return null;
+  return `That would make ${fileSize(total)} of attachments; a message can carry ${fileSize(MAX_ATTACHMENTS_BYTES)} at most.`;
+}

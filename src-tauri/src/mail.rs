@@ -163,6 +163,19 @@ const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sen
 const OPTIONAL_FOLDERS: &[&str] = &["archive"];
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
+    sync_mail_and_calendar(app, state, account).await?;
+    // Drafts problems mustn't fail the sync.
+    match crate::draft_sync::pull(state, account.id).await {
+        Ok(true) => {
+            let _ = app.emit(crate::draft_sync::EVENT_DRAFTS_CHANGED, ());
+        }
+        Ok(false) => {}
+        Err(e) => log::warn!("drafts sync failed for account {}: {e}", account.id),
+    }
+    Ok(())
+}
+
+async fn sync_mail_and_calendar(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
     use crate::telemetry::{attr, traced, Key};
     if account.provider == "google" {
         traced("sync.mail", vec![attr(Key::Provider, "google")], crate::gmail::background(crate::gmail::sync_account(app, state, account.id))).await?;
@@ -534,6 +547,15 @@ pub async fn list_attachments(state: &AppState, message_id: i64) -> Result<Vec<A
         .collect())
 }
 
+async fn attachment_bytes(state: &AppState, message_id: i64, attachment_id: &str) -> Result<Vec<u8>> {
+    let (account_id, remote_id) = remote_of(state, message_id)?;
+    if is_google(state, account_id)? {
+        crate::gmail::attachment(state, account_id, &remote_id, attachment_id).await
+    } else {
+        graph_bytes(state, account_id, &format!("{}/me/messages/{remote_id}/attachments/{attachment_id}/$value", graph::base())).await
+    }
+}
+
 /// Downloads an attachment into `dir` under a free, sanitized file name. Returns the path.
 pub async fn download_attachment(
     state: &AppState,
@@ -542,16 +564,72 @@ pub async fn download_attachment(
     name: &str,
     dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let (account_id, remote_id) = remote_of(state, message_id)?;
-    let bytes = if is_google(state, account_id)? {
-        crate::gmail::attachment(state, account_id, &remote_id, attachment_id).await?
-    } else {
-        graph_bytes(state, account_id, &format!("{}/me/messages/{remote_id}/attachments/{attachment_id}/$value", graph::base())).await?
-    };
+    let bytes = attachment_bytes(state, message_id, attachment_id).await?;
     std::fs::create_dir_all(dir)?;
     let path = unique_path(dir, &safe_file_name(name));
     std::fs::write(&path, bytes)?;
     Ok(path)
+}
+
+/// File types that run code when opened. PeetMail won't open these straight from a
+/// message (a double-click is too easy); they can still be saved and opened deliberately.
+const RISKY_EXTENSIONS: &[&str] = &[
+    "exe", "com", "bat", "cmd", "scr", "pif", "msi", "msp", "msc", "cpl", "dll", "sys", "drv",
+    "js", "jse", "vbs", "vbe", "wsf", "wsh", "wsc", "ps1", "psm1", "psd1", "hta", "lnk", "url",
+    "scf", "reg", "inf", "jar", "chm", "appx", "appxbundle", "msix", "msixbundle", "application",
+    "appref-ms", "gadget", "iso", "img", "vhd", "vhdx", "xll", "library-ms", "settingcontent-ms",
+];
+
+/// The extension, if it's one that runs code.
+pub fn risky_extension(name: &str) -> Option<String> {
+    // Windows ignores trailing dots and spaces, so "evil.exe." still runs.
+    let name = name.trim_end_matches(['.', ' ']);
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    RISKY_EXTENSIONS.contains(&ext.as_str()).then_some(ext)
+}
+
+/// Saves an attachment for opening: `dir/<message id>/<name>`. The same attachment opened
+/// again reuses its file (if it's still open in its app and locked, the copy there is the
+/// same anyway). Marked as downloaded from the internet, so Office opens it in Protected
+/// View and SmartScreen checks it.
+pub async fn attachment_for_opening(
+    state: &AppState,
+    message_id: i64,
+    attachment_id: &str,
+    name: &str,
+    dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    if let Some(ext) = risky_extension(name) {
+        return Err(AppError::Other(format!(
+            "PeetMail doesn't open .{ext} files directly, because they can run programs. Click it to save it to Downloads instead."
+        )));
+    }
+    // A folder per attachment (two can share a name), and an existing copy is opened as it
+    // is: it may be open in its app, with edits not to be overwritten.
+    use sha2::Digest;
+    let key: String = sha2::Sha256::digest(attachment_id.as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let dir = dir.join(message_id.to_string()).join(key);
+    let path = dir.join(safe_file_name(name));
+    if !path.exists() {
+        let bytes = attachment_bytes(state, message_id, attachment_id).await?;
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&path, &bytes)?;
+    }
+    // Without the mark, Office would open it with its macros allowed: don't open it at all.
+    if let Err(e) = mark_from_internet(&path) {
+        log::warn!("couldn't mark an opened attachment as from the internet: {e}");
+        return Err(AppError::Other(format!(
+            "PeetMail couldn't mark {name} as downloaded from the internet, so it won't open it directly. Click it to save it to Downloads instead."
+        )));
+    }
+    Ok(path)
+}
+
+/// The Mark of the Web: a Zone.Identifier stream saying the file came from the internet.
+fn mark_from_internet(path: &std::path::Path) -> std::io::Result<()> {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
 }
 
 fn safe_file_name(name: &str) -> String {
@@ -583,6 +661,18 @@ mod tests {
     fn file_names_are_made_safe() {
         assert_eq!(safe_file_name(r#"..\..\evil:name?.exe"#), "_.._evil_name_.exe");
         assert_eq!(safe_file_name("   "), "attachment");
+    }
+
+    #[test]
+    fn programs_are_never_opened_directly() {
+        assert_eq!(risky_extension("setup.EXE").as_deref(), Some("exe"));
+        assert_eq!(risky_extension("invoice.pdf.js").as_deref(), Some("js"));
+        assert_eq!(risky_extension("evil.exe. . ").as_deref(), Some("exe"), "Windows drops trailing dots and spaces");
+        assert_eq!(risky_extension("Shortcut.lnk").as_deref(), Some("lnk"));
+        assert_eq!(risky_extension("disk.iso").as_deref(), Some("iso"));
+        assert_eq!(risky_extension("Q4 plan.pdf"), None);
+        assert_eq!(risky_extension("Budget.xlsx"), None);
+        assert_eq!(risky_extension("README"), None);
     }
 
     #[test]

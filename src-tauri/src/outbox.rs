@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::error::{AppError, Result};
 use crate::graph::{self, PREFER_IMMUTABLE};
 use crate::state::AppState;
+use crate::draft_files::DraftFile;
 use crate::{mail, sanitize};
 
 /// Triage ops wait this long before going out, so a quick undo never touches the server.
@@ -40,6 +41,49 @@ pub enum Op {
     /// Delete an event. `cancel`: you organise it and it has guests, so tell them
     /// (Graph's cancel with an optional message; Google sendUpdates=all).
     DeleteEvent { cancel: bool, comment: Option<String> },
+    /// Puts a draft's latest content on the server (`draft`: its local id). Read when the op
+    /// runs, so one queued push covers every edit made while it waits.
+    PushDraft { draft: i64 },
+    /// Deletes a draft on the server (remote_id: its server id).
+    DeleteDraft,
+}
+
+/// How long a draft's push waits, so a burst of typing goes up as one.
+pub const PUSH_DRAFT_DELAY: Duration = Duration::from_secs(3);
+
+/// Queues a push of a draft unless one is already waiting (it will read the latest content).
+pub fn enqueue_push_draft(conn: &Connection, account_id: i64, draft: i64) -> Result<()> {
+    let waiting: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE status = 'pending' AND json_extract(op, '$.type') = 'pushDraft'
+           AND json_extract(op, '$.draft') = ?1)",
+        [draft],
+        |r| r.get(0),
+    )?;
+    if !waiting {
+        enqueue(conn, account_id, None, &Op::PushDraft { draft }, PUSH_DRAFT_DELAY)?;
+    }
+    Ok(())
+}
+
+/// A draft back in Drafts (its send taken back, or failed for good): if it has changes the
+/// server doesn't (its push was skipped while it was being sent), they go up.
+pub fn restore_draft(conn: &Connection, id: i64) -> Result<()> {
+    crate::drafts::set_hidden(conn, id, false)?;
+    if let Some(row) = crate::drafts::get(conn, id)?
+        && row.dirty {
+        enqueue_push_draft(conn, row.account_id, id)?;
+    }
+    Ok(())
+}
+
+/// Server drafts with a delete still to go out: a pull mustn't bring them back meanwhile.
+pub fn drafts_being_deleted(conn: &Connection, account_id: i64) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT remote_id FROM outbox WHERE account_id = ?1 AND status IN ('pending', 'inflight')
+           AND json_extract(op, '$.type') = 'deleteDraft' AND remote_id IS NOT NULL",
+    )?;
+    let ids = stmt.query_map([account_id], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,16 +130,17 @@ impl Rsvp {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum DraftKind {
+    #[default]
     New,
     Reply,
     ReplyAll,
     Forward,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
     pub kind: DraftKind,
@@ -103,10 +148,16 @@ pub struct Draft {
     pub to: Vec<String>,
     #[serde(default)]
     pub cc: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bcc: Vec<String>,
     #[serde(default)]
     pub subject: String,
-    /// Plain text as typed; converted to HTML when sent.
+    /// The text as plain text (the text/plain part, and the whole message when there's no
+    /// `html`, as in drafts queued before the rich-text composer).
     pub body: String,
+    /// The composer's rich text (sanitized when sent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub html: String,
     /// When the user scheduled it (UTC RFC 3339). None: sent after the undo delay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_at: Option<String>,
@@ -114,6 +165,28 @@ pub struct Draft {
     /// the composer as it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_message_id: Option<i64>,
+    /// Files attached in the composer; their bytes are in `draft_files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<DraftFile>,
+    /// Forwards: names of the original's attachments to leave out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_attachments: Vec<String>,
+    /// The saved draft this was (hidden while it's sent; removed, with its server copy,
+    /// once it has gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_id: Option<i64>,
+}
+
+impl Draft {
+    /// The message's own HTML (without any quoted original).
+    pub fn html_body(&self) -> String {
+        if self.html.trim().is_empty() { sanitize::compose_html(&self.body) } else { sanitize::compose_rich(&self.html) }
+    }
+
+    /// Needs more than a single Graph call: files to add, or forwarded ones to take out.
+    pub fn has_file_changes(&self) -> bool {
+        !self.attachments.is_empty() || (self.kind == DraftKind::Forward && !self.dropped_attachments.is_empty())
+    }
 }
 
 /// A send waiting in the outbox (undo window or scheduled).
@@ -249,7 +322,7 @@ pub fn status(conn: &Connection) -> Result<OutboxStatus> {
         // Sends still waiting for their time (undo delay, scheduled) aren't "changes
         // waiting to sync"; they have their own UI.
         "SELECT COUNT(*) FILTER (WHERE status = 'inflight' OR (status = 'pending' AND NOT (
-                    json_extract(op, '$.type') = 'send' AND attempts = 0
+                    json_extract(op, '$.type') IN ('send', 'pushDraft') AND attempts = 0
                     AND not_before > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))),
                 COUNT(*) FILTER (WHERE status = 'failed'),
                 (SELECT last_error FROM outbox WHERE status = 'failed' ORDER BY id DESC LIMIT 1)
@@ -341,6 +414,21 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
         let calendar_op = matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. } | Op::DeleteEvent { .. });
         let calendar_touched = calendar_op && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
         state.db.with(|c| {
+            let finished = result.is_ok() || result.as_ref().is_err_and(|e| is_permanent(e) || row.attempts + 1 >= MAX_ATTEMPTS);
+            if let (Op::Send(d), true) = (&row.op, finished) {
+                // Failed for good: back in Drafts, files and all, to fix and send again.
+                let back_to_drafts = result.is_err() && d.draft_id.map(|id| crate::drafts::get(c, id)).transpose()?.flatten().is_some();
+                if back_to_drafts {
+                    restore_draft(c, d.draft_id.unwrap_or_default())?;
+                } else {
+                    // A send's files are done with once it has gone.
+                    let ids: Vec<i64> = d.attachments.iter().map(|f| f.id).collect();
+                    crate::draft_files::remove(c, &ids)?;
+                    if let Some(id) = d.draft_id {
+                        crate::drafts::delete(c, id, true)?;
+                    }
+                }
+            }
             match &result {
                 Ok(response) => {
                     if let (Op::CreateEvent(_), Some(local)) = (&row.op, row.remote_id.as_deref()) {
@@ -433,6 +521,8 @@ impl Op {
             Op::CreateEvent(_) => "create_event",
             Op::UpdateEvent { .. } => "update_event",
             Op::DeleteEvent { .. } => "delete_event",
+            Op::PushDraft { .. } => "push_draft",
+            Op::DeleteDraft => "delete_draft",
         }
     }
 }
@@ -445,6 +535,31 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
 }
 
 async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
+    match &row.op {
+        Op::PushDraft { draft } => return crate::draft_sync::push(state, *draft).await.map(|_| Value::Null),
+        Op::DeleteDraft => {
+            let rid = row.remote_id.as_deref().ok_or_else(|| AppError::Other("op has no draft".into()))?;
+            return crate::draft_sync::delete_remote(state, row.account_id, rid).await.map(|_| Value::Null);
+        }
+        // A draft started elsewhere goes through the server's copy, keeping its threading.
+        Op::Send(d) if crate::draft_sync::server_copy_to_send(state, d)?.is_some() => {
+            return crate::draft_sync::send_server_copy(state, row.account_id, d).await;
+        }
+        _ => {}
+    }
+    let sent = execute_mail_op(state, row).await?;
+    // A draft that was sent the usual way leaves the server's Drafts too.
+    if let Op::Send(d) = &row.op
+        && let Some(rid) = crate::draft_sync::remote_of(state, d)?
+        && let Err(e) = crate::draft_sync::delete_remote(state, row.account_id, &rid).await {
+        // Tried again later; meanwhile a pull leaves it alone rather than bringing it back.
+        log::warn!("sent, but couldn't delete the server's draft yet: {e}");
+        state.db.with(|c| enqueue(c, row.account_id, Some(&rid), &Op::DeleteDraft, Duration::from_secs(30)))?;
+    }
+    Ok(sent)
+}
+
+async fn execute_mail_op(state: &AppState, row: &Row) -> Result<Value> {
     if state.db.with(|c| crate::db::account_provider(c, row.account_id))? == "google" {
         return crate::gmail::execute(state, row.account_id, row.remote_id.as_deref(), &row.op).await;
     }
@@ -466,6 +581,7 @@ async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
             };
             (Method::POST, format!("{}/move", msg_url(rid()?)), json!({ "destinationId": destination }))
         }
+        Op::Send(d) if d.has_file_changes() => return crate::graph_send::send(state, row.account_id, row.remote_id.as_deref(), d).await,
         Op::Send(d) => send_request(base, row.remote_id.as_deref(), d)?,
         Op::Respond { response } => (
             Method::POST,
@@ -480,6 +596,7 @@ async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
             json!({ "Comment": comment.clone().unwrap_or_default() }),
         ),
         Op::DeleteEvent { cancel: false, .. } => (Method::DELETE, format!("{base}/me/events/{}", rid()?), Value::Null),
+        Op::PushDraft { .. } | Op::DeleteDraft => return Err(AppError::Other("draft ops are handled by draft_sync".into())),
     };
     let prefer: &[&str] = if matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. }) {
         &[PREFER_IMMUTABLE, r#"outlook.timezone="UTC""#]
@@ -559,8 +676,8 @@ fn recipients(list: &[String]) -> Value {
 
 /// Graph request for a draft. Replies and forwards use the dedicated actions so Graph
 /// threads them and quotes the original.
-fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method, String, Value)> {
-    let html = sanitize::compose_html(&d.body);
+pub fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method, String, Value)> {
+    let html = d.html_body();
     let target = || reply_to.ok_or_else(|| AppError::Other("reply has no original message".into()));
     Ok(match d.kind {
         DraftKind::New => (
@@ -572,6 +689,7 @@ fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method
                     "body": { "contentType": "HTML", "content": html },
                     "toRecipients": recipients(&d.to),
                     "ccRecipients": recipients(&d.cc),
+                    "bccRecipients": recipients(&d.bcc),
                 },
                 "saveToSentItems": true,
             }),
@@ -579,15 +697,18 @@ fn send_request(base: &str, reply_to: Option<&str>, d: &Draft) -> Result<(Method
         DraftKind::Reply | DraftKind::ReplyAll => {
             let action = if d.kind == DraftKind::Reply { "reply" } else { "replyAll" };
             let mut body = json!({ "comment": html });
-            if !d.to.is_empty() || !d.cc.is_empty() {
-                body["message"] = json!({ "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc) });
+            if !d.to.is_empty() || !d.cc.is_empty() || !d.bcc.is_empty() {
+                body["message"] = json!({ "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc), "bccRecipients": recipients(&d.bcc) });
             }
             (Method::POST, format!("{base}/me/messages/{}/{action}", target()?), body)
         }
         DraftKind::Forward => (
             Method::POST,
             format!("{base}/me/messages/{}/forward", target()?),
-            json!({ "comment": html, "toRecipients": recipients(&d.to) }),
+            json!({
+                "comment": html,
+                "message": { "toRecipients": recipients(&d.to), "ccRecipients": recipients(&d.cc), "bccRecipients": recipients(&d.bcc) },
+            }),
         ),
     })
 }
@@ -599,7 +720,7 @@ mod tests {
 
     #[test]
     fn op_json_round_trips() {
-        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into(), send_at: None, reference_message_id: Some(7) });
+        let op = Op::Send(Draft { kind: DraftKind::ReplyAll, to: vec![], cc: vec!["a@b.c".into()], subject: String::new(), body: "hi".into(), send_at: None, reference_message_id: Some(7), ..Default::default() });
         let s = serde_json::to_string(&op).unwrap();
         assert!(s.contains(r#""type":"send""#));
         assert!(s.contains(r#""kind":"replyAll""#));
@@ -643,7 +764,7 @@ mod tests {
             assert!(take_due(c)?.is_none(), "the unflag waits for the flag");
             let wait = next_due_in(c)?.expect("the flag is still pending");
             assert!(wait > Duration::from_secs(50), "the drain naps until the flag's backoff, not on the held-back unflag: {wait:?}");
-            let reply_now = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            let reply_now = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None, ..Default::default() };
             let reply_now = enqueue(c, a, Some("m1"), &Op::Send(reply_now), Duration::ZERO)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(reply_now), "a reply isn't held back by a flag on its message");
             c.execute("DELETE FROM outbox WHERE id = ?1", [reply_now])?;
@@ -654,7 +775,7 @@ mod tests {
             assert_eq!(take_due(c)?.map(|r| r.id), Some(unflag));
             c.execute("DELETE FROM outbox WHERE id = ?1", [unflag])?;
 
-            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None };
+            let reply = Draft { kind: DraftKind::Reply, to: vec!["p@x.com".into()], cc: vec![], subject: "Re".into(), body: "b".into(), send_at: None, reference_message_id: None, ..Default::default() };
             enqueue_at(c, a, Some("m3"), &Op::Send(reply), chrono::Utc::now() + chrono::Duration::days(1))?;
             let archive = enqueue(c, a, Some("m3"), &Op::Move { destination: "archive".into() }, Duration::ZERO)?;
             assert_eq!(take_due(c)?.map(|r| r.id), Some(archive), "a reply scheduled for tomorrow doesn't hold up archiving its message");
@@ -701,7 +822,7 @@ mod tests {
             let a = db::upsert_account(c, "microsoft", "b@x.com", None, b"t")?.id;
             let draft = |send_at: Option<&str>| Draft {
                 kind: DraftKind::New, to: vec!["p@x.com".into()], cc: vec![], subject: "Hi".into(), body: "b".into(),
-                send_at: send_at.map(String::from), reference_message_id: None,
+                send_at: send_at.map(String::from), ..Default::default()
             };
             let later = chrono::Utc::now() + chrono::Duration::hours(20);
             let undo_window = enqueue(c, a, None, &Op::Send(draft(None)), Duration::from_secs(10))?;
@@ -758,12 +879,24 @@ mod tests {
 
     #[test]
     fn builds_send_requests() {
-        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into(), send_at: None, reference_message_id: None };
+        let d = Draft { kind: DraftKind::Forward, to: vec!["sam@x.com".into()], cc: vec![], subject: String::new(), body: "fyi <b>".into(), send_at: None, reference_message_id: None, ..Default::default() };
         let (m, url, body) = send_request("https://g", Some("R1"), &d).unwrap();
         assert_eq!(m, Method::POST);
         assert_eq!(url, "https://g/me/messages/R1/forward");
-        assert_eq!(body["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
+        assert_eq!(body["message"]["toRecipients"][0]["emailAddress"]["address"], "sam@x.com");
         assert!(body["comment"].as_str().unwrap().contains("fyi &lt;b&gt;"));
+        // Cc and Bcc go with every kind of message.
+        let d = Draft { cc: vec!["c@x.com".into()], bcc: vec!["hidden@x.com".into()], ..d };
+        let (_, _, body) = send_request("https://g", Some("R1"), &d).unwrap();
+        assert_eq!(body["message"]["ccRecipients"][0]["emailAddress"]["address"], "c@x.com");
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        let (_, _, body) = send_request("https://g", None, &Draft { kind: DraftKind::New, ..d.clone() }).unwrap();
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        let (_, _, body) = send_request("https://g", Some("R1"), &Draft { kind: DraftKind::Reply, to: vec![], cc: vec![], ..d.clone() }).unwrap();
+        assert_eq!(body["message"]["bccRecipients"][0]["emailAddress"]["address"], "hidden@x.com");
+        // Rich text is sent as written (sanitized); without it, the plain text is converted.
+        let (_, _, body) = send_request("https://g", None, &Draft { kind: DraftKind::New, html: "<p><strong>Hi</strong></p>".into(), ..d.clone() }).unwrap();
+        assert!(body["message"]["body"]["content"].as_str().unwrap().contains("<div><strong>Hi</strong></div>"));
         assert!(send_request("https://g", None, &Draft { kind: DraftKind::Reply, ..d }).is_err());
     }
 }

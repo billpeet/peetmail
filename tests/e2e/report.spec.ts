@@ -112,7 +112,7 @@ test.describe("with a feedback address", () => {
     await expect(page.getByTestId("help")).toHaveCount(0);
     await expect(page.getByTestId("compose-to")).toHaveValue("dev@peetsoftware.test");
     await expect(page.getByTestId("compose-subject")).toHaveValue("PeetMail feedback");
-    await expect(page.getByTestId("compose-body")).toHaveValue(/PeetMail \d+\.\d+\.\d+, install ID [0-9a-f]{32}/);
+    await expect(page.getByTestId("compose-body")).toHaveAttribute("data-text", /PeetMail \d+\.\d+\.\d+, install ID [0-9a-f]{32}/);
   });
 });
 

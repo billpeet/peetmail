@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { count, listDate, recentGroup, recentTime, senderName } from "./format";
+import { attachmentRoom, count, fileSize, listDate, recentGroup, recentTime, senderName } from "./format";
 
 describe("listDate", () => {
   const now = new Date("2026-10-23T15:00:00");
@@ -42,5 +42,23 @@ describe("recent opens labels", () => {
   it("shows weekday and time within a week, weekday and date before that", () => {
     expect(recentTime(new Date("2026-10-23T19:45:00").toISOString(), now)).toMatch(/Fri.*7:45/);
     expect(recentTime(new Date("2026-10-15T19:45:00").toISOString(), now)).toMatch(/Thu.*15.*Oct|Thu.*Oct.*15/);
+  });
+});
+
+describe("fileSize", () => {
+  it("picks a unit that reads well", () => {
+    expect(fileSize(68)).toBe("68 B");
+    expect(fileSize(12 * 1024 + 300)).toBe("12 KB");
+    expect(fileSize(3.44 * 1024 * 1024)).toBe("3.4 MB");
+  });
+});
+
+describe("attachmentRoom", () => {
+  const MB = 1024 * 1024;
+  it("allows files up to 25 MB in all", () => {
+    expect(attachmentRoom([10 * MB], [15 * MB])).toBeNull();
+  });
+  it("says how big it would get when it's too much", () => {
+    expect(attachmentRoom([10 * MB], [10 * MB, 6 * MB])).toBe("That would make 26.0 MB of attachments; a message can carry 25.0 MB at most.");
   });
 });

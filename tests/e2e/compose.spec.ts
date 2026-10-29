@@ -22,7 +22,7 @@ test("c composes a new message with contact suggestions and Ctrl+Enter sends it"
   const sent = sentOfKind(fake, "new")[0];
   expect(sent.subject).toBe("Lunch?");
   expect(sent.to).toEqual([{ emailAddress: { address: "priya@fabrikam.io" } }]);
-  expect(sent.html).toContain("<p>Thai on Friday?</p><p>B</p>");
+  expect(sent.html).toContain("<div>Thai on Friday?</div><div><br></div><div>B</div>");
 });
 
 test("r replies to the open conversation and the reply shows up in the thread", async ({ inbox: page, fake }) => {
@@ -102,7 +102,7 @@ test("f forwards to the address you type", async ({ inbox: page, fake }) => {
   expect(sentOfKind(fake, "forward")[0].to).toEqual([{ emailAddress: { address: "hannah@northwind.dev" } }]);
 });
 
-test("Esc closes an empty composer, and needs a second press once there's text", async ({ inbox: page }) => {
+test("Esc closes the composer at once; what's typed is kept as a draft", async ({ inbox: page }) => {
   await page.keyboard.press("c");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
@@ -110,9 +110,8 @@ test("Esc closes an empty composer, and needs a second press once there's text",
   await page.keyboard.press("c");
   await page.getByTestId("compose-body").fill("half a thought");
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("compose-hint")).toHaveText("Press Esc again to discard");
-  await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
+  await expect(page.getByTestId("toast")).toContainText("Saved to Drafts");
 });
 
 test("sending without a recipient explains why", async ({ inbox: page }) => {
@@ -132,4 +131,15 @@ test("Ctrl+Enter sends even while address suggestions are showing", async ({ inb
   await expect(page.getByTestId("composer")).toHaveCount(0);
   await expect.poll(() => sentOfKind(fake, "new").length, { timeout: 10_000 }).toBe(1);
   expect(sentOfKind(fake, "new")[0].to).toEqual([{ emailAddress: { address: "priya@fabrikam.io" } }]);
+});
+
+test("Esc in an address field closes its suggestions first, then the composer", async ({ inbox: page }) => {
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-to").pressSequentially("priya");
+  await expect(page.getByTestId("contact-suggestions")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("contact-suggestions")).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("composer")).toHaveCount(0);
 });
