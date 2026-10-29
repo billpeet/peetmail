@@ -704,10 +704,13 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
     let delay = state.preferences()?.undo_send_secs;
     let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
     let mut draft = draft;
-    let id = state.db.with(|c| {
+    let id = state.db.with(|conn| {
         // Kept as a draft until it has gone, out of the Drafts list meanwhile: back there if
         // the send is taken back or fails for good, removed (with its server copy) once it
-        // has gone. One not saved as a draft yet is saved now, in the same transaction.
+        // has gone. One not saved as a draft yet is saved now. All or nothing: never a hidden
+        // draft without its send.
+        let tx = conn.transaction()?;
+        let c = &tx;
         let draft_id = match input.draft_id {
             Some(d) => d,
             None => {
@@ -730,7 +733,9 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         };
         drafts::set_hidden(c, draft_id, true)?;
         draft.draft_id = Some(draft_id);
-        outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft.clone()), at)
+        let id = outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft.clone()), at)?;
+        tx.commit()?;
+        Ok(id)
     })?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
@@ -758,7 +763,9 @@ pub fn add_draft_file(state: State<'_, AppState>, request: tauri::ipc::Request<'
 /// the draft's id, which later saves pass back.
 #[tauri::command]
 pub fn save_draft(app: AppHandle, state: State<'_, AppState>, id: Option<i64>, account_id: i64, draft: drafts::DraftDoc) -> Result<i64> {
-    let id = state.db.with(|c| {
+    let id = state.db.with(|conn| {
+        let tx = conn.transaction()?;
+        let c = &tx;
         let saved = drafts::save(c, id, account_id, &draft)?;
         // Up to the server a moment later (one push for a burst of typing).
         outbox::enqueue_push_draft(c, account_id, saved.id)?;
@@ -766,6 +773,7 @@ pub fn save_draft(app: AppHandle, state: State<'_, AppState>, id: Option<i64>, a
         if let Some((old_account, remote_id)) = saved.moved_from {
             outbox::enqueue(c, old_account, Some(&remote_id), &Op::DeleteDraft, std::time::Duration::ZERO)?;
         }
+        tx.commit()?;
         Ok(saved.id)
     })?;
     outbox::kick(&app);
@@ -804,12 +812,14 @@ pub const EVENT_SCHEDULED: &str = "scheduled-changed";
 /// Returns the draft so the composer can reopen, or None if it has already gone.
 #[tauri::command]
 pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<Option<outbox::QueuedSend>> {
-    let taken = state.db.with(|c| {
-        let taken = outbox::take_send(c, id)?;
+    let taken = state.db.with(|conn| {
+        let tx = conn.transaction()?;
+        let taken = outbox::take_send(&tx, id)?;
         // Its draft is back (the composer reopens on it).
         if let Some(d) = taken.as_ref().and_then(|q| q.draft.draft_id) {
-            outbox::restore_draft(c, d)?;
+            outbox::restore_draft(&tx, d)?;
         }
+        tx.commit()?;
         Ok(taken)
     })?;
     outbox::emit_status(&app, &state);
