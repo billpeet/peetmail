@@ -12,6 +12,7 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- **Esc** in an address field closes the contact suggestions; press it again to close the message.
 - Drafts: what you write is saved as you type, and kept in step with your drafts in Outlook and Gmail (the last change wins). **Esc** closes a message and keeps it as a draft, and so does starting another one; nothing is lost if PeetMail closes unexpectedly. New drafts show at the top of your Inbox. A reply stays with its conversation: move to another one mid-reply and it waits there, under the messages, for when you come back (**r** carries on with it). **g d** lists every draft; **Ctrl+Shift+D** throws one away.
 - Pressing **f** (or Reply all) while writing a reply now switches to the new message instead of leaving the reply on screen.
 - Format your messages: bold, italic, underline, lists, quotes and links, with **Ctrl+B**, **Ctrl+I**, **Ctrl+U**, **Ctrl+K** (in the text), the buttons at the bottom of the message, or Markdown as you type (a dash and a space starts a list, for one). Formatting pasted from documents and web pages is kept.

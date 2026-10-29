@@ -449,6 +449,8 @@
     if (e.key === "ArrowDown") active = (active + 1) % suggestions.length;
     else if (e.key === "ArrowUp") active = (active - 1 + suggestions.length) % suggestions.length;
     else if (e.key === "Enter" || e.key === "Tab") accept(which, suggestions[active]);
+    // Esc closes the list first (the next Esc closes the composer).
+    else if (e.key === "Escape") closeSuggestions();
     else return;
     e.preventDefault();
   }

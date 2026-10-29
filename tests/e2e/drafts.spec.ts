@@ -96,6 +96,7 @@ test("starting another message keeps the one you were writing", async ({ inbox: 
   await expect(page.getByTestId("compose-subject")).toHaveValue("FW: Weekend plans");
   await expect(page.getByTestId("toast")).toContainText("Saved to Drafts");
   await page.getByTestId("compose-to").fill("sam.carter@contoso.com");
+  await page.getByTestId("compose-body").click();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
   await page.keyboard.press("Escape");

@@ -132,3 +132,14 @@ test("Ctrl+Enter sends even while address suggestions are showing", async ({ inb
   await expect.poll(() => sentOfKind(fake, "new").length, { timeout: 10_000 }).toBe(1);
   expect(sentOfKind(fake, "new")[0].to).toEqual([{ emailAddress: { address: "priya@fabrikam.io" } }]);
 });
+
+test("Esc in an address field closes its suggestions first, then the composer", async ({ inbox: page }) => {
+  await page.keyboard.press("c");
+  await page.getByTestId("compose-to").pressSequentially("priya");
+  await expect(page.getByTestId("contact-suggestions")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("contact-suggestions")).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("composer")).toHaveCount(0);
+});
