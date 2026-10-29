@@ -976,6 +976,56 @@ pub fn set_snippets(state: State<'_, AppState>, snippets: Vec<Snippet>) -> Resul
     Ok(clean)
 }
 
+// ---------- signatures ----------
+
+const KEY_SIGNATURES: &str = "signatures";
+
+/// An account's signature. Keyed by address rather than account id, so it survives signing
+/// out and adding the account again (ids can be reused), and so send-as addresses can have
+/// their own later.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Signature {
+    pub address: String,
+    /// Sanitized HTML.
+    pub html: String,
+    /// Also added to replies and forwards (always added to new messages).
+    #[serde(default)]
+    pub replies: bool,
+    /// The organisation adds a signature on its mail server (CodeTwo, Exclaimer...), so
+    /// PeetMail adds none, or recipients would get two. `html` is kept for turning it off.
+    #[serde(default)]
+    pub managed: bool,
+}
+
+/// Lowercases addresses, sanitizes the HTML and drops empty signatures (unless the
+/// organisation adds one); the last entry for an address wins.
+fn clean_signatures(signatures: Vec<Signature>) -> Vec<Signature> {
+    let mut out: Vec<Signature> = Vec::new();
+    for s in signatures {
+        let address = s.address.trim().to_lowercase();
+        out.retain(|o| o.address != address);
+        let html = crate::sanitize::clean_signature(&s.html);
+        if !address.is_empty() && (html.is_some() || s.managed) {
+            out.push(Signature { address, html: html.unwrap_or_default(), replies: s.replies, managed: s.managed });
+        }
+    }
+    out
+}
+
+#[tauri::command]
+pub fn list_signatures(state: State<'_, AppState>) -> Result<Vec<Signature>> {
+    let raw = state.db.with(|c| db::get_setting(c, KEY_SIGNATURES))?;
+    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn set_signatures(state: State<'_, AppState>, signatures: Vec<Signature>) -> Result<Vec<Signature>> {
+    let clean = clean_signatures(signatures);
+    state.db.with(|c| db::set_setting(c, KEY_SIGNATURES, &serde_json::to_string(&clean)?))?;
+    Ok(clean)
+}
+
 // ---------- recent opens ----------
 
 #[tauri::command]
@@ -1190,6 +1240,20 @@ pub async fn open_attachment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signatures_are_sanitized_keyed_by_lowercase_address_and_empty_ones_dropped() {
+        use super::{clean_signatures, Signature};
+        let sig = |address: &str, html: &str, replies: bool, managed: bool| Signature { address: address.into(), html: html.into(), replies, managed };
+        let clean = clean_signatures(vec![
+            sig(" Boris@Peetmail.test ", "<p>Old</p>", false, false),
+            sig("boris@peetmail.test", r#"<p onclick="x()">Boris</p>"#, true, false),
+            sig("home@outlook.com", "<p></p>", true, false),
+            sig("work@contoso.com", "<p></p>", false, true),
+            sig("", "<p>Nobody</p>", false, false),
+        ]);
+        assert_eq!(clean, vec![sig("boris@peetmail.test", "<p>Boris</p>", true, false), sig("work@contoso.com", "", false, true)]);
+    }
+
     #[test]
     fn snippets_are_trimmed_blank_rows_dropped_and_names_unique() {
         use super::{clean_snippets, Snippet};

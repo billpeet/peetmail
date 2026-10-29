@@ -17,6 +17,12 @@ describe("docToText", () => {
     expect(docToText(doc(p(t("Hi Sam,")), p(), p(t("Line one"), br, t("Line two"))))).toBe("Hi Sam,\n\nLine one\nLine two");
   });
 
+  it("sets the signature off with a blank line and \"-- \"; an emptied one adds nothing", () => {
+    const sig = (...content: RichNode[]): RichNode => ({ type: "signature", content });
+    expect(docToText(doc(p(t("Thanks!")), sig(p(t("Boris"), br, t("Peet Software")))))).toBe("Thanks!\n\n-- \nBoris\nPeet Software");
+    expect(docToText(doc(p(t("Thanks!")), sig(p())))).toBe("Thanks!\n");
+  });
+
   it("round-trips plain text", () => {
     const text = "Thai on Friday?\n\nB\n";
     const paras = text.split("\n").map((l) => (l ? p(t(l)) : p()));

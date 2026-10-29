@@ -6,7 +6,8 @@
   // as a draft as you type, so Esc just closes it (Drafts, g d, has it); Ctrl+Shift+D
   // throws it away. Files come from Ctrl+Shift+A (a file picker),
   // dropping them on the composer, or pasting; a forward lists the original's attachments,
-  // each removable.
+  // each removable. The account's signature is a block at the end of the text (the
+  // Signature node), edited like the rest; Ctrl+Shift+S takes it off or puts it back.
   // `inline`: a reply or forward written in the reader, under the conversation it answers
   // (like Outlook). Otherwise it's a dialog over everything.
   import { onDestroy, onMount } from "svelte";
@@ -25,6 +26,8 @@
   import { parseSendTime } from "#lib/quickAdd.js";
   import { formatSendAt } from "#lib/mail.svelte.js";
   import { expandSnippet, matchSnippets, snippetTrigger, type Snippet } from "#lib/snippets.js";
+  import { SIGNATURE_CLASS } from "#lib/signatures.js";
+  import { SignatureNode } from "#lib/signatureNode.js";
 
   let { inline = false }: { inline?: boolean } = $props();
 
@@ -273,6 +276,56 @@
     return true;
   }
 
+  // ----- signature -----
+  const sigSetting = $derived(mail.signatureOf(from));
+  /** Taken off by hand: switching From then doesn't put one back. */
+  let sigRemoved = false;
+
+  /** The signature block in the text, with its position, if there is one. */
+  function findSignature(): { pos: number; size: number } | null {
+    let found: { pos: number; size: number } | null = null;
+    editor?.state.doc.forEach((node, pos) => {
+      if (!found && node.type.name === "signature") found = { pos, size: node.nodeSize };
+    });
+    return found;
+  }
+  /** Reads `tick` so the markup follows the text. */
+  const hasSignature = () => tick >= 0 && !!findSignature();
+
+  /** Where your own text ends: just before the signature. */
+  function textEnd(): number | "end" {
+    const sig = findSignature();
+    return sig && sig.pos > 0 ? sig.pos - 1 : "end";
+  }
+
+  /** Swaps the signature block for `html` ("" removes it). */
+  function setSignature(html: string) {
+    if (!editor) return;
+    const sig = findSignature();
+    let chain = editor.chain();
+    if (sig) chain = chain.deleteRange({ from: sig.pos, to: sig.pos + sig.size });
+    if (html) chain = chain.insertContentAt(sig ? sig.pos : editor.state.doc.content.size, `<div class="${SIGNATURE_CLASS}">${html}</div>`);
+    chain.run();
+  }
+
+  /** Ctrl+Shift+S: take the signature off this message, or put the account's back. */
+  function toggleSignature() {
+    if (findSignature()) {
+      sigRemoved = true;
+      setSignature("");
+    } else if (sigSetting?.html && !sigSetting.managed) {
+      sigRemoved = false;
+      setSignature(sigSetting.html);
+    }
+    // Back in the text (from the Signature button too, so the keys go on working).
+    editor?.commands.focus(textEnd());
+  }
+
+  /** A new message moved to another account takes that account's signature. */
+  function fromChanged() {
+    if (!sigRemoved) setSignature(mail.startingSignature(from, c.kind));
+  }
+
   // ----- the editor -----
   let host: HTMLDivElement | undefined = $state();
   /** The text's box, which the snippet list is placed in. */
@@ -331,6 +384,7 @@
       element,
       extensions: [
         StarterKit.configure({ heading: { levels: [1, 2, 3] }, trailingNode: false, link: { openOnClick: false, autolink: true, defaultProtocol: "https" } }),
+        SignatureNode,
         Placeholder.configure({ placeholder: isReply ? "Write your reply… (;name inserts a snippet)" : "Type ;name to insert a snippet" }),
       ],
       content: html,
@@ -390,7 +444,7 @@
   $effect(() => {
     if (mail.composerFocusTick === focusSeen) return;
     focusSeen = mail.composerFocusTick;
-    editor?.commands.focus("end");
+    editor?.commands.focus(textEnd());
     root?.scrollIntoView({ block: "nearest" });
   });
 
@@ -476,7 +530,7 @@
     createEditor(host!);
     // A draft shown again under its conversation waits for r (or a click).
     if (c.focus !== false) {
-      if (isReply) editor?.commands.focus("end", { scrollIntoView: !inline });
+      if (isReply) editor?.commands.focus(textEnd(), { scrollIntoView: !inline });
       else toInput?.focus({ preventScroll: inline });
       // Bring the whole reply into view, its fields included, with the thread above it.
       if (inline) root?.scrollIntoView({ block: "nearest" });
@@ -490,6 +544,7 @@
       { id: "compose.discard", keys: "ctrl+shift+d", label: "Discard draft", group: "Compose", when: () => mail.composerActive, run: () => mail.discardComposer() },
       { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => mail.composerActive, run: () => (showCc = true) },
       { id: "compose.bcc", keys: "ctrl+shift+b", label: "Show Bcc", group: "Compose", when: () => mail.composerActive, run: revealBcc },
+      { id: "compose.signature", keys: "ctrl+shift+s", label: "Add or remove signature", group: "Compose", when: () => mail.composerActive, run: toggleSignature },
       { id: "compose.bold", keys: "ctrl+b", label: "Bold", group: "Compose", when: inText, run: tools[0].run },
       { id: "compose.italic", keys: "ctrl+i", label: "Italic", group: "Compose", when: inText, run: tools[1].run },
       { id: "compose.underline", keys: "ctrl+u", label: "Underline", group: "Compose", when: inText, run: tools[2].run },
@@ -573,6 +628,7 @@
           <select
             data-testid="compose-from"
             bind:value={from}
+            onchange={fromChanged}
             disabled={c.kind !== "new"}
             title={c.kind !== "new" ? "Replies and forwards go from the account the mail came to" : ""}
             class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none disabled:text-ink-300"
@@ -651,6 +707,9 @@
     <div bind:this={bodyBox} class={["relative flex flex-col", !inline && "min-h-0 flex-1"]}>
       <!-- Inline it grows with what's typed (the reader scrolls); in the dialog it scrolls itself. -->
       <div bind:this={host} class={inline ? "" : "min-h-0 flex-1 overflow-y-auto"}></div>
+      {#if sigSetting?.managed}
+        <p data-testid="compose-signature-managed" class="px-4 pb-2 text-xs text-ink-500">Your organisation adds your signature when this is sent.</p>
+      {/if}
       {#if snipOpen}
         <div data-testid="snippet-list" style={snipStyle} class="absolute z-10 w-96 overflow-hidden rounded-md border border-ink-700 bg-ink-900 shadow-xl">
           {#if snipMatches.length}
@@ -793,6 +852,11 @@
         <button data-testid="compose-attach" title="Attach files (Ctrl+Shift+A)" aria-label="Attach files" onclick={pickFiles} class="icon-btn size-8">
           <Paperclip size={15} />
         </button>
+        {#if !hasSignature() && sigSetting?.html && !sigSetting.managed}
+          <button data-testid="compose-signature-add" title="Add signature (Ctrl+Shift+S)" onmousedown={(e) => e.preventDefault()} onclick={toggleSignature} class="px-2 py-1.5 text-sm text-ink-500 hover:text-ink-100">
+            Signature
+          </button>
+        {/if}
         <button
           data-testid="compose-later-toggle"
           title="Send later (Ctrl+Shift+Enter)"
@@ -823,7 +887,11 @@
   :global(.compose-rich pre code) { background: none; padding: 0; }
   :global(.compose-rich a) { color: var(--color-accent); text-decoration: underline; }
   :global(.compose-rich hr) { border-color: var(--color-ink-700); margin: 0.75em 0; }
-  :global(.compose-rich p.is-editor-empty:first-child::before) {
+  /* The signature, a line below the text, as it's sent. */
+  :global(.compose-rich .peetmail_signature) { margin-top: 1lh; }
+  /* The placeholder still shows with only the signature below it. */
+  :global(.compose-rich p.is-editor-empty:first-child::before),
+  :global(.compose-rich > p.is-empty:first-child:has(+ .peetmail_signature:last-child)::before) {
     content: attr(data-placeholder);
     color: var(--color-ink-500);
     float: left;

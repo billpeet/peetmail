@@ -43,6 +43,11 @@ function block(n: RichNode): string {
     case "heading":
     case "codeBlock":
       return inline(n.content);
+    case "signature": {
+      // After a blank line, "-- " on its own line: the plain-text signature separator (RFC 3676).
+      const sig = lines(n.content);
+      return sig.trim() ? `\n-- \n${sig}` : "";
+    }
     case "horizontalRule":
       return "---";
     case "blockquote":

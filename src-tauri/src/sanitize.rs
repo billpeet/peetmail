@@ -27,8 +27,16 @@ pub fn text_to_html(text: &str) -> String {
     format!(r#"<pre style="white-space:pre-wrap;font:inherit;margin:0">{escaped}</pre>"#)
 }
 
-/// What the composer's rich text may contain: the editor's own markup, nothing else.
-static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(compose_builder);
+/// What the composer's rich text may contain: the editor's own markup, nothing else. That
+/// includes the signature, a `<div class="peetmail_signature">` at the end.
+static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut b = compose_builder();
+    b.add_tags(["div"]).allowed_classes(std::collections::HashMap::from([("div", HashSet::from([SIGNATURE_CLASS]))]));
+    b
+});
+
+/// The class of the composer's signature block (`Signature` node in the composer).
+const SIGNATURE_CLASS: &str = "peetmail_signature";
 
 fn compose_builder() -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::empty();
@@ -51,7 +59,9 @@ pub fn compose_rich(html: &str) -> String {
         .replace("<p></p>", "<div><br></div>")
         .replace("<p>", "<div>")
         .replace("</p>", "</div>")
-        .replace("<blockquote>", r#"<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex">"#);
+        .replace("<blockquote>", r#"<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex">"#)
+        // The signature as Outlook marks its own, a line below the text.
+        .replace(&format!(r#"<div class="{SIGNATURE_CLASS}">"#), &format!(r#"<div id="Signature" class="{SIGNATURE_CLASS}" style="margin-top:1em">"#));
     // Blank lines left at the end are just where the caret was.
     while let Some(rest) = lines.strip_suffix("<div><br></div>") {
         lines = rest.to_string();
@@ -122,6 +132,13 @@ pub fn compose_html(text: &str) -> String {
         .map(|p| format!("<p>{}</p>", escape(p.trim_end()).replace('\n', "<br>")))
         .collect();
     format!(r#"<div style="font-family:Segoe UI,sans-serif;font-size:14px">{}</div>"#, paragraphs.join(""))
+}
+
+/// A signature from Settings: sanitized to the composer's markup (it's put into the
+/// composer as it is), or None when it has no text (an emptied editor still holds `<p></p>`).
+pub fn clean_signature(html: &str) -> Option<String> {
+    let clean = compose_builder().clean(html.trim()).to_string();
+    (!html_to_text(&clean).trim().is_empty()).then_some(clean)
 }
 
 /// Plain text of a sanitized HTML body for the search index, capped so huge newsletters
@@ -301,6 +318,21 @@ mod tests {
     fn compose_html_escapes_and_breaks_lines() {
         let h = compose_html("Hi <Sam>,\r\n\r\nLine one\nLine two");
         assert!(h.contains("<p>Hi &lt;Sam&gt;,</p><p>Line one<br>Line two</p>"));
+    }
+
+    #[test]
+    fn the_composer_signature_block_is_kept_and_marked_like_outlooks() {
+        let h = compose_rich(r#"<p>Thanks!</p><div class="peetmail_signature"><p><strong>Boris</strong><br>Peet Software</p></div><div class="evil" style="x"><p>y</p></div>"#);
+        assert!(h.contains(r#"<div>Thanks!</div><div id="Signature" class="peetmail_signature" style="margin-top:1em"><div><strong>Boris</strong><br>Peet Software</div></div>"#), "{h}");
+        assert!(!h.contains("evil") && !h.contains("style=\"x\""), "other classes and divs' attributes go: {h}");
+    }
+
+    #[test]
+    fn signatures_from_settings_are_cleaned_and_empty_ones_are_none() {
+        assert_eq!(clean_signature(r#"<p onclick="x()">Boris<script>x()</script></p>"#).as_deref(), Some("<p>Boris</p>"));
+        for empty in ["", "<p></p>", "  <p> </p> "] {
+            assert_eq!(clean_signature(empty), None);
+        }
     }
 
     #[test]
