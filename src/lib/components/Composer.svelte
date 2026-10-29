@@ -419,7 +419,11 @@
         // Files dropped on the text are attached by the composer's own drop handler.
         handleDrop: (_view, e) => !!(e as DragEvent).dataTransfer?.types.includes("Files"),
       },
-      onTransaction: () => {
+      onTransaction: ({ transaction: tr }) => {
+        // A bare focus or blur changes nothing shown here. Skipping it matters: removing the
+        // focused text (closing the composer) blurs it while Svelte is updating the page,
+        // and writing state then throws (state_unsafe_mutation).
+        if (!tr.docChanged && !tr.selectionSet && (tr.getMeta("focus") || tr.getMeta("blur"))) return;
         tick++;
         updateSnip();
       },

@@ -25,7 +25,8 @@ test("h snoozes a conversation into a hidden server folder; g h lists it; a sync
   await select(page, "conv-plain");
   await page.keyboard.press("h");
   await expect(page.getByTestId("snooze")).toBeVisible();
-  await expect(page.getByTestId("snooze-preset").filter({ hasText: "Tomorrow" })).toBeVisible();
+  // By id: on a Friday "This weekend" reads "tomorrow" too.
+  await expect(page.getByTestId("snooze-preset").and(page.locator("[data-id=tomorrow]"))).toBeVisible();
   await snap(page, testInfo, "snooze-picker");
   await page.getByTestId("snooze-preset").and(page.locator("[data-id=tomorrow]")).click();
 
