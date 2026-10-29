@@ -12,6 +12,8 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-30
+
 - **Signatures**: set one for each account in **Settings → Mail**. It goes under new messages, and under replies and forwards if you choose. Change it for one message in the composer, or take it off with **Ctrl+Shift+S**. If your organisation adds signatures itself (CodeTwo, Exclaimer), tick that option and PeetMail won't add a second one.
 - **Esc** in an address field closes the contact suggestions; press it again to close the message.
 - Drafts: what you write is saved as you type, and kept in step with your drafts in Outlook and Gmail (the last change wins). **Esc** closes a message and keeps it as a draft, and so does starting another one; nothing is lost if PeetMail closes unexpectedly. New drafts show at the top of your Inbox. A reply stays with its conversation: move to another one mid-reply and it waits there, under the messages, for when you come back (**r** carries on with it). **g d** lists every draft; **Ctrl+Shift+D** throws one away.
