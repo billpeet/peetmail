@@ -69,6 +69,11 @@ pub struct AppState {
     pub undo: std::sync::Mutex<Vec<crate::actions::UndoEntry>>,
     /// Held while bodies are prefetched in the background, so runs don't pile up.
     pub prefetch_lock: tokio::sync::Mutex<()>,
+    /// Held while drafts are pushed to or pulled from a server, so a pull never sees a
+    /// server draft whose id a push hasn't stored yet (and takes it for a new one).
+    pub drafts_lock: tokio::sync::Mutex<()>,
+    /// Server drafts that are really messages being sent (graph_send builds them as drafts).
+    pub transient_drafts: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// UI preferences that live in the settings table.
@@ -121,6 +126,8 @@ impl AppState {
             outbox_lock: Default::default(),
             undo: Default::default(),
             prefetch_lock: Default::default(),
+            drafts_lock: Default::default(),
+            transient_drafts: Default::default(),
         }
     }
 

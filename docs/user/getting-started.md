@@ -33,6 +33,7 @@ Everything has a keyboard shortcut. The ones to start with:
 | **g a** / **g #** | All mail / Trash |
 | **r** / **a** / **f** | Reply / reply all / forward |
 | **c** | Write a new message (**Ctrl+Enter** sends) |
+| **g d** | Drafts |
 | **z** | Undo, including a send for a few seconds |
 | **/** | Search |
 | **h** | Snooze until later |
@@ -44,7 +45,11 @@ The mouse works too, everywhere.
 
 The icons down the left side are your mailboxes: Inbox, Done (what you've archived), Sent, Snoozed, Scheduled, All mail and Trash, each covering all your accounts. In Done, **e** puts a conversation back in the inbox; in Trash, **#** restores it. Snoozed lists conversations by when they come back (**h** changes the time, **u** brings one back now), and Scheduled lists messages waiting to send (**Enter** edits one, **#** cancels it). Mail is kept for your mail window (**Settings → Storage**), so older mail isn't in these lists.
 
-A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts the reply away (press it twice once you've typed something or attached a file).
+A reply or forward opens under the conversation you're reading, so the messages you're answering stay in view above it. The original message is quoted under your reply when it's sent. **Esc** puts it away.
+
+What you write is saved as you type, so nothing is lost if you close the message or PeetMail closes unexpectedly. A message you close without sending stays as a draft: a new message shows at the top of your Inbox marked **Draft**, and a reply stays with the conversation it answers. Move on to another conversation mid-reply and the reply waits there; come back and it's under the messages again (press **r** to carry on with it). **Drafts** (**g d**) lists them all: **Enter** opens one, **#** throws it away. **Ctrl+Shift+D** (or the bin at the bottom of the message) throws away the message you're writing.
+
+Drafts are the same as in Outlook and Gmail: one you start here shows up there a few seconds later, and ones you start there show up here. If a draft is changed in both places, the last change wins.
 
 Format as you write: **Ctrl+B**, **Ctrl+I** and **Ctrl+U** for bold, italic and underline, **Ctrl+K** to make a link, or the buttons at the bottom of the message. Markdown works as you type, too: `**bold**`, `*italic*`, a line starting with `- ` or `1. ` for a list, `> ` for a quote. Formatting pasted from documents and web pages is kept (pictures in it are left out; paste a picture on its own to attach it).
 

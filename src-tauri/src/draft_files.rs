@@ -84,13 +84,15 @@ pub fn remove(conn: &Connection, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
-/// Drops files no waiting send refers to: left behind by a composer that was open when
-/// PeetMail closed, or by a send that failed for good. Run at startup, when no composer is open.
+/// Drops files no saved draft or waiting send refers to: left behind by a send that failed
+/// for good, or added in the moment before a crash. Run at startup, when no composer is open.
 pub fn purge_orphans(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(
         "DELETE FROM draft_files WHERE id NOT IN (
            SELECT json_extract(f.value, '$.id') FROM outbox o, json_each(o.op, '$.attachments') f
-           WHERE o.status IN ('pending', 'inflight') AND json_extract(o.op, '$.type') = 'send')",
+           WHERE o.status IN ('pending', 'inflight') AND json_extract(o.op, '$.type') = 'send'
+           UNION
+           SELECT json_extract(f.value, '$.id') FROM drafts d, json_each(d.data, '$.attachments') f)",
         [],
     )?)
 }

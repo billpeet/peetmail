@@ -6,7 +6,7 @@ use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::actions::{self, Action, ActionOutcome};
-use crate::draft_files;
+use crate::{draft_files, drafts};
 use crate::db::{self, Account, Contact, Cursor, Folder, Mailbox, MessageRow, RecentOpen, Scope, ThreadRow};
 use crate::error::{AppError, Result};
 use crate::outbox::{self, Draft, DraftKind, Op, OutboxStatus};
@@ -632,6 +632,9 @@ pub struct SendInput {
     /// Forwards: names of the original's attachments to leave out.
     #[serde(default)]
     dropped_attachments: Vec<String>,
+    /// The saved draft this is, which sending removes.
+    #[serde(default)]
+    draft_id: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -687,6 +690,7 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
         reference_message_id: input.reference_message_id,
         attachments,
         dropped_attachments: if input.kind == DraftKind::Forward { input.dropped_attachments } else { vec![] },
+        draft_id: input.draft_id,
     };
     if matches!(draft.kind, DraftKind::New | DraftKind::Forward) && draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err(AppError::Other("add at least one recipient".into()));
@@ -696,7 +700,15 @@ pub fn send_message(app: AppHandle, state: State<'_, AppState>, input: SendInput
     }
     let delay = state.preferences()?.undo_send_secs;
     let at = when.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::seconds(delay));
-    let id = state.db.with(|c| outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at))?;
+    let id = state.db.with(|c| {
+        let id = outbox::enqueue_at(c, input.account_id, reference.as_deref(), &Op::Send(draft), at)?;
+        // Out of Drafts while it's sent: back if the send is taken back or fails, removed
+        // (with its server copy) once it has gone.
+        if let Some(d) = input.draft_id {
+            drafts::set_hidden(c, d, true)?;
+        }
+        Ok(id)
+    })?;
     outbox::emit_status(&app, &state);
     outbox::kick(&app);
     let _ = app.emit(EVENT_SCHEDULED, ());
@@ -719,6 +731,39 @@ pub fn add_draft_file(state: State<'_, AppState>, request: tauri::ipc::Request<'
     state.db.with(|c| draft_files::add(c, &name, &header("x-file-type"), data))
 }
 
+/// Saves the composer's message as a draft (as it's typed, and when it's closed). Returns
+/// the draft's id, which later saves pass back.
+#[tauri::command]
+pub fn save_draft(app: AppHandle, state: State<'_, AppState>, id: Option<i64>, account_id: i64, draft: drafts::DraftDoc) -> Result<i64> {
+    let id = state.db.with(|c| {
+        let id = drafts::save(c, id, account_id, &draft)?;
+        // Up to the server a moment later (one push for a burst of typing).
+        outbox::enqueue_push_draft(c, account_id, id)?;
+        Ok(id)
+    })?;
+    outbox::kick(&app);
+    Ok(id)
+}
+
+/// Saved drafts, most recently edited first.
+#[tauri::command]
+pub fn list_drafts(state: State<'_, AppState>) -> Result<Vec<drafts::SavedDraft>> {
+    state.db.with(|c| drafts::list(c))
+}
+
+/// Discards a draft and its attached files.
+#[tauri::command]
+pub fn delete_draft(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.db.with(|c| {
+        if let Some((account_id, remote_id)) = drafts::delete(c, id, false)? {
+            outbox::enqueue(c, account_id, Some(&remote_id), &Op::DeleteDraft, std::time::Duration::ZERO)?;
+        }
+        Ok(())
+    })?;
+    outbox::kick(&app);
+    Ok(())
+}
+
 /// Forgets files the composer no longer wants (removed, or the message discarded).
 #[tauri::command]
 pub fn remove_draft_files(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
@@ -732,7 +777,14 @@ pub const EVENT_SCHEDULED: &str = "scheduled-changed";
 /// Returns the draft so the composer can reopen, or None if it has already gone.
 #[tauri::command]
 pub fn cancel_send(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<Option<outbox::QueuedSend>> {
-    let taken = state.db.with(|c| outbox::take_send(c, id))?;
+    let taken = state.db.with(|c| {
+        let taken = outbox::take_send(c, id)?;
+        // Its draft is back (the composer reopens on it).
+        if let Some(d) = taken.as_ref().and_then(|q| q.draft.draft_id) {
+            drafts::set_hidden(c, d, false)?;
+        }
+        Ok(taken)
+    })?;
     outbox::emit_status(&app, &state);
     let _ = app.emit(EVENT_SCHEDULED, ());
     Ok(taken)

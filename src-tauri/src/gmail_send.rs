@@ -15,7 +15,7 @@ use crate::sanitize;
 use crate::state::AppState;
 
 /// Above this a message goes through the upload endpoint instead of a JSON body.
-const JSON_LIMIT: usize = 4 * 1024 * 1024;
+pub const JSON_LIMIT: usize = 4 * 1024 * 1024;
 
 // ---------- MIME building (pure) ----------
 
@@ -222,7 +222,7 @@ pub fn subject_for(kind: DraftKind, typed: &str, original: &str) -> String {
 
 // ---------- sending ----------
 
-fn header_of<'a>(payload: &'a Value, name: &str) -> Option<&'a str> {
+pub(crate) fn header_of<'a>(payload: &'a Value, name: &str) -> Option<&'a str> {
     payload["headers"]
         .as_array()?
         .iter()
@@ -342,12 +342,18 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
 
 /// Big messages: the upload endpoint, multipart (JSON metadata + the message).
 async fn upload(state: &AppState, account_id: i64, raw: &str, thread_id: Option<&str>) -> Result<Value> {
-    let url = format!("{}/messages/send?uploadType=multipart", base().replacen("/gmail/v1/", "/upload/gmail/v1/", 1));
-    let b = boundary("up");
     let meta = match thread_id {
         Some(t) => json!({ "threadId": t }),
         None => json!({}),
     };
+    upload_to(state, account_id, Method::POST, "/messages/send", &meta, raw).await
+}
+
+/// The upload endpoint's version of `path` (under users/me), multipart: `meta` as JSON plus
+/// the raw message. For messages and drafts too big for a JSON body.
+pub async fn upload_to(state: &AppState, account_id: i64, method: Method, path: &str, meta: &Value, raw: &str) -> Result<Value> {
+    let url = format!("{}{path}?uploadType=multipart", base().replacen("/gmail/v1/", "/upload/gmail/v1/", 1));
+    let b = boundary("up");
     let body = format!(
         "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{b}\r\nContent-Type: message/rfc822\r\n\r\n{raw}\r\n--{b}--\r\n"
     );
@@ -355,7 +361,7 @@ async fn upload(state: &AppState, account_id: i64, raw: &str, thread_id: Option<
         let token = state.access_token(account_id).await?;
         let res = state
             .http
-            .post(&url)
+            .request(method.clone(), &url)
             .bearer_auth(&token)
             .header("Content-Type", format!("multipart/related; boundary={b}"))
             .body(body.clone())

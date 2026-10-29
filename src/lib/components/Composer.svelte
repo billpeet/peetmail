@@ -2,8 +2,9 @@
   // New message, reply, reply all, forward. The text is rich text (Tiptap): Ctrl+B/I/U,
   // lists, links (Ctrl+K in the text), and Markdown shortcuts as you type (**bold**,
   // *italic*, "- " and "1. " lists, "> " quotes). It's sent as HTML (sanitized in Rust)
-  // plus a plain-text version. Ctrl+Enter sends, Ctrl+Shift+Enter sends later, Esc closes (twice if there's text or a
-  // file, so nothing is lost by accident). Files come from Ctrl+Shift+A (a file picker),
+  // plus a plain-text version. Ctrl+Enter sends, Ctrl+Shift+Enter sends later. It's saved
+  // as a draft as you type, so Esc just closes it (Drafts, g d, has it); Ctrl+Shift+D
+  // throws it away. Files come from Ctrl+Shift+A (a file picker),
   // dropping them on the composer, or pasting; a forward lists the original's attachments,
   // each removable.
   // `inline`: a reply or forward written in the reader, under the conversation it answers
@@ -17,7 +18,7 @@
   import { api, type Attachment, type Contact } from "#lib/api.js";
   import { keymap } from "#lib/keys.svelte.js";
   import { mail } from "#lib/mail.svelte.js";
-  import { Bold, Italic, Link2, List, ListOrdered, Paperclip, Underline, X } from "@lucide/svelte";
+  import { Bold, Italic, Link2, List, ListOrdered, Paperclip, Trash2, Underline, X } from "@lucide/svelte";
   import { attachmentRoom, fileSize } from "#lib/format.js";
   import { latestOnly, STALE } from "#lib/latest.js";
   import { narrow } from "#lib/contacts.js";
@@ -40,7 +41,22 @@
   let showBcc = $state(c.bcc.length > 0);
   let bccInput: HTMLInputElement | undefined = $state();
   let from = $state(c.accountId);
-  let armedDiscard = $state(false);
+
+  // ----- saved as you type -----
+  const AUTOSAVE_MS = 800;
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let primed = false;
+  $effect(() => {
+    // Everything a draft keeps.
+    void [to, cc, bcc, subject, html, from, c.attachments.length, c.droppedAttachments.length];
+    if (!primed) {
+      primed = true; // opening it isn't a change
+      return;
+    }
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => mail.autosave(c), AUTOSAVE_MS);
+  });
+  onDestroy(() => clearTimeout(saveTimer));
 
   // ----- attachments -----
   let fileInput: HTMLInputElement | undefined = $state();
@@ -58,7 +74,6 @@
 
   async function addFiles(files: File[]) {
     if (!files.length) return;
-    armedDiscard = false;
     const tooMuch = attachmentRoom(c.attachments.map((f) => f.size), files.map((f) => f.size));
     if (tooMuch) {
       mail.showToast({ text: tooMuch, error: true });
@@ -270,7 +285,7 @@
 
   /** Reads `tick` so the toolbar follows the selection. */
   const isActive = (name: string) => tick >= 0 && (editor?.isActive(name) ?? false);
-  const inText = () => !!mail.composer && !!editor?.isFocused;
+  const inText = () => mail.composerActive && !!editor?.isFocused;
 
   function format(run: (e: Editor) => void) {
     if (editor) run(editor);
@@ -355,7 +370,6 @@
         updateSnip();
       },
       onUpdate: ({ editor: ed }) => {
-        armedDiscard = false;
         html = ed.isEmpty ? "" : ed.getHTML();
         body = docToText(ed.getJSON());
       },
@@ -366,7 +380,19 @@
     });
   }
 
-  onDestroy(() => editor?.destroy());
+  onDestroy(() => {
+    editor?.destroy();
+    mail.composerFocused = false;
+  });
+
+  // r on a conversation whose draft is showing puts the cursor in it.
+  let focusSeen = mail.composerFocusTick;
+  $effect(() => {
+    if (mail.composerFocusTick === focusSeen) return;
+    focusSeen = mail.composerFocusTick;
+    editor?.commands.focus("end");
+    root?.scrollIntoView({ block: "nearest" });
+  });
 
   let toInput: HTMLInputElement | undefined = $state();
 
@@ -427,33 +453,41 @@
     e.preventDefault();
   }
 
+  /** Leaving an address field: its list goes, and a lookup still on its way mustn't bring it
+   * back (an open list would hold up Esc in the text). */
+  function closeSuggestions() {
+    lookup.cancel();
+    suggestions = [];
+  }
+
   function revealBcc() {
     showBcc = true;
     queueMicrotask(() => bccInput?.focus());
   }
 
+  /** Closes it; what's in it stays in Drafts. */
   function close() {
-    if ((body.trim() || c.attachments.length) && !armedDiscard) {
-      armedDiscard = true;
-      return;
-    }
     mail.composer = null;
   }
 
   onMount(() => {
     createEditor(host!);
-    if (isReply) editor?.commands.focus("end", { scrollIntoView: !inline });
-    else toInput?.focus({ preventScroll: inline });
-    // Bring the whole reply into view, its fields included, with the thread above it.
-    if (inline) root?.scrollIntoView({ block: "nearest" });
+    // A draft shown again under its conversation waits for r (or a click).
+    if (c.focus !== false) {
+      if (isReply) editor?.commands.focus("end", { scrollIntoView: !inline });
+      else toInput?.focus({ preventScroll: inline });
+      // Bring the whole reply into view, its fields included, with the thread above it.
+      if (inline) root?.scrollIntoView({ block: "nearest" });
+    }
     return keymap.register([
-      { id: "compose.send", keys: "ctrl+Enter", label: "Send", group: "Compose", when: () => !!mail.composer, run: () => mail.send() },
-      { id: "compose.later", keys: "ctrl+shift+Enter", label: "Send later", group: "Compose", when: () => !!mail.composer, run: () => (later === null ? openLater() : closeLater()) },
-      { id: "compose.later.close", keys: "Escape", label: "Close send later", group: "Compose", when: () => !!mail.composer && later !== null, run: closeLater },
-      { id: "compose.snippet", keys: "ctrl+;", label: "Insert snippet", group: "Compose", when: () => !!mail.composer && later === null, run: openSnippets },
-      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => !!mail.composer && !suggestions.length && later === null && linkUrl === null && !snipOpen, run: close },
-      { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => !!mail.composer, run: () => (showCc = true) },
-      { id: "compose.bcc", keys: "ctrl+shift+b", label: "Show Bcc", group: "Compose", when: () => !!mail.composer, run: revealBcc },
+      { id: "compose.send", keys: "ctrl+Enter", label: "Send", group: "Compose", when: () => mail.composerActive, run: () => mail.send() },
+      { id: "compose.later", keys: "ctrl+shift+Enter", label: "Send later", group: "Compose", when: () => mail.composerActive, run: () => (later === null ? openLater() : closeLater()) },
+      { id: "compose.later.close", keys: "Escape", label: "Close send later", group: "Compose", when: () => mail.composerActive && later !== null, run: closeLater },
+      { id: "compose.snippet", keys: "ctrl+;", label: "Insert snippet", group: "Compose", when: () => mail.composerActive && later === null, run: openSnippets },
+      { id: "compose.close", keys: "Escape", label: "Close composer", group: "Compose", when: () => mail.composerActive && !suggestions.length && later === null && linkUrl === null && !snipOpen, run: close },
+      { id: "compose.discard", keys: "ctrl+shift+d", label: "Discard draft", group: "Compose", when: () => mail.composerActive, run: () => mail.discardComposer() },
+      { id: "compose.cc", keys: "ctrl+shift+c", label: "Show Cc", group: "Compose", when: () => mail.composerActive, run: () => (showCc = true) },
+      { id: "compose.bcc", keys: "ctrl+shift+b", label: "Show Bcc", group: "Compose", when: () => mail.composerActive, run: revealBcc },
       { id: "compose.bold", keys: "ctrl+b", label: "Bold", group: "Compose", when: inText, run: tools[0].run },
       { id: "compose.italic", keys: "ctrl+i", label: "Italic", group: "Compose", when: inText, run: tools[1].run },
       { id: "compose.underline", keys: "ctrl+u", label: "Underline", group: "Compose", when: inText, run: tools[2].run },
@@ -462,7 +496,7 @@
       { id: "compose.numbers", keys: "ctrl+shift+7", label: "Numbered list", group: "Compose", when: inText, run: tools[4].run },
       // Taken by the text itself (Ctrl+K is the command palette everywhere else).
       { id: "compose.link", keys: "ctrl+k", label: "Insert link (in the message text)", group: "Compose", when: () => false, run: openLink },
-      { id: "compose.attach", keys: "ctrl+shift+a", label: "Attach files", group: "Compose", when: () => !!mail.composer, run: pickFiles },
+      { id: "compose.attach", keys: "ctrl+shift+a", label: "Attach files", group: "Compose", when: () => mail.composerActive, run: pickFiles },
     ]);
   });
 </script>
@@ -497,7 +531,12 @@
 <div
   data-testid="composer"
   data-inline={inline}
+  data-active={mail.composerActive}
   bind:this={root}
+  onfocusin={() => (mail.composerFocused = true)}
+  onfocusout={(e) => {
+    if (!root?.contains(e.relatedTarget as Node | null)) mail.composerFocused = false;
+  }}
   class={inline ? "mt-4 scroll-mb-6" : "fixed inset-x-0 top-9 bottom-0 z-20 flex items-end justify-center bg-black/40 p-6"}
 >
   <div
@@ -550,7 +589,7 @@
           bind:value={to}
           oninput={() => suggest("to", to)}
           onkeydown={(e) => fieldKeys("to", e)}
-          onblur={() => (suggestions = [])}
+          onblur={closeSuggestions}
           spellcheck="false"
           autocomplete="off"
           class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
@@ -571,7 +610,7 @@
             bind:value={cc}
             oninput={() => suggest("cc", cc)}
             onkeydown={(e) => fieldKeys("cc", e)}
-            onblur={() => (suggestions = [])}
+            onblur={closeSuggestions}
             spellcheck="false"
             autocomplete="off"
             class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
@@ -588,7 +627,7 @@
             bind:value={bcc}
             oninput={() => suggest("bcc", bcc)}
             onkeydown={(e) => fieldKeys("bcc", e)}
-            onblur={() => (suggestions = [])}
+            onblur={closeSuggestions}
             spellcheck="false"
             autocomplete="off"
             class="min-w-0 flex-1 bg-transparent text-ink-100 outline-none select-text"
@@ -729,8 +768,8 @@
           </button>
         {/each}
       </span>
-      <span data-testid="compose-hint" class="min-w-0 flex-1 truncate text-xs {armedDiscard ? 'text-amber-300' : 'text-ink-500'}">
-        {armedDiscard ? "Press Esc again to discard" : isReply ? (inline ? "The message above is quoted below your reply." : "The original message is quoted below your reply.") : ""}
+      <span data-testid="compose-hint" class="min-w-0 flex-1 truncate text-xs text-ink-500">
+        {c.draftId !== null ? "Draft saved" : isReply ? (inline ? "The message above is quoted below your reply." : "The original message is quoted below your reply.") : ""}
       </span>
       <span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
         <input
@@ -746,6 +785,9 @@
             editor?.commands.focus();
           }}
         />
+        <button data-testid="compose-discard" title="Discard draft (Ctrl+Shift+D)" aria-label="Discard draft" onclick={() => mail.discardComposer()} class="icon-btn size-8">
+          <Trash2 size={15} />
+        </button>
         <button data-testid="compose-attach" title="Attach files (Ctrl+Shift+A)" aria-label="Attach files" onclick={pickFiles} class="icon-btn size-8">
           <Paperclip size={15} />
         </button>

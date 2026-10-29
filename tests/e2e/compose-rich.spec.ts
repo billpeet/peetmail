@@ -10,6 +10,8 @@ async function newMessage(page: Page, to: string, subject: string) {
   await page.getByTestId("compose-to").fill(to);
   await page.getByTestId("compose-subject").fill(subject);
   await page.getByTestId("compose-body").click();
+  // Keys sent the instant after the click can beat the editor's focus.
+  await expect(page.getByTestId("compose-body")).toBeFocused();
 }
 
 test("Ctrl+Shift+B adds Bcc; the blind copies go out but not to the visible recipients' fields", async ({ inbox: page, fake }) => {
@@ -117,8 +119,9 @@ test("the toolbar formats the selection; a link can be set on selected words", a
   await newMessage(page, "priya@fabrikam.io", "Toolbar");
   const body = page.getByTestId("compose-body");
   await page.keyboard.type("read the plan");
-  // Select "the plan".
-  for (let i = 0; i < 8; i++) await page.keyboard.press("Shift+ArrowLeft");
+  // Select "the plan" (two words back).
+  await page.keyboard.press("Control+Shift+ArrowLeft");
+  await page.keyboard.press("Control+Shift+ArrowLeft");
   await page.getByTestId("compose-format-underline").click();
   await expect(body.locator("u")).toHaveText("the plan");
   await page.getByTestId("compose-format-link").click();

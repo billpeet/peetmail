@@ -46,7 +46,7 @@ const b64url = (buf: Uint8Array) => Buffer.from(buf).toString("base64url");
 
 type Json = Record<string, any>;
 /** A message being put together (POST /me/messages, createReply...), not yet sent. */
-type Draft = { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; bcc: Json[]; attachments: FakeAttachment[] };
+type Draft = { kind: string; messageId?: string; conversationId?: string; subject: string; html: string; to: Json[]; cc: Json[]; bcc: Json[]; attachments: FakeAttachment[]; modified?: string };
 /** An attachment upload session: the chunks received so far. */
 type Upload = { draftId: string; name: string; contentType: string; size: number; chunks: Buffer[]; received: number; ranges: string[] };
 type ChangeKind = "upsert" | "partial" | "remove";
@@ -347,8 +347,13 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
     if (method === "POST" && p === "/me/messages") {
       const m = await readBody(req);
       const id = `draft-${++draftCount}`;
-      state.drafts.set(id, { kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], bcc: m.bccRecipients ?? [], attachments: [] });
+      state.drafts.set(id, { kind: "new", subject: m.subject ?? "", html: m.body?.content ?? "", to: m.toRecipients ?? [], cc: m.ccRecipients ?? [], bcc: m.bccRecipients ?? [], attachments: [], modified: stamp() });
+      state.sent.push({ kind: "draft-create", id });
       return reply(201, { id, subject: m.subject ?? "" });
+    }
+    // The Drafts folder, listed (draft sync).
+    if (p === "/me/mailFolders/drafts/messages" && method === "GET") {
+      return reply(200, { value: [...state.drafts.entries()].map(([id, d]) => ({ id, lastModifiedDateTime: d.modified ?? "" })) });
     }
     const draftRoute = p.match(/^\/me\/messages\/(draft-[^/]+)(?:\/(.*))?$/);
     if (draftRoute) return draftRequest(req, method, decodeURIComponent(draftRoute[1]), draftRoute[2] ?? "", reply);
@@ -396,7 +401,8 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         // Like Graph, a forward starts with the original's attachments (inline ones too).
         const id = `draft-${++draftCount}`;
         const attachments = kind === "forward" ? (msg.attachments ?? []).map((a, i) => ({ ...a, id: `${id}-fwd-${i}` })) : [];
-        state.drafts.set(id, { ...fields, attachments });
+        state.drafts.set(id, { ...fields, attachments, modified: stamp() });
+        state.sent.push({ kind: "draft-create", id, from: action[2] });
         return reply(201, { id, subject: fields.subject });
       }
       sendCopy(fields);
@@ -567,11 +573,31 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
 
   let draftCount = 0;
   let uploadCount = 0;
+  let stampSeq = 0;
+  /** A lastModifiedDateTime that always moves on, even within a millisecond. */
+  const stamp = () => new Date(Date.now() + ++stampSeq).toISOString();
+  const recipient = (a: string) => ({ emailAddress: { address: a } });
 
   /** /me/messages/{draft-id}/...: attachments, upload sessions, send, delete. */
   async function draftRequest(req: IncomingMessage, method: string, id: string, rest: string, reply: Reply) {
     const d = state.drafts.get(id);
     if (!d) return graphError(reply, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
+    const view = () => ({
+      id, subject: d.subject, toRecipients: d.to, ccRecipients: d.cc, bccRecipients: d.bcc,
+      body: { contentType: "html", content: d.html }, lastModifiedDateTime: d.modified ?? "", conversationId: d.conversationId,
+    });
+    if (rest === "" && method === "GET") return reply(200, view());
+    if (rest === "" && method === "PATCH") {
+      const b = await readBody(req);
+      if ("subject" in b) d.subject = b.subject;
+      if (b.body?.content !== undefined) d.html = b.body.content;
+      if (b.toRecipients) d.to = b.toRecipients;
+      if (b.ccRecipients) d.cc = b.ccRecipients;
+      if (b.bccRecipients) d.bcc = b.bccRecipients;
+      d.modified = stamp();
+      state.sent.push({ kind: "draft-update", id });
+      return reply(200, view());
+    }
     if (rest === "" && method === "DELETE") {
       state.drafts.delete(id);
       state.sent.push({ kind: "delete-draft", id });
@@ -588,11 +614,19 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
       if (bytes.length >= 3 * 1024 * 1024) return graphError(reply, 413, "ErrorRequestEntityTooLarge", "Use an upload session for files of 3 MB or more");
       const a: FakeAttachment = { id: `${id}-att-${d.attachments.length}`, name: b.name, contentType: b.contentType ?? "", size: bytes.length, isInline: false, contentBytes: bytes.toString("base64") };
       d.attachments.push(a);
+      d.modified = stamp();
       return reply(201, a);
+    }
+    const bytes = rest.match(/^attachments\/([^/]+)\/\$value$/);
+    if (bytes && method === "GET") {
+      const a = d.attachments.find((x) => x.id === decodeURIComponent(bytes[1]));
+      if (!a) return graphError(reply, 404, "ErrorItemNotFound", "Attachment not found");
+      return replyBytes(200, Buffer.from(a.contentBytes, "base64"), a.contentType);
     }
     const one = rest.match(/^attachments\/([^/]+)$/);
     if (one && method === "DELETE") {
       d.attachments = d.attachments.filter((a) => a.id !== decodeURIComponent(one[1]));
+      d.modified = stamp();
       return reply(204, "");
     }
     if (rest === "attachments/createUploadSession" && method === "POST") {
@@ -850,6 +884,7 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
             "POST /_test/deliver {count?, subject?, from?: [name, address], to?: [[name, address]], cc?, conversationId?, body?: html, folder?, inference?, attachments?: [{name, contentType?, text}]}",
             "POST /_test/update {id, fields: {isRead?, flag?, subject?...}}",
             "POST /_test/remove {id}",
+            "POST /_test/draft {subject?, html?, to?: [address], bcc?, attachments?: [{name, text}]}   POST /_test/draft-update {id, subject?, html?}   POST /_test/draft-remove {id}",
             "POST /_test/throttle {count?=1, status?=429, retryAfter?=1}",
             "POST /_test/move {id, folder: inbox|archive|deleteditems|sentitems}",
             "POST /_test/config {rejectDeltaFilter?, expireDelta?, tokenTtl?, latencyMs?, failBody?, failWrites?: status, dropWrites?: count}",
@@ -943,6 +978,29 @@ export async function startFakeGraph({ port = 0, mailbox, count, seed, verbose =
         const msg = state.messages.get(url.searchParams.get("id") ?? "");
         return msg ? ok(metadata(msg)) : send(res, 404, { error: "no such message" });
       }
+      case "POST /_test/draft": {
+        // A draft written in Outlook.
+        const id = `draft-${++draftCount}`;
+        const attachments: FakeAttachment[] = ((body.attachments ?? []) as { name: string; text: string }[]).map((a, n) => ({
+          id: `${id}-att-${n}`, name: a.name, contentType: "text/plain", size: a.text.length, isInline: false, contentBytes: Buffer.from(a.text).toString("base64"),
+        }));
+        state.drafts.set(id, {
+          kind: "new", subject: body.subject ?? "", html: body.html ?? "", to: (body.to ?? []).map(recipient), cc: [], bcc: (body.bcc ?? []).map(recipient),
+          attachments, modified: stamp(), conversationId: body.conversationId,
+        });
+        return ok({ id });
+      }
+      case "POST /_test/draft-update": {
+        const d = state.drafts.get(body.id);
+        if (!d) return send(res, 404, { error: "no such draft" });
+        if (body.subject !== undefined) d.subject = body.subject;
+        if (body.html !== undefined) d.html = body.html;
+        d.modified = stamp();
+        return ok();
+      }
+      case "POST /_test/draft-remove":
+        state.drafts.delete(body.id);
+        return ok();
       case "POST /_test/remove":
         state.messages.delete(body.id);
         change(body.id, "remove");

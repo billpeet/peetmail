@@ -21,6 +21,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_account_app.sql"),
     include_str!("../migrations/0010_outbox_series.sql"),
     include_str!("../migrations/0011_draft_files.sql"),
+    include_str!("../migrations/0012_drafts.sql"),
+    include_str!("../migrations/0013_draft_sync.sql"),
 ];
 
 pub struct Db {
@@ -843,6 +845,15 @@ pub fn suggest_contacts(conn: &Connection, prefix: &str, limit: i64) -> Result<V
 }
 
 /// (account_id, remote_id) for a cached message.
+/// Whether any message of this conversation is cached.
+pub fn has_conversation(conn: &Connection, account_id: i64, conversation_id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM messages WHERE account_id = ?1 AND conversation_id = ?2)",
+        params![account_id, conversation_id],
+        |r| r.get(0),
+    )?)
+}
+
 pub fn message_remote(conn: &Connection, message_id: i64) -> Result<Option<(i64, String)>> {
     Ok(conn
         .query_row("SELECT account_id, remote_id FROM messages WHERE id = ?1", [message_id], |r| {
@@ -962,6 +973,22 @@ mod tests {
         migrate(&mut c).unwrap();
         let apps: Vec<(String, String)> = list_accounts(&c).unwrap().into_iter().map(|a| (a.provider, a.oauth_app)).collect();
         assert_eq!(apps, [("microsoft".into(), "custom".into()), ("google".into(), "builtin".into())]);
+    }
+
+    #[test]
+    fn drafts_saved_before_draft_sync_survive_its_migration_and_still_go_up() {
+        let mut c = Connection::open_in_memory().unwrap();
+        // A database from the build with local drafts only (schema 12), holding a draft.
+        migrate_to(&mut c, 12).unwrap();
+        c.execute("INSERT INTO accounts (provider, email) VALUES ('microsoft', 'a@work.example')", []).unwrap();
+        c.execute("INSERT INTO drafts (account_id, data, seq) VALUES (1, '{\"subject\":\"Old\"}', 1)", []).unwrap();
+        migrate(&mut c).unwrap();
+        let row = crate::drafts::get(&c, 1).unwrap().expect("the draft is still there");
+        assert_eq!(row.doc.subject, "Old");
+        assert!(row.dirty, "never pushed, so it's queued to go up");
+        assert_eq!(crate::drafts::unpushed(&c).unwrap(), vec![(1, 1)]);
+        // And it saves with the new columns.
+        crate::drafts::save(&c, Some(1), 1, &crate::drafts::DraftDoc { subject: "New".into(), ..Default::default() }).unwrap();
     }
 
     #[test]

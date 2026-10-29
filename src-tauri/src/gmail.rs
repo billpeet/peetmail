@@ -928,6 +928,7 @@ pub async fn execute(state: &AppState, account_id: i64, remote_id: Option<&str>,
         Op::Respond { .. } | Op::CreateEvent(_) | Op::UpdateEvent { .. } | Op::DeleteEvent { .. } => {
             crate::gcal::execute(state, account_id, remote_id, op).await
         }
+        Op::PushDraft { .. } | Op::DeleteDraft => Err(AppError::Other("draft ops are handled by draft_sync".into())),
     }
 }
 

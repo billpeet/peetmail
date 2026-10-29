@@ -17,7 +17,7 @@ use crate::outbox::{send_request, Draft, DraftKind};
 use crate::state::AppState;
 
 /// Graph takes a file in the attachment request itself only below 3 MB.
-const INLINE_LIMIT: usize = 3 * 1024 * 1024;
+pub const INLINE_LIMIT: usize = 3 * 1024 * 1024;
 /// Upload session chunks must be multiples of 320 KiB (and under 4 MB).
 const CHUNK: usize = 10 * 320 * 1024;
 const _: () = assert!(CHUNK.is_multiple_of(320 * 1024) && CHUNK < 4 * 1024 * 1024);
@@ -59,8 +59,11 @@ pub async fn send(state: &AppState, account_id: i64, reply_to: Option<&str>, d: 
     let (url, body) = draft_request(base, reply_to, d)?;
     let created = graph_call(state, account_id, Method::POST, &url, Some(&body), &[PREFER_IMMUTABLE]).await?;
     let id = created["id"].as_str().ok_or_else(|| AppError::Other("Graph returned a draft without an id".into()))?;
+    // In Drafts only for a moment: a draft sync meanwhile mustn't take it for one of yours.
+    state.transient_drafts.lock().expect("transient drafts").insert(id.to_string());
     let msg = format!("{base}/me/messages/{id}");
     let result = fill_and_send(state, account_id, &msg, d).await;
+    state.transient_drafts.lock().expect("transient drafts").remove(id);
     if result.is_err() {
         // Don't leave a half-built copy in Drafts; a retry starts over.
         if let Err(e) = graph_call(state, account_id, Method::DELETE, &msg, None, &[PREFER_IMMUTABLE]).await {
@@ -95,7 +98,7 @@ async fn fill_and_send(state: &AppState, account_id: i64, msg: &str, d: &Draft) 
 
 /// A big file through an upload session. The upload URL carries its own authorization, so
 /// the chunks go without our token (Graph rejects them if it's there).
-async fn upload(state: &AppState, account_id: i64, msg: &str, f: &DraftFile, data: &[u8]) -> Result<()> {
+pub async fn upload(state: &AppState, account_id: i64, msg: &str, f: &DraftFile, data: &[u8]) -> Result<()> {
     let item = json!({ "AttachmentItem": { "attachmentType": "file", "name": f.name, "size": data.len(), "contentType": f.mime } });
     let session = graph_call(state, account_id, Method::POST, &format!("{msg}/attachments/createUploadSession"), Some(&item), &[]).await?;
     let url = session["uploadUrl"].as_str().ok_or_else(|| AppError::Other("Graph returned no upload URL".into()))?;

@@ -27,10 +27,10 @@ pub fn text_to_html(text: &str) -> String {
     format!(r#"<pre style="white-space:pre-wrap;font:inherit;margin:0">{escaped}</pre>"#)
 }
 
-/// HTML for a message typed as plain text in the composer: escaped, blank lines become
-/// paragraphs, single newlines become line breaks.
 /// What the composer's rich text may contain: the editor's own markup, nothing else.
-static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(compose_builder);
+
+fn compose_builder() -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::empty();
     b.tags(HashSet::from([
         "p", "br", "strong", "b", "em", "i", "u", "s", "a", "ul", "ol", "li", "blockquote", "code", "pre", "h1", "h2", "h3", "hr",
@@ -39,7 +39,7 @@ static COMPOSE_CLEANER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
     .url_schemes(HashSet::from(["http", "https", "mailto"]))
     .link_rel(Some("noopener noreferrer"));
     b
-});
+}
 
 /// The composer's rich text as sent: sanitized to the editor's markup, in the same wrapper
 /// as plain-text messages. Each editor paragraph is a line, so it goes out as a `<div>`
@@ -59,6 +59,61 @@ pub fn compose_rich(html: &str) -> String {
     format!(r#"<div style="font-family:Segoe UI,sans-serif;font-size:14px">{lines}</div>"#)
 }
 
+/// A server draft's HTML (from Outlook, Gmail, or our own push) as the composer's: its
+/// formatting, with each `<div>` line as a paragraph. Everything else goes.
+pub fn import_draft_html(html: &str) -> String {
+    static IMPORT: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+        let mut b = compose_builder();
+        b.add_tags(["div"]).rm_clean_content_tags(["style"]).clean_content_tags(HashSet::from(["style", "script", "title", "head"]));
+        b
+    });
+    lines_of_divs(&IMPORT.clean(html).to_string()).replace("<p><br></p>", "<p></p>").trim().to_string()
+}
+
+/// `<div>`s that hold only text and inline markup are lines (paragraphs); ones that hold
+/// blocks (a wrapper around the whole message, Outlook's WordSection) just go. Works on
+/// ammonia's output, which is well-formed with attribute-free `<div>`s.
+fn lines_of_divs(html: &str) -> String {
+    const BLOCKS: [&str; 10] = ["<div>", "<p>", "<ul>", "<ol", "<blockquote>", "<pre>", "<h1>", "<h2>", "<h3>", "<hr>"];
+    let mut out = String::with_capacity(html.len());
+    // For each open div: where its opening tag goes in `out`, and whether it holds a block.
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        if BLOCKS.iter().any(|b| rest.starts_with(b))
+            && let Some(parent) = open.last_mut() {
+            parent.1 = true;
+        }
+        if let Some(after) = rest.strip_prefix("<div>") {
+            open.push((out.len(), false));
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("</div>") {
+            if let Some((at, holds_block)) = open.pop()
+                && !holds_block {
+                out.insert_str(at, "<p>");
+                out.push_str("</p>");
+            }
+            rest = after;
+        } else {
+            let end = rest.find('>').map_or(rest.len(), |e| e + 1);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Plain text as the composer's HTML: a paragraph per line.
+pub fn lines_to_html(text: &str) -> String {
+    let escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    text.replace("\r\n", "\n").split('\n').map(|l| format!("<p>{}</p>", escape(l))).collect()
+}
+
+/// HTML for a message typed as plain text in the composer: escaped, blank lines become
+/// paragraphs, single newlines become line breaks.
 pub fn compose_html(text: &str) -> String {
     let escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     let paragraphs: Vec<String> = text
@@ -225,6 +280,21 @@ mod tests {
         for gone in ["script", "alert(1)", "<img", "style=\"color", "onclick", "target=", "javascript:"] {
             assert!(!h.contains(gone), "{gone} in {h}");
         }
+    }
+
+    #[test]
+    fn imported_drafts_keep_their_lines_and_formatting_only() {
+        // Our own: the wrapper goes, each line is a paragraph again.
+        let ours = compose_rich("<p>Hi <strong>Sam</strong></p><p></p><p>Bye</p><ul><li><p>x</p></li></ul>");
+        assert_eq!(import_draft_html(&ours), "<p>Hi <strong>Sam</strong></p><p></p><p>Bye</p><ul><li><p>x</p></li></ul>");
+        let outlook = r#"<html><head><style>p{color:red}</style><title>x</title></head><body><div class="WordSection1"><p class="MsoNormal" style="margin:0">Hello <b>there</b><o:p></o:p></p><table><tr><td>cell</td></tr></table></div><script>x()</script></body></html>"#;
+        let h = import_draft_html(outlook);
+        assert!(h.contains("<p>Hello <b>there</b></p>"), "{h}");
+        assert!(h.contains("cell"), "{h}");
+        for gone in ["color:red", "x()", "class=", "style=", "<table", "<title"] {
+            assert!(!h.contains(gone), "{gone} in {h}");
+        }
+        assert_eq!(lines_to_html("a <b>\r\n\nc"), "<p>a &lt;b&gt;</p><p></p><p>c</p>");
     }
 
     #[test]

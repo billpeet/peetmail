@@ -102,7 +102,7 @@ test("f forwards to the address you type", async ({ inbox: page, fake }) => {
   expect(sentOfKind(fake, "forward")[0].to).toEqual([{ emailAddress: { address: "hannah@northwind.dev" } }]);
 });
 
-test("Esc closes an empty composer, and needs a second press once there's text", async ({ inbox: page }) => {
+test("Esc closes the composer at once; what's typed is kept as a draft", async ({ inbox: page }) => {
   await page.keyboard.press("c");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
@@ -110,9 +110,8 @@ test("Esc closes an empty composer, and needs a second press once there's text",
   await page.keyboard.press("c");
   await page.getByTestId("compose-body").fill("half a thought");
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("compose-hint")).toHaveText("Press Esc again to discard");
-  await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
+  await expect(page.getByTestId("toast")).toContainText("Saved to Drafts");
 });
 
 test("sending without a recipient explains why", async ({ inbox: page }) => {

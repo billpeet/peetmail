@@ -41,6 +41,38 @@ pub enum Op {
     /// Delete an event. `cancel`: you organise it and it has guests, so tell them
     /// (Graph's cancel with an optional message; Google sendUpdates=all).
     DeleteEvent { cancel: bool, comment: Option<String> },
+    /// Puts a draft's latest content on the server (`draft`: its local id). Read when the op
+    /// runs, so one queued push covers every edit made while it waits.
+    PushDraft { draft: i64 },
+    /// Deletes a draft on the server (remote_id: its server id).
+    DeleteDraft,
+}
+
+/// How long a draft's push waits, so a burst of typing goes up as one.
+pub const PUSH_DRAFT_DELAY: Duration = Duration::from_secs(3);
+
+/// Queues a push of a draft unless one is already waiting (it will read the latest content).
+pub fn enqueue_push_draft(conn: &Connection, account_id: i64, draft: i64) -> Result<()> {
+    let waiting: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE status = 'pending' AND json_extract(op, '$.type') = 'pushDraft'
+           AND json_extract(op, '$.draft') = ?1)",
+        [draft],
+        |r| r.get(0),
+    )?;
+    if !waiting {
+        enqueue(conn, account_id, None, &Op::PushDraft { draft }, PUSH_DRAFT_DELAY)?;
+    }
+    Ok(())
+}
+
+/// Server drafts with a delete still to go out: a pull mustn't bring them back meanwhile.
+pub fn drafts_being_deleted(conn: &Connection, account_id: i64) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT remote_id FROM outbox WHERE account_id = ?1 AND status IN ('pending', 'inflight')
+           AND json_extract(op, '$.type') = 'deleteDraft' AND remote_id IS NOT NULL",
+    )?;
+    let ids = stmt.query_map([account_id], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +160,10 @@ pub struct Draft {
     /// Forwards: names of the original's attachments to leave out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped_attachments: Vec<String>,
+    /// The saved draft this was (hidden while it's sent; removed, with its server copy,
+    /// once it has gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_id: Option<i64>,
 }
 
 impl Draft {
@@ -275,7 +311,7 @@ pub fn status(conn: &Connection) -> Result<OutboxStatus> {
         // Sends still waiting for their time (undo delay, scheduled) aren't "changes
         // waiting to sync"; they have their own UI.
         "SELECT COUNT(*) FILTER (WHERE status = 'inflight' OR (status = 'pending' AND NOT (
-                    json_extract(op, '$.type') = 'send' AND attempts = 0
+                    json_extract(op, '$.type') IN ('send', 'pushDraft') AND attempts = 0
                     AND not_before > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))),
                 COUNT(*) FILTER (WHERE status = 'failed'),
                 (SELECT last_error FROM outbox WHERE status = 'failed' ORDER BY id DESC LIMIT 1)
@@ -367,11 +403,20 @@ async fn drain(app: &AppHandle, state: &AppState) -> Result<()> {
         let calendar_op = matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. } | Op::DeleteEvent { .. });
         let calendar_touched = calendar_op && (result.is_ok() || result.as_ref().is_err_and(is_permanent));
         state.db.with(|c| {
-            // A send's files are done with once it has gone, or failed for good.
-            if let Op::Send(d) = &row.op
-                && (result.is_ok() || result.as_ref().is_err_and(|e| is_permanent(e) || row.attempts + 1 >= MAX_ATTEMPTS)) {
-                let ids: Vec<i64> = d.attachments.iter().map(|f| f.id).collect();
-                crate::draft_files::remove(c, &ids)?;
+            let finished = result.is_ok() || result.as_ref().is_err_and(|e| is_permanent(e) || row.attempts + 1 >= MAX_ATTEMPTS);
+            if let (Op::Send(d), true) = (&row.op, finished) {
+                // Failed for good: back in Drafts, files and all, to fix and send again.
+                let back_to_drafts = result.is_err() && d.draft_id.map(|id| crate::drafts::get(c, id)).transpose()?.flatten().is_some();
+                if back_to_drafts {
+                    crate::drafts::set_hidden(c, d.draft_id.unwrap_or_default(), false)?;
+                } else {
+                    // A send's files are done with once it has gone.
+                    let ids: Vec<i64> = d.attachments.iter().map(|f| f.id).collect();
+                    crate::draft_files::remove(c, &ids)?;
+                    if let Some(id) = d.draft_id {
+                        crate::drafts::delete(c, id, true)?;
+                    }
+                }
             }
             match &result {
                 Ok(response) => {
@@ -465,6 +510,8 @@ impl Op {
             Op::CreateEvent(_) => "create_event",
             Op::UpdateEvent { .. } => "update_event",
             Op::DeleteEvent { .. } => "delete_event",
+            Op::PushDraft { .. } => "push_draft",
+            Op::DeleteDraft => "delete_draft",
         }
     }
 }
@@ -477,6 +524,29 @@ async fn execute(state: &AppState, row: &Row) -> Result<Value> {
 }
 
 async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
+    match &row.op {
+        Op::PushDraft { draft } => return crate::draft_sync::push(state, *draft).await.map(|_| Value::Null),
+        Op::DeleteDraft => {
+            let rid = row.remote_id.as_deref().ok_or_else(|| AppError::Other("op has no draft".into()))?;
+            return crate::draft_sync::delete_remote(state, row.account_id, rid).await.map(|_| Value::Null);
+        }
+        // A draft started elsewhere goes through the server's copy, keeping its threading.
+        Op::Send(d) if crate::draft_sync::server_copy_to_send(state, d)?.is_some() => {
+            return crate::draft_sync::send_server_copy(state, row.account_id, d).await;
+        }
+        _ => {}
+    }
+    let sent = execute_mail_op(state, row).await?;
+    // A draft that was sent the usual way leaves the server's Drafts too.
+    if let Op::Send(d) = &row.op
+        && let Some(rid) = crate::draft_sync::remote_of(state, d)?
+        && let Err(e) = crate::draft_sync::delete_remote(state, row.account_id, &rid).await {
+        log::warn!("sent, but couldn't delete the server's draft: {e}");
+    }
+    Ok(sent)
+}
+
+async fn execute_mail_op(state: &AppState, row: &Row) -> Result<Value> {
     if state.db.with(|c| crate::db::account_provider(c, row.account_id))? == "google" {
         return crate::gmail::execute(state, row.account_id, row.remote_id.as_deref(), &row.op).await;
     }
@@ -513,6 +583,7 @@ async fn execute_op(state: &AppState, row: &Row) -> Result<Value> {
             json!({ "Comment": comment.clone().unwrap_or_default() }),
         ),
         Op::DeleteEvent { cancel: false, .. } => (Method::DELETE, format!("{base}/me/events/{}", rid()?), Value::Null),
+        Op::PushDraft { .. } | Op::DeleteDraft => return Err(AppError::Other("draft ops are handled by draft_sync".into())),
     };
     let prefer: &[&str] = if matches!(row.op, Op::CreateEvent(_) | Op::UpdateEvent { .. }) {
         &[PREFER_IMMUTABLE, r#"outlook.timezone="UTC""#]

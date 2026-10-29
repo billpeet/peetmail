@@ -163,6 +163,19 @@ const SYNCED_FOLDERS: &[(&str, &str)] = &[("inbox", "Inbox"), ("sentitems", "Sen
 const OPTIONAL_FOLDERS: &[&str] = &["archive"];
 
 async fn sync_account(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
+    sync_mail_and_calendar(app, state, account).await?;
+    // Drafts problems mustn't fail the sync.
+    match crate::draft_sync::pull(state, account.id).await {
+        Ok(true) => {
+            let _ = app.emit(crate::draft_sync::EVENT_DRAFTS_CHANGED, ());
+        }
+        Ok(false) => {}
+        Err(e) => log::warn!("drafts sync failed for account {}: {e}", account.id),
+    }
+    Ok(())
+}
+
+async fn sync_mail_and_calendar(app: &AppHandle, state: &AppState, account: &Account) -> Result<()> {
     use crate::telemetry::{attr, traced, Key};
     if account.provider == "google" {
         traced("sync.mail", vec![attr(Key::Provider, "google")], crate::gmail::background(crate::gmail::sync_account(app, state, account.id))).await?;

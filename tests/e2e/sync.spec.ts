@@ -17,7 +17,7 @@ test("remote read-state changes and deletions sync through delta", async ({ inbo
   await expect(row(page, "conv-plain")).toHaveCount(0);
 });
 
-test("a sync with no changes costs one request per synced folder plus the calendar", async ({ inbox: page, fake }) => {
+test("a sync with no changes costs one request per synced folder, the calendar and the drafts list", async ({ inbox: page, fake }) => {
   const before = fake.state.requests.length;
   await syncNow(page, fake);
   const reqs = fake.requestsSince(before);
@@ -27,8 +27,9 @@ test("a sync with no changes costs one request per synced folder plus the calend
     "/v1.0/me/mailFolders/AAMkAGI2-archive/messages/delta",
     "/v1.0/me/mailFolders/AAMkAGI2-deleted/messages/delta",
     "/v1.0/me/calendarView/delta",
+    "/v1.0/me/mailFolders/drafts/messages",
   ]);
-  expect(reqs.every((r) => r.query.includes("deltatoken"))).toBe(true);
+  expect(reqs.filter((r) => r.path.endsWith("/delta")).every((r) => r.query.includes("deltatoken"))).toBe(true);
 });
 
 test("archived and deleted mail syncs too, including what's moved there elsewhere", async ({ inbox: page, fake }) => {

@@ -166,14 +166,17 @@ test("a send that fails part-way doesn't leave a draft behind", async ({ inbox: 
   expect(sentOfKind(fake, "new")).toHaveLength(0);
 });
 
-test("Esc with only a file attached asks before discarding", async ({ inbox: page }) => {
+test("a message with only a file attached is kept as a draft, file and all", async ({ inbox: page }) => {
   await page.keyboard.press("c");
   await page.getByTestId("compose-file-input").setInputFiles([file("keep.txt", "k")]);
   await expect(page.getByTestId("compose-attachment")).toHaveCount(1);
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("compose-hint")).toContainText("Press Esc again to discard");
-  await page.keyboard.press("Escape");
   await expect(page.getByTestId("composer")).toHaveCount(0);
+  await expect(page.getByTestId("toast")).toContainText("Saved to Drafts");
+  await page.keyboard.press("g");
+  await page.keyboard.press("d");
+  await page.getByTestId("draft-row").click();
+  await expect(page.getByTestId("compose-attachment")).toContainText("keep.txt");
 });
 
 test.describe("undo send", () => {

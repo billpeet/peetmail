@@ -12,6 +12,8 @@
   const inPane = $derived(mail.previewing && mail.view === "list");
 
   const flagged = $derived(mail.current?.isFlagged ?? false);
+  /** The reply or forward drafted for this conversation, if any. */
+  const threadDraft = $derived(mail.current && mail.threadFor ? mail.draftFor(mail.current.accountId, mail.threadFor) : undefined);
   // In Done, e brings the conversation back to the inbox; in Trash, e and # restore it.
   const archiveBack = $derived(mail.triageFor("archive") === "moveToInbox");
   const trashBack = $derived(mail.triageFor("trash") === "moveToInbox");
@@ -137,7 +139,21 @@
         </article>
       {/each}
     </div>
-    {#if mail.composerInline}<Composer inline />{/if}
+    <!-- A reply or forward drafted for this conversation (here or elsewhere), like Superhuman:
+         under the messages; r (or a click) carries on with it. -->
+    {#if threadDraft && !(mail.composerInline && mail.composer?.draftId === threadDraft.id)}
+      <button
+        data-testid="thread-draft"
+        onclick={() => mail.openDraft(threadDraft)}
+        class="mt-2 flex w-full items-baseline gap-3 rounded-lg border border-dashed border-red-400/50 bg-ink-900 px-4 py-2.5 text-left text-sm hover:border-red-400"
+      >
+        <span class="shrink-0 font-medium text-red-400">Draft</span>
+        <span class="min-w-0 flex-1 truncate text-ink-300">{threadDraft.draft.body.split("\n").find((l) => l.trim()) || "(nothing written yet)"}</span>
+        <span class="shrink-0 text-xs text-ink-500"><kbd>R</kbd> to carry on</span>
+      </button>
+    {/if}
+    <!-- Keyed: another composer replacing this one (f during a reply) starts fresh. -->
+    {#if mail.composerInline}{#key mail.composer}<Composer inline />{/key}{/if}
   </div>
 </div>
 </div>

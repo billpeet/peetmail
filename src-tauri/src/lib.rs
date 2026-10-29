@@ -6,6 +6,8 @@ mod crash;
 mod datadir;
 mod db;
 mod draft_files;
+mod draft_sync;
+mod drafts;
 mod error;
 mod event_edit;
 mod gcal;
@@ -239,6 +241,15 @@ pub fn run() {
                 Err(e) => fatal_startup_error(&e.to_string()),
             };
             db.with(|c| outbox::reset_inflight(c))?;
+            // Drafts changed here that never reached the server get another go.
+            if let Err(e) = db.with(|c| {
+                for (account_id, id) in drafts::unpushed(c)? {
+                    outbox::enqueue_push_draft(c, account_id, id)?;
+                }
+                Ok(())
+            }) {
+                log::warn!("queueing draft pushes: {e}");
+            }
             match db.with(|c| draft_files::purge_orphans(c)) {
                 Ok(n) if n > 0 => log::info!("dropped {n} attached files no send needs"),
                 Ok(_) => {}
@@ -341,6 +352,9 @@ pub fn run() {
             commands::cancel_send,
             commands::add_draft_file,
             commands::remove_draft_files,
+            commands::save_draft,
+            commands::list_drafts,
+            commands::delete_draft,
             commands::scheduled_sends,
             commands::thread_action,
             commands::undo,

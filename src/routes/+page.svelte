@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, onCalendarChanged, onMailChanged, onOutbox, onScheduledChanged, onSyncStatus } from "#lib/api.js";
+  import { api, onCalendarChanged, onDraftsChanged, onMailChanged, onOutbox, onScheduledChanged, onSyncStatus } from "#lib/api.js";
   import { calendar } from "#lib/calendar.svelte.js";
   import { keymap } from "#lib/keys.svelte.js";
   import { mail } from "#lib/mail.svelte.js";
@@ -28,12 +28,14 @@
   import ResizeHandle from "#lib/components/ResizeHandle.svelte";
   import RightPane from "#lib/components/RightPane.svelte";
   import ScheduledList from "#lib/components/ScheduledList.svelte";
+  import DraftsList from "#lib/components/DraftsList.svelte";
   import SnoozePicker from "#lib/components/SnoozePicker.svelte";
 
   // `base`: signed in, nothing modal open (global keys). `ready`: base, in the mail views
   // (every mail binding hangs off it, so mail keys don't act on a hidden conversation
   // while the calendar is showing).
-  const base = () => !!mail.account && mail.overlay === null && !mail.composer;
+  // The reader's keys work around a draft under its conversation, unless you're typing in it.
+  const base = () => !!mail.account && mail.overlay === null && !mail.composerActive;
   const ready = () => base() && mail.view !== "calendar";
   const inCalendar = () => base() && mail.view === "calendar";
   /** An answerable invite is on screen (reader, or the reading pane). */
@@ -44,8 +46,8 @@
     !mail.invite.event.isOrganizer &&
     !mail.invite.event.isCancelled &&
     mail.invite.meetingMessageType !== "meetingCancelled";
-  /** The list holds conversations (Scheduled holds sends, with its own keys). */
-  const inThreads = () => ready() && !(mail.mailbox === "scheduled" && mail.search === null);
+  /** The list holds conversations (Scheduled and Drafts hold messages, with their own keys). */
+  const inThreads = () => ready() && !((mail.mailbox === "scheduled" || mail.mailbox === "drafts") && mail.search === null);
   const inList = () => inThreads() && mail.view === "list";
   const inSnoozed = () => ready() && mail.mailbox === "snoozed" && mail.search === null;
   const inReader = () => ready() && mail.view === "reader";
@@ -53,7 +55,7 @@
   const inInbox = () => ready() && mail.search === null && mail.mailbox === "inbox";
 
   /** Names of the mailboxes, for the list header. */
-  const MAILBOX_TITLES: Record<MailView, string> = { inbox: "Inbox", done: "Done", sent: "Sent", snoozed: "Snoozed", scheduled: "Scheduled", all: "All mail", trash: "Trash" };
+  const MAILBOX_TITLES: Record<MailView, string> = { inbox: "Inbox", done: "Done", sent: "Sent", drafts: "Drafts", snoozed: "Snoozed", scheduled: "Scheduled", all: "All mail", trash: "Trash" };
 
   let searchInput: HTMLInputElement | undefined = $state();
 
@@ -107,11 +109,15 @@
     }
   }
 
+  // A reply stays with its conversation: put away on leaving it, shown again on coming back.
+  $effect(() => mail.followScreen());
+
   onMount(() => {
     mail.init();
     api.outboxStatus().then((s) => mail.setOutbox(s));
     mail.refreshScheduled();
     mail.refreshSnoozed();
+    mail.refreshDrafts();
     const unlisten = [
       onMailChanged(() => mail.scheduleRefresh()),
       onSyncStatus((s) => (mail.sync = s)),
@@ -119,6 +125,7 @@
       updates.init(),
       health.init(),
       onScheduledChanged(() => mail.refreshScheduled()),
+      onDraftsChanged(() => mail.refreshDrafts()),
       onOutbox((s) => {
         if (s.failed > mail.outbox.failed && s.lastError) mail.showToast({ text: `Couldn't sync a change: ${s.lastError}`, error: true });
         mail.setOutbox(s);
@@ -146,6 +153,7 @@
       { id: "go.trash", keys: "g #", label: "Trash", group: "Go to", when: base, run: () => mail.goTo("trash") },
       { id: "go.snoozed", keys: "g h", label: "Snoozed", group: "Go to", when: base, run: () => mail.goTo("snoozed") },
       { id: "go.scheduled", keys: "g s", label: "Scheduled messages", group: "Go to", when: base, run: () => mail.goTo("scheduled") },
+      { id: "go.drafts", keys: "g d", label: "Drafts", group: "Go to", when: base, run: () => mail.goTo("drafts") },
       { id: "go.calendar", keys: "g c", label: "Go to calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
       { id: "section.mail", keys: "1", label: "Mail", group: "Go to", when: base, run: () => mail.showMail() },
       { id: "section.calendar", keys: "2", label: "Calendar", group: "Go to", when: base, run: () => (mail.view = "calendar") },
@@ -178,17 +186,17 @@
       { id: "invite.decline", keys: "n", label: "Decline invite", group: "Calendar", when: hasInvite, run: () => mail.rsvp("decline") },
       { id: "reader.images", keys: "i", label: "Load images", group: "Read", when: inReader, run: () => (mail.imagesFor = mail.threadFor) },
 
-      { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composer && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
+      { id: "app.palette", keys: "ctrl+k", label: "Command palette", group: "App", when: () => !!mail.account && !mail.composerActive && mail.overlay !== "palette", run: () => (mail.overlay = "palette") },
       { id: "app.quit", keys: "ctrl+q", label: "Quit PeetMail", group: "App", when: () => !!mail.account, run: () => api.quitApp() },
       { id: "app.update.install", keys: "ctrl+shift+u", label: "Restart to update", group: "App", when: () => !!mail.account && updates.ready, run: () => updates.install() },
-      { id: "app.help.docs", keys: "F1", label: "Help", group: "App", when: () => !mail.composer && mail.overlay !== "docs", run: () => mail.openHelp() },
+      { id: "app.help.docs", keys: "F1", label: "Help", group: "App", when: () => !mail.composerActive && mail.overlay !== "docs", run: () => mail.openHelp() },
       { id: "app.health.dismiss", keys: "", label: "Dismiss warnings", group: "App", when: () => health.visible.length > 0, run: () => health.dismiss() },
-      { id: "app.feedback", keys: "", label: "Report a problem", group: "App", when: () => !mail.composer, run: () => mail.openHelp("report") },
+      { id: "app.feedback", keys: "", label: "Report a problem", group: "App", when: () => !mail.composerActive, run: () => mail.openHelp("report") },
       { id: "app.whatsnew", keys: "", label: "What's new", group: "App", when: () => !!mail.account, run: () => (mail.overlay = "changelog") },
       { id: "app.update.check", keys: "", label: "Check for updates", group: "App", when: () => !!mail.account && !updates.busy, run: () => updates.check() },
       { id: "app.sync", keys: "ctrl+r", label: "Sync now", group: "App", when: base, run: () => mail.syncNow() },
       { id: "app.settings", keys: "ctrl+,", label: "Settings", group: "App", when: base, run: () => mail.openSettings() },
-      { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composer, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
+      { id: "app.help", keys: "?", label: "Keyboard shortcuts", group: "App", when: () => !!mail.account && !mail.composerActive, run: () => (mail.overlay = mail.overlay === "help" ? null : "help") },
       // The event editor handles Esc itself (it asks before discarding changes).
       { id: "app.close", keys: "Escape", label: "Close dialog", group: "App", when: () => mail.overlay !== null && mail.overlay !== "editevent", run: () => {
         mail.overlay = null;
@@ -237,7 +245,9 @@
     <header data-testid="inbox" class="flex h-14 shrink-0 items-center gap-1 border-b border-ink-800 px-4 text-[15px]">
       {#if mail.search === null && mail.mailbox !== "inbox"}
         <h2 data-testid="mailbox-title" data-mailbox={mail.mailbox} class="px-3 py-1.5 font-semibold text-ink-100">{MAILBOX_TITLES[mail.mailbox]}</h2>
-        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
+        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">
+          {mail.mailbox === "drafts" ? count(mail.drafts.length, "draft") : mail.mailbox === "scheduled" ? count(mail.scheduled.length, "message") : count(mail.conversationCount, "conversation")}
+        </span>
       {:else if mail.search === null}
         <nav data-testid="splits" class="flex items-center gap-1">
           {#each mail.visibleSplits as i (mail.splits[i].name)}
@@ -260,7 +270,7 @@
             </button>
           {/each}
         </nav>
-        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
+        <span data-testid="thread-count" class="ml-3 text-xs text-ink-500">{count(mail.conversationCount, "conversation")}</span>
       {:else}
         <Search size={16} class="ml-2 text-ink-500" />
         <input
@@ -274,7 +284,7 @@
           autocomplete="off"
           class="min-w-0 flex-1 bg-transparent px-1 text-ink-100 outline-none select-text"
         />
-        <span data-testid="thread-count" class="text-xs text-ink-500">{count(mail.threads.length, "conversation")}</span>
+        <span data-testid="thread-count" class="text-xs text-ink-500">{count(mail.conversationCount, "conversation")}</span>
         <button data-testid="search-close" title="Close search (Esc)" aria-label="Close search" onclick={() => mail.endSearch()} class="icon-btn"><X size={16} /></button>
       {/if}
       <span class="ml-auto flex items-center gap-1 pl-4">
@@ -302,6 +312,8 @@
     <main data-testid="main" data-layout={mail.previewing ? "preview" : "list"} class="flex min-h-0 flex-1">
       {#if mail.mailbox === "scheduled" && mail.search === null}
         <div class="min-w-0 flex-1"><ScheduledList /></div>
+      {:else if mail.mailbox === "drafts" && mail.search === null}
+        <div class="min-w-0 flex-1"><DraftsList /></div>
       {:else if mail.view === "reader"}
         <div class="min-w-0 flex-1"><Reader /></div>
       {:else if mail.previewing}
@@ -405,7 +417,7 @@
     </div>
   {/if}
 
-  {#if mail.overlay === null && !mail.composer}<HealthBanner />{/if}
+  {#if mail.overlay === null && !mail.composerActive}<HealthBanner />{/if}
 
   {#if mail.error}
     <div data-testid="app-error" class="fixed right-4 bottom-10 max-w-md rounded-md border border-red-900/60 bg-red-950/80 px-3 py-2 text-sm text-red-200 select-text">
@@ -415,7 +427,7 @@
 </div>
 
 <!-- Replies to the conversation on screen are written inline in the reader instead. -->
-{#if mail.composer && !mail.composerInline}<Composer />{/if}
+{#if mail.composer && !mail.composerInline}{#key mail.composer}<Composer />{/key}{/if}
 {#if mail.overlay === "help"}<ShortcutHelp />{/if}
 {#if mail.overlay === "docs"}<Help />{/if}
 {#if mail.overlay === "whatsnew"}<WhatsNew mode="new" />{/if}

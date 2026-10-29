@@ -47,6 +47,10 @@ export type ThreadRow = {
   sortAt: string;
   /** Back from a snooze. */
   reminder: boolean;
+  /** A new-message draft shown in the Inbox among the conversations (its local id). */
+  draftId?: number;
+  /** For a draft row: who it's to. */
+  draftTo?: string;
 };
 
 /** A snoozed conversation and when it comes back (UTC). */
@@ -99,7 +103,27 @@ export type SendInput = {
   attachments?: number[];
   /** Forwards: names of the original's attachments to leave out. */
   droppedAttachments?: string[];
+  /** The saved draft this is (sending removes it). */
+  draftId?: number | null;
 };
+/** The composer's state as a draft keeps it. */
+export type DraftDoc = {
+  kind: DraftKind;
+  referenceMessageId: number | null;
+  conversationId: string | null;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  html: string;
+  attachments: DraftFile[];
+  droppedAttachments: string[];
+  /** Started in Outlook or Gmail (sent through the server's copy). */
+  imported?: boolean;
+};
+/** A saved draft. */
+export type SavedDraft = { id: number; accountId: number; updatedAt: string; draft: DraftDoc };
 /** A file attached in the composer (its bytes wait in Rust until the message has gone). */
 export type DraftFile = { id: number; name: string; mime: string; size: number };
 export type SendOutcome = { id: number; sendAt: string; scheduled: boolean };
@@ -116,6 +140,8 @@ export type Draft = {
   referenceMessageId?: number;
   attachments?: DraftFile[];
   droppedAttachments?: string[];
+  /** The saved draft it was, back in Drafts if the send is taken back. */
+  draftId?: number;
 };
 /** A send that hasn't gone out yet. */
 export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
@@ -281,6 +307,11 @@ export const api = {
       headers: { "x-file-name": encodeURIComponent(file.name), "x-file-type": file.type },
     }),
   removeDraftFiles: (ids: number[]) => invoke<void>("remove_draft_files", { ids }),
+  /** Saves (or updates, with its id) a draft. Returns its id. */
+  saveDraft: (id: number | null, accountId: number, draft: DraftDoc) => invoke<number>("save_draft", { id, accountId, draft }),
+  listDrafts: () => invoke<SavedDraft[]>("list_drafts"),
+  /** Discards a draft and its files. */
+  deleteDraft: (id: number) => invoke<void>("delete_draft", { id }),
   cancelSend: (id: number) => invoke<QueuedSend | null>("cancel_send", { id }),
   scheduledSends: () => invoke<QueuedSend[]>("scheduled_sends"),
   suggestContacts: (prefix: string) => invoke<Contact[]>("suggest_contacts", { prefix }),
@@ -415,6 +446,9 @@ export type Invite = {
 };
 
 export const onScheduledChanged = (cb: () => void): Promise<UnlistenFn> => listen("scheduled-changed", () => cb());
+
+/** A sync brought drafts in from Outlook or Gmail (new, changed or deleted there). */
+export const onDraftsChanged = (cb: () => void): Promise<UnlistenFn> => listen("drafts-changed", () => cb());
 
 export const onCalendarChanged = (cb: () => void): Promise<UnlistenFn> => listen("calendar-changed", () => cb());
 
