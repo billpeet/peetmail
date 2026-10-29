@@ -2,6 +2,7 @@ import {
   api,
   type Action,
   type Bootstrap,
+  type Signature,
   type DraftDoc,
   type DraftFile,
   type DraftKind,
@@ -24,6 +25,7 @@ import { textToHtml } from "./richtext";
 import type { HelpPage } from "./docs";
 import { prefetchBody } from "./bodies";
 import type { Snippet } from "./snippets";
+import { hasOwnText, startingSignature, withSignature } from "./signatures";
 import { calendar } from "./calendar.svelte";
 import { visibility } from "./accounts.svelte";
 
@@ -78,7 +80,8 @@ export type ComposerState = {
  */
 export function worthKeeping(c: ComposerState): boolean {
   const typed = (s: string) => s.trim().length > 0;
-  if (typed(c.body) || c.attachments.length) return true;
+  // The signature it opened with isn't something you wrote.
+  if ((c.html ? hasOwnText(c.html) : typed(c.body)) || c.attachments.length) return true;
   if (c.kind === "new") return typed(c.to) || typed(c.cc) || typed(c.bcc) || typed(c.subject);
   if (c.kind === "forward") return typed(c.to) || typed(c.cc) || typed(c.bcc) || c.droppedAttachments.length > 0;
   return typed(c.bcc);
@@ -155,6 +158,17 @@ class MailStore {
   }
 
   /** True for any of your own addresses. */
+  /** The signature settings for an account, if it has any. */
+  signatureOf(accountId: number): Signature | null {
+    const email = this.accountOf(accountId)?.email.toLowerCase();
+    return this.signatures.find((s) => s.address === email) ?? null;
+  }
+
+  /** The signature a new composer starts with: "" when there's none for this kind of message. */
+  startingSignature(accountId: number, kind: DraftKind): string {
+    return startingSignature(this.signatureOf(accountId), kind);
+  }
+
   isMe(address: string | null | undefined): boolean {
     const a = address?.toLowerCase();
     return !!a && (this.boot?.accounts.some((x) => x.email.toLowerCase() === a) ?? false);
@@ -257,6 +271,8 @@ class MailStore {
   #dismissed: string | null = null;
   /** Composer snippets (;name). */
   snippets = $state.raw<Snippet[]>([]);
+  /** Per-account signatures, by address. */
+  signatures = $state.raw<Signature[]>([]);
   /** Snoozed conversations, soonest back first. */
   snoozed = $state.raw<SnoozedThread[]>([]);
   /** The conversation the snooze picker acts on. */
@@ -450,6 +466,7 @@ class MailStore {
     try {
       this.boot = await api.bootstrap();
       api.listSnippets().then((s) => (this.snippets = s)).catch(() => {});
+      api.listSignatures().then((s) => (this.signatures = s)).catch(() => {});
       calendar.setWeekStartsOn(this.boot.preferences.weekStartsOn);
       await this.loadFolder();
     } catch (e) {
@@ -1007,7 +1024,7 @@ class MailStore {
 
   compose(prefill: { to?: string; subject?: string; body?: string } = {}) {
     if (!this.account) return;
-    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", bcc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", html: textToHtml(prefill.body ?? ""), attachments: [], droppedAttachments: [], draftId: null };
+    this.composer = { accountId: this.account.id, kind: "new", referenceMessageId: null, conversationId: null, to: prefill.to ?? "", cc: "", bcc: "", subject: prefill.subject ?? "", body: prefill.body ?? "", html: withSignature(textToHtml(prefill.body ?? ""), this.startingSignature(this.account.id, "new")), attachments: [], droppedAttachments: [], draftId: null };
   }
 
   /** Reply, reply all or forward the newest message of the current conversation. */
@@ -1050,7 +1067,7 @@ class MailStore {
       bcc: "",
       subject: (kind === "forward" ? "FW: " : "RE: ") + bare,
       body: "",
-      html: "",
+      html: withSignature("", this.startingSignature(account.id, kind)),
       attachments: [],
       droppedAttachments: [],
       draftId: null,

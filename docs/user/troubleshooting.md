@@ -39,6 +39,6 @@ Prefer email? **Write an email** on the same page starts one, addressed to the d
 
 ### Diagnostics
 
-**Export** under Diagnostics saves `PeetMail-diagnostics-….zip` to your Downloads folder. It has PeetMail's and Windows' versions, your settings (not the text of splits or snippets, and no passwords or tokens), how big the database is and whether it's healthy, which kinds of account you use (not their addresses), what's waiting to be sent, and PeetMail's recent logs with addresses, names and IDs removed. It has no mail, subjects or contacts. Open it and look if you like; it's plain text.
+**Export** under Diagnostics saves `PeetMail-diagnostics-….zip` to your Downloads folder. It has PeetMail's and Windows' versions, your settings (not the text of splits, snippets or signatures, and no passwords or tokens), how big the database is and whether it's healthy, which kinds of account you use (not their addresses), what's waiting to be sent, and PeetMail's recent logs with addresses, names and IDs removed. It has no mail, subjects or contacts. Open it and look if you like; it's plain text.
 
 PeetMail's own log is in `%LOCALAPPDATA%\com.peetsoftware.peetmail\logs`, if you're asked for it.

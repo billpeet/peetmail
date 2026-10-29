@@ -14,6 +14,7 @@
   import SettingRow from "./SettingRow.svelte";
   import SettingsCard from "./SettingsCard.svelte";
   import SidebarDialog, { type SidebarPage } from "./SidebarDialog.svelte";
+  import SignatureEditor from "./SignatureEditor.svelte";
   import SnippetEditor from "./SnippetEditor.svelte";
   import SplitEditor from "./SplitEditor.svelte";
 
@@ -148,7 +149,7 @@
         </SettingRow>
       </SettingsCard>
     {:else if page === "mail"}
-      {@render heading("Mail", "How your inbox is split, text you reuse, and sending.")}
+      {@render heading("Mail", "How your inbox is split, text you reuse, your signature, and sending.")}
       <SettingsCard title="Split inboxes" description="Tabs across the top of the inbox, each one a search.">
         <SettingRow>
           {#snippet block()}<SplitEditor />{/snippet}
@@ -157,6 +158,11 @@
       <SettingsCard title="Snippets" description="Text you type often, inserted from the composer.">
         <SettingRow>
           {#snippet block()}<SnippetEditor />{/snippet}
+        </SettingRow>
+      </SettingsCard>
+      <SettingsCard title="Signatures" description="Added under the messages you write. You can change it in the composer for one message.">
+        <SettingRow>
+          {#snippet block()}<SignatureEditor />{/snippet}
         </SettingRow>
       </SettingsCard>
       <SettingsCard title="Sending">

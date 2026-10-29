@@ -145,6 +145,12 @@ export type Draft = {
   /** The saved draft it was, back in Drafts if the send is taken back. */
   draftId?: number;
 };
+/**
+ * An account's signature, keyed by its address. Added to new messages, and to replies and
+ * forwards when `replies`. `managed`: the organisation's mail server adds one (CodeTwo,
+ * Exclaimer...), so PeetMail adds none.
+ */
+export type Signature = { address: string; html: string; replies: boolean; managed: boolean };
 /** A send that hasn't gone out yet. */
 export type QueuedSend = { id: number; accountId: number; sendAt: string; draft: Draft };
 export type Contact = { name: string | null; address: string };
@@ -298,6 +304,8 @@ export const api = {
   /** Opens a link in the browser / mail app (recorded instead in tests). */
   openExternal: (url: string) => invoke<void>("open_external", { url }),
   setSnippets: (snippets: Snippet[]) => invoke<Snippet[]>("set_snippets", { snippets }),
+  listSignatures: () => invoke<Signature[]>("list_signatures"),
+  setSignatures: (signatures: Signature[]) => invoke<Signature[]>("set_signatures", { signatures }),
   threadAction: (accountId: number, conversationId: string, action: Action, undoable = true) =>
     invoke<ActionOutcome>("thread_action", { accountId, conversationId, action, undoable }),
   undo: () => invoke<string | null>("undo"),

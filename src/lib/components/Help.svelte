@@ -3,7 +3,7 @@
   // offline), the keyboard shortcuts (from the keymap), the changelog, and a way to report
   // a problem.
   import { onMount } from "svelte";
-  import { BookOpen, Keyboard, KeyRound, LifeBuoy, MessageSquareWarning, RefreshCw, ShieldCheck, Sparkles } from "@lucide/svelte";
+  import { BookOpen, Keyboard, KeyRound, LifeBuoy, MessageSquareWarning, PenLine, RefreshCw, ShieldCheck, Sparkles } from "@lucide/svelte";
   import { api } from "#lib/api.js";
   import { DOC_SLUGS, parseDoc, resolveLink, type Doc, type HelpPage } from "#lib/docs.js";
   import { keymap } from "#lib/keys.svelte.js";
@@ -22,6 +22,7 @@
   const pages: SidebarPage[] = [
     { id: "getting-started", label: docs["getting-started"].title, icon: BookOpen },
     { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard },
+    { id: "signatures", label: docs.signatures.title, icon: PenLine },
     { id: "updates", label: docs.updates.title, icon: RefreshCw },
     { id: "privacy", label: docs.privacy.title, icon: ShieldCheck },
     { id: "troubleshooting", label: docs.troubleshooting.title, icon: LifeBuoy },

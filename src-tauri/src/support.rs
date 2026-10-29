@@ -349,6 +349,7 @@ mod tests {
                 db::set_setting(c, "cache_days", "90")?;
                 db::set_setting(c, "splits", r#"[{"name":"Boss","query":"from:boss@contoso.com"}]"#)?;
                 db::set_setting(c, "google_client_secret", "GOCSPX-real-secret")?;
+                db::set_setting(c, "signatures", r#"[{"address":"priya@fabrikam.io","html":"<p>Priya Nair, +44 7700 900123</p>"}]"#)?;
                 database_summary(c)
             })
             .unwrap();
@@ -357,7 +358,7 @@ mod tests {
         assert_eq!(v["accounts"], json!([{ "provider": "microsoft", "app": "custom", "signedIn": true }]));
         assert_eq!(v["settings"]["cache_days"], "90");
         assert_eq!(v["settings"]["splits"], "[set]");
-        for secret in ["priya@fabrikam.io", "Priya Nair", "boss@contoso.com", "GOCSPX-real-secret"] {
+        for secret in ["priya@fabrikam.io", "Priya Nair", "boss@contoso.com", "GOCSPX-real-secret", "7700 900123"] {
             assert!(!text.contains(secret), "{secret} leaked into the summary");
         }
         assert!(v["rows"]["messages"].is_number());
