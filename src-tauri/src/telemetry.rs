@@ -259,7 +259,13 @@ pub fn enabled() -> bool {
 
 /// First 8 hex chars of SHA-256 of the lowercased host name: tells PCs apart without naming them.
 fn machine_id() -> String {
-    let host = std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase();
+    // Windows sets COMPUTERNAME; Linux has no such variable, so read the kernel's host name.
+    let host = std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
     Sha256::digest(host.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
@@ -301,7 +307,7 @@ fn build(endpoint: &str, install_id: &str) -> std::result::Result<Providers, Box
             KeyValue::new("service.instance.id", instance_id(install_id, &machine)),
             KeyValue::new("peetmail.install.id", install_id.to_string()),
             KeyValue::new("peetmail.machine.id", machine),
-            KeyValue::new("os.type", "windows"),
+            KeyValue::new("os.type", std::env::consts::OS),
         ])
         .build();
     let headers = headers();
@@ -562,6 +568,21 @@ fn sample(app: &tauri::AppHandle) {
     }
 }
 
+/// Resident set size: the second field of /proc/self/statm, in pages.
+#[cfg(target_os = "linux")]
+fn working_set() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    resident_bytes(&statm, u64::try_from(page).ok()?)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn resident_bytes(statm: &str, page_size: u64) -> Option<u64> {
+    statm.split_whitespace().nth(1)?.parse::<u64>().ok().map(|pages| pages * page_size)
+}
+
+#[cfg(windows)]
 fn working_set() -> Option<u64> {
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -616,6 +637,12 @@ pub fn record_ui(events: &[UiEvent]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_memory_comes_from_statm() {
+        assert_eq!(resident_bytes("51234 2048 512 10 0 3000 0\n", 4096), Some(2048 * 4096));
+        assert_eq!(resident_bytes("", 4096), None);
+    }
 
     #[test]
     fn routes_keep_words_and_lose_ids() {

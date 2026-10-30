@@ -59,7 +59,7 @@ test("exported diagnostics describe the install without anything personal in the
   const summary = JSON.parse(files["summary.json"]);
   expect(summary.app.version).toMatch(/^\d+\.\d+\.\d+/);
   expect(summary.app.installId).toBe(await page.getByTestId("report-install-id").textContent());
-  expect(summary.system.windows).toMatch(/^Windows/);
+  expect(summary.system.os).toMatch(/^Windows/);
   expect(summary.database.integrity).toBe("ok");
   expect(summary.database.accounts).toEqual([{ provider: "microsoft", app: expect.any(String), signedIn: true }]);
   expect(summary.database.rows.messages).toBeGreaterThan(0);

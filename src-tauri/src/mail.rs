@@ -578,6 +578,8 @@ const RISKY_EXTENSIONS: &[&str] = &[
     "js", "jse", "vbs", "vbe", "wsf", "wsh", "wsc", "ps1", "psm1", "psd1", "hta", "lnk", "url",
     "scf", "reg", "inf", "jar", "chm", "appx", "appxbundle", "msix", "msixbundle", "application",
     "appref-ms", "gadget", "iso", "img", "vhd", "vhdx", "xll", "library-ms", "settingcontent-ms",
+    // Linux: launchers, scripts and installers.
+    "desktop", "sh", "bash", "run", "appimage", "deb", "rpm", "flatpak", "flatpakref", "snap",
 ];
 
 /// The extension, if it's one that runs code.
@@ -626,6 +628,13 @@ pub async fn attachment_for_opening(
 }
 
 /// The Mark of the Web: a Zone.Identifier stream saying the file came from the internet.
+/// Linux has no such mark (and a `:` in a name is just a character), so nothing is written.
+#[cfg(not(windows))]
+fn mark_from_internet(_: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
 fn mark_from_internet(path: &std::path::Path) -> std::io::Result<()> {
     let mut stream = path.as_os_str().to_owned();
     stream.push(":Zone.Identifier");

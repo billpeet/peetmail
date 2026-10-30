@@ -6,7 +6,8 @@
 //! - free space on the data folder's drive
 //! - whether the data folder can be written to
 //! - the PC's clock against a server's `Date` header (sign-ins fail when it's well off)
-//! - the WebView2 runtime's version
+//! - the WebView2 runtime's version (Windows; on Linux WebKitGTK comes with the distro or
+//!   the AppImage, and its version numbers aren't comparable)
 //!
 //! They run at startup and again every few hours (the app lives in the tray for days).
 //! Measuring is separate from deciding (`evaluate`), so the decisions are unit-tested and
@@ -181,7 +182,7 @@ async fn measure(app: &AppHandle, first: bool) -> Inputs {
         Some(s) => s.parse().ok(),
         None => clock_skew(&state.http).await,
     };
-    let webview = fake.get("webview").cloned().or_else(|| tauri::webview_version().ok());
+    let webview = fake.get("webview").cloned().or_else(|| if cfg!(windows) { tauri::webview_version().ok() } else { None });
     Inputs { db_check, free_bytes, writable, data_dir, clock_skew_secs, webview }
 }
 
@@ -204,6 +205,7 @@ pub fn quick_check(path: &Path) -> String {
     run().unwrap_or_else(|e| e.to_string())
 }
 
+#[cfg(windows)]
 pub fn free_space(dir: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -212,6 +214,18 @@ pub fn free_space(dir: &Path) -> Option<u64> {
     // SAFETY: a NUL-terminated path; the out pointer is a valid u64 (the others may be null).
     let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
     (ok != 0).then_some(free)
+}
+
+/// Space an unprivileged process can use (`f_bavail`, not the root-reserved `f_bfree`).
+#[cfg(target_os = "linux")]
+pub fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a NUL-terminated path and a correctly sized out-parameter.
+    let rc = unsafe { libc::statvfs(path.as_ptr(), &mut st) };
+    #[allow(clippy::unnecessary_cast)] // the field types differ between libcs
+    (rc == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
 }
 
 pub fn can_write(dir: &Path) -> std::result::Result<(), String> {

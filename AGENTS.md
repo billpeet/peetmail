@@ -1,6 +1,6 @@
 # PeetMail
 
-Keyboard-first mail + calendar client for Windows: Tauri 2 (Rust core) + SvelteKit SPA. Architecture, roadmap and decisions: `docs/PLAN.md`.
+Keyboard-first mail + calendar client for Windows and Linux: Tauri 2 (Rust core) + SvelteKit SPA. Architecture, roadmap and decisions: `docs/PLAN.md`.
 
 ## Verify every change
 
@@ -26,4 +26,5 @@ Done means `pnpm verify` is green and every new behaviour has a test that would 
 - Telemetry and crash reports must not carry personal data. Span and metric attributes go through `telemetry::attr` with a `telemetry::Key` (a test rejects anything else); free text that leaves the PC goes through `scrub::scrub`. The E2E canary tests (`tests/e2e/telemetry.spec.ts`, `sentry.spec.ts`) fail on any leak.
 - `src-tauri/icons/` is generated: edit the SVGs in `src-tauri/icons/source/` and run `pnpm icons` (needs Edge, which Windows has).
 - Every change a user can notice adds a line under `## Unreleased` in `CHANGELOG.md`, in the same commit, written for users (what changed for them, not how). The app shows these lines after an update, and a stable release fails without its section.
+- Linux is a supported platform (an AppImage, built on Ubuntu 22.04 for glibc reach). Platform code goes behind `#[cfg(windows)]` / `#[cfg(target_os = "linux")]` with both arms present; `windows-sys` is a Windows-only dependency. `pnpm lint:rust` on Windows doesn't compile the Linux arms: check them with clippy and `cargo test` on Linux (CI's `linux` job, WSL, or a container; `tests/README.md` → Linux). The E2E suite is Windows-only (it drives WebView2 over CDP); on Linux CI builds an AppImage and runs `tests/linux/smoke.sh`.
 - `docs/user/` is the help for people using PeetMail, compiled into the app's Help (F1). Change it in the same commit as the behaviour it describes; a unit test checks every page exists, has a title and that its links resolve.

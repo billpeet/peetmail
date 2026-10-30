@@ -74,13 +74,50 @@ fn fatal_startup_error(message: &str) -> ! {
     log::error!("cannot start: {message}");
     log::logger().flush();
     if !testenv::flag("PEETMAIL_HEADLESS") {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let (text, caption) = (wide(message), wide("PeetMail can't start"));
-        // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
-        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+        show_error_box("PeetMail can't start", message);
     }
     std::process::exit(1);
+}
+
+#[cfg(windows)]
+fn show_error_box(caption: &str, message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text, caption) = (wide(message), wide(caption));
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+/// Linux has no system message box API; the desktop's dialog tools do the job (zenity on
+/// GNOME and most others, kdialog on KDE). Without either the reason is only in the log
+/// and on stderr.
+#[cfg(not(windows))]
+fn show_error_box(caption: &str, message: &str) {
+    use std::process::Command;
+    eprintln!("{caption}: {message}");
+    // Inside an AppImage these point GTK and GIO at the bundled copies, which the system's
+    // zenity mustn't load.
+    const APPIMAGE_ENV: [&str; 10] = [
+        "LD_LIBRARY_PATH", "GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX", "GTK_IM_MODULE_FILE",
+        "GDK_PIXBUF_MODULE_FILE", "GIO_MODULE_DIR", "GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH", "GDK_BACKEND",
+    ];
+    let tries: [(&str, Vec<&str>); 2] = [
+        ("zenity", vec!["--error", "--title", caption, "--text", message, "--no-markup"]),
+        ("kdialog", vec!["--title", caption, "--error", message]),
+    ];
+    for (tool, args) in tries {
+        let mut cmd = Command::new(tool);
+        cmd.args(args);
+        if std::env::var_os("APPIMAGE").is_some() {
+            for k in APPIMAGE_ENV {
+                cmd.env_remove(k);
+            }
+        }
+        // The dialog showed (closing it with Esc also exits non-zero): don't show a second.
+        if cmd.status().is_ok_and(|s| s.code() != Some(127) && s.code().is_some()) {
+            return;
+        }
+    }
 }
 
 /// Brings the main window back (tray click, second launch, tray menu).
@@ -138,8 +175,11 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     let headless = testenv::flag("PEETMAIL_HEADLESS");
-    // Started with Windows: wait in the tray.
-    let minimized = std::env::args().any(|a| a == "--minimized");
+    // Started at sign-in (autostart): wait in the tray.
+    // A restart to update keeps the old arguments (Linux), but the user just asked for it,
+    // so the window shows.
+    let after_update = update::take_restart_flag(app.handle());
+    let minimized = std::env::args().any(|a| a == "--minimized") && !after_update;
     let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
         .title("PeetMail")
         .inner_size(1280.0, 820.0)
@@ -175,7 +215,7 @@ pub fn run() {
     let data_dir_override = testenv::get("PEETMAIL_DATA_DIR").map(std::path::PathBuf::from);
     // First, before Tauri: crash reporting covers startup, and the crash reporter process
     // (this binary run again) stops inside here.
-    let roaming_dir = data_dir_override.clone().or_else(|| std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join(datadir::IDENTIFIER)));
+    let roaming_dir = data_dir_override.clone().or_else(datadir::app_data_dir);
     if let Some(dir) = &roaming_dir {
         crash::init_early(&dir.join("peetmail.db"));
     }
@@ -236,6 +276,16 @@ pub fn run() {
                 }
             };
             std::fs::create_dir_all(&dir)?;
+            // Mail, logs and the database live here. Some distros make home folders readable
+            // by everyone; this folder isn't (Windows' %APPDATA% already isn't).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+                    log::warn!("couldn't make the data folder private: {e}");
+                }
+            }
+            secure::init(&dir, !is_test);
             let db = match db::Db::open(&dir.join("peetmail.db")) {
                 Ok(db) => db,
                 Err(e) => fatal_startup_error(&e.to_string()),

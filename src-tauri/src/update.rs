@@ -8,6 +8,10 @@
 //! Updates are checked in the background, downloaded and signature-checked straight away,
 //! and installed only when the user asks (footer button or `Ctrl+Shift+U`). Builds without
 //! a repo compiled in (local and dev builds) never check.
+//!
+//! On Linux only the AppImage updates itself: the new AppImage replaces the file in place
+//! (no root needed) and PeetMail relaunches. Any other install (built from source, a distro
+//! package) is left to whatever installed it.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -92,6 +96,58 @@ fn channel(app: &AppHandle) -> String {
     resolve_channel(saved.as_deref(), build_channel()).to_string()
 }
 
+/// Why this install can't update itself, if it can't. Linux needs the AppImage's own path
+/// (`APPIMAGE`, set by the AppImage runtime) in a folder it can write to: the updater
+/// replaces that file.
+pub fn not_installable(os: &str, appimage: bool, folder_writable: bool) -> Option<&'static str> {
+    if os != "linux" {
+        None
+    } else if !appimage {
+        Some("PeetMail updates itself only when run as an AppImage. Update this copy the way you installed it.")
+    } else if !folder_writable {
+        Some("PeetMail can't update itself from this folder. Move the AppImage somewhere you can write to, such as your home folder.")
+    } else {
+        None
+    }
+}
+
+fn install_blocker() -> Option<&'static str> {
+    let appimage = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from);
+    not_installable(std::env::consts::OS, appimage.is_some(), appimage.as_deref().is_some_and(folder_writable))
+}
+
+#[cfg(target_os = "linux")]
+fn folder_writable(file: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(dir) = file.parent() else { return false };
+    let Ok(dir) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a NUL-terminated path.
+    unsafe { libc::access(dir.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn folder_writable(_: &std::path::Path) -> bool {
+    true
+}
+
+/// Set just before restarting into an update, read (and cleared) by the next start.
+const KEY_RESTART_TO_UPDATE: &str = "restarted_to_update";
+
+/// Whether this start is the restart after installing an update.
+pub fn take_restart_flag(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<AppState>() else { return false };
+    state
+        .db
+        .with(|c| {
+            let set = db::get_setting(c, KEY_RESTART_TO_UPDATE)?.as_deref() == Some("1");
+            if set {
+                db::set_setting(c, KEY_RESTART_TO_UPDATE, "0")?;
+            }
+            Ok(set)
+        })
+        .unwrap_or(false)
+}
+
 fn feed(channel: &str) -> Option<Url> {
     feed_url(channel, option_env!("PEETMAIL_UPDATE_REPO"), testenv::get("PEETMAIL_UPDATE_URL").as_deref())
 }
@@ -119,9 +175,12 @@ pub fn status(app: &AppHandle) -> UpdateStatus {
 pub fn init(app: &AppHandle) {
     app.manage(Updates::default());
     let channel = channel(app);
-    let enabled = feed(&channel).is_some();
+    let has_feed = feed(&channel).is_some();
+    let blocker = if has_feed { install_blocker() } else { None };
+    let enabled = has_feed && blocker.is_none();
     set(app, |s| {
         s.state = if enabled { "idle" } else { "disabled" };
+        s.message = blocker.map(String::from);
         s.channel = channel;
         s.current_version = app.package_info().version.to_string();
     });
@@ -151,6 +210,12 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
         let Some(url) = feed(&channel) else {
             return set(app, |s| s.state = "disabled");
         };
+        if let Some(why) = install_blocker() {
+            return set(app, |s| {
+                s.state = "disabled";
+                s.message = Some(why.into());
+            });
+        }
         if updates.ready.lock().unwrap().as_ref().is_some_and(|r| r.channel == channel) {
             return status(app);
         }
@@ -242,7 +307,7 @@ pub fn set_channel(app: &AppHandle, channel: &str) -> Result<UpdateStatus> {
         }
         ready.is_some()
     };
-    let enabled = feed(channel).is_some();
+    let enabled = feed(channel).is_some() && install_blocker().is_none();
     let out = set(app, |s| {
         s.channel = channel.to_string();
         if !keep_ready {
@@ -261,8 +326,9 @@ pub fn set_channel(app: &AppHandle, channel: &str) -> Result<UpdateStatus> {
 }
 
 /// Installs the downloaded update: PeetMail closes, the installer runs without asking, and
-/// the new version starts. Refused while a message is inside its undo-send window, so
-/// nobody loses the chance to take it back.
+/// the new version starts. (On Windows the NSIS installer relaunches it; on Linux the
+/// AppImage is replaced and PeetMail restarts itself.) Refused while a message is inside
+/// its undo-send window, so nobody loses the chance to take it back.
 pub fn install(app: &AppHandle) -> Result<()> {
     let sending = app.state::<AppState>().db.with(|c| outbox::sends_in_progress(c))?;
     if sending > 0 {
@@ -280,7 +346,22 @@ pub fn install(app: &AppHandle) -> Result<()> {
         std::fs::write(path, record.to_string())?;
         return Ok(());
     }
-    ready.update.install(&ready.bytes).map_err(|e| AppError::Other(format!("couldn't start the installer: {e}")))
+    ready.update.install(&ready.bytes).map_err(|e| AppError::Other(format!("couldn't start the installer: {e}")))?;
+    if cfg!(target_os = "linux") {
+        // The AppImage on disk is now the new version; run it. `restart` relaunches the
+        // AppImage file itself, not the mounted copy of the old one.
+        log::info!("update installed; restarting");
+        // `restart` reuses this run's arguments; a `--minimized` autostart would come back
+        // hidden. The flag makes the new version show its window.
+        if let Err(e) = app.state::<AppState>().db.with(|c| db::set_setting(c, KEY_RESTART_TO_UPDATE, "1")) {
+            log::warn!("couldn't note the restart: {e}");
+        }
+        log::logger().flush();
+        crate::telemetry::shutdown();
+        crate::crash::flush();
+        app.restart();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -317,6 +398,14 @@ mod tests {
         assert!(v("0.2.1-canary.9") < v("0.2.1-canary.10"), "run numbers compare as numbers");
         assert!(v("0.2.1-canary.10") < v("0.2.1"), "the next stable is newer than its canaries");
         assert!(v("0.3.0-beta.1") < v("0.3.0-canary.7"), "a canary of a beta sorts after the beta");
+    }
+
+    #[test]
+    fn linux_updates_only_an_appimage() {
+        assert!(not_installable("windows", false, false).is_none());
+        assert!(not_installable("linux", true, true).is_none());
+        assert!(not_installable("linux", false, true).is_some_and(|m| m.contains("AppImage")));
+        assert!(not_installable("linux", true, false).is_some_and(|m| m.contains("write to")));
     }
 
     #[test]

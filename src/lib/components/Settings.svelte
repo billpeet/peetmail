@@ -6,6 +6,7 @@
   import { api } from "#lib/api.js";
   import type { Privacy, UpdateChannel } from "#lib/api.js";
   import { keymap } from "#lib/keys.svelte.js";
+  import { autostartLabel } from "#lib/platform.js";
   import { mail, type SettingsPage } from "#lib/mail.svelte.js";
   import { updates, updateText } from "#lib/updates.svelte.js";
   import AccountsSection from "./AccountsSection.svelte";
@@ -200,7 +201,7 @@
         <SettingRow label="Keep running in the tray" hint="Closing the window leaves PeetMail in the tray, still syncing and notifying. Ctrl+Q quits.">
           <input type="checkbox" data-testid="close-to-tray" checked={mail.boot?.preferences.closeToTray ?? true} onchange={(e) => mail.setPreference("closeToTray", e.currentTarget.checked)} class="size-4 accent-accent" />
         </SettingRow>
-        <SettingRow label="Start with Windows" hint="Starts in the tray when you sign in to Windows.">
+        <SettingRow label={autostartLabel().label} hint={autostartLabel().hint}>
           <input type="checkbox" data-testid="autostart" checked={autostart} onchange={(e) => setAutostart(e.currentTarget.checked)} class="size-4 accent-accent" />
         </SettingRow>
       </SettingsCard>

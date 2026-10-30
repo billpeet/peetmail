@@ -2,7 +2,7 @@
 # CI runs `cargo deny check` (see .github/workflows/ci.yml).
 
 [graph]
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 
 [advisories]
 # Unmaintained crates deep in Tauri's tree are reported, not fatal; vulnerabilities fail.
@@ -23,6 +23,10 @@ allow = [
   "CDLA-Permissive-2.0",
   "BSL-1.0",
   "0BSD",
+]
+# Linux only, build time: system-deps (finding GTK and WebKitGTK) uses it.
+exceptions = [
+  { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
 ]
 
 [bans]

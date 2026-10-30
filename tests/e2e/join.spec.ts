@@ -24,8 +24,10 @@ test("a Teams link in the location is a join link: the calendar shows Join, and 
   await expect.poll(links).toEqual([TEAMS]);
   await expect(page.getByTestId("event-details")).toHaveCount(0); // didn't open the event
 
-  // The popup offers it too.
-  await block.click();
+  // The popup offers it too. Click the title corner: when the event shares its slot with
+  // another (mid-afternoon, against the fixed 3 pm events) the block narrows and its middle
+  // is the Join chip.
+  await block.click({ position: { x: 6, y: 6 } });
   await expect(page.getByTestId("event-join-link")).toHaveText("Microsoft Teams meeting");
   await page.keyboard.press("j");
   await expect.poll(async () => (await links()).length).toBe(2);

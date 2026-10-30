@@ -8,7 +8,7 @@ import { mail } from "./mail.svelte";
 export function updateText(s: UpdateStatus): string {
   switch (s.state) {
     case "disabled":
-      return "Updates aren't available in this build.";
+      return s.message ?? "Updates aren't available in this build.";
     case "idle":
       return "Not checked yet.";
     case "checking":

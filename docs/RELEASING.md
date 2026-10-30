@@ -1,6 +1,6 @@
 # Releasing PeetMail
 
-PeetMail ships on two update channels, both built by `.github/workflows/release.yml` after the full CI passes:
+PeetMail ships on two update channels, both built by `.github/workflows/release.yml` after the full CI passes. Every release has a Windows installer (NSIS, built on `windows-latest`) and a Linux AppImage (built on `ubuntu-22.04`, so it runs on that glibc and anything newer); a `publish` job then writes one `latest.json` listing both and creates the release. Both builds must pass: if either fails, nothing is published for that run (one platform without the other would leave the feed half-updated):
 
 | Channel | Built from | Version | Published |
 |---|---|---|---|
@@ -47,7 +47,7 @@ The public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); ev
 
 Merge or push to `master`. When the **Release** workflow finishes:
 
-- a pre-release `canary-v0.2.1-canary.57` holds the installer, its `.sig`, the symbols zip, `latest.json` and `SHA256SUMS.txt`;
+- a pre-release `canary-v0.2.1-canary.57` holds the Windows installer and the Linux AppImage, their `.sig` files, a symbols zip for each, `latest.json` and `SHA256SUMS.txt`;
 - the fixed pre-release `canary` has its `latest.json` replaced to point at that build. That file is what the Canary channel reads;
 - canary builds beyond the newest 10 are deleted with their tags.
 
@@ -88,7 +88,7 @@ Then:
    git push origin v0.2.0
    ```
    The workflow fails early if the tag doesn't match `package.json`.
-3. When it finishes, the summary links a **draft** release with the installer, `.sig`, symbols, `latest.json` and checksums. Its notes are the version's changelog section, followed by GitHub's list of commits since the last tag.
+3. When it finishes, the summary links a **draft** release with the Windows installer, the Linux AppImage, their `.sig` files, symbols, `latest.json` and checksums. Its notes are the version's changelog section, followed by GitHub's list of commits since the last tag.
 4. Smoke-test the installer (below), edit the notes if you like, and click **Publish release**. Publishing makes it the repo's latest release, which is where the Stable channel reads `releases/latest/download/latest.json`. Within a few hours every stable install offers it.
 
 A tag with a pre-release suffix (`v0.3.0-beta.1`) is drafted as a GitHub pre-release. It's never "latest", so the Stable channel ignores it; share its installer link directly.
@@ -114,3 +114,13 @@ Windows Sandbox (built into Windows 11 Pro: *Turn Windows features on or off →
 - [ ] Help → Report a problem: **Send** reaches Sentry's User Feedback with the diagnostics attached, **Write an email** is addressed to the feedback address, and **Export** saves a zip with no addresses or subjects in it.
 - [ ] Close to tray, reopen from the tray, quit with `Ctrl+Q`.
 - [ ] Uninstall from *Settings → Apps*. Data in `%APPDATA%\com.peetsoftware.peetmail` stays unless you tick the option to delete app data.
+
+### Linux
+
+CI already starts the release AppImage on Ubuntu 22.04 (`tests/linux/smoke.sh`). By hand, on a real desktop (an Ubuntu 24.04 VM and a Fedora KDE VM cover both main desktops and newer libraries):
+
+- [ ] `chmod +x` the AppImage and double-click it. It starts without root. (Ubuntu 24.04 needs `libfuse2t64` for AppImages.)
+- [ ] Sign in, sync, send to yourself. Your keyring holds an item "PeetMail: key for saved sign-ins" and `~/.local/share/com.peetsoftware.peetmail/` has `token.key.keyring`, not `token.key`. Quit and start again: still signed in.
+- [ ] The tray icon shows (on plain GNOME, only with the AppIndicator extension) and its menu works; a notification appears for new mail while PeetMail isn't focused.
+- [ ] Update from the previous release: run the previous AppImage, restart to update. The same file is replaced, PeetMail comes back on the new version, still signed in.
+- [ ] Settings → Notifications & startup → **Start when you log in** adds a launcher in `~/.config/autostart/` pointing at the AppImage file (not a `/tmp/.mount_…` path).

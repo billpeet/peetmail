@@ -13,6 +13,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | 4 Telemetry | Done in code and tests; sends nothing until the endpoint variable and token secret are set |
 | 5 Built-in sign-in apps | Microsoft done (app registered, secret set); Google waits for its client ID and secret |
 | 6 Support and upkeep | Done: secrets inventory, Dependabot, changelog and What's new, user docs and Help, diagnostics and feedback, startup health checks, release checklist |
+| 7 Linux | Done in code, CI and release workflow; first real release run happens with the next push |
 
 ## Decisions
 
@@ -25,6 +26,7 @@ How PeetMail goes from "runs from source on one PC" to "installed and auto-updat
 | Consent | Crash reports and telemetry on by default, with a first-run notice and an opt-out in Settings. |
 | Identity | Identifier `com.peetsoftware.peetmail`, publisher "Peet Software". |
 | Release channels | Canary (a build of every push to `master`) and Stable (tagged releases only). |
+| Linux packaging | One AppImage for every distribution, self-updating through the same channels. See Stage 7. |
 | Sentry | Project `peetmail` in the `metroid` org. DSN in the repo variable `PEETMAIL_SENTRY_DSN`; uploads use the `SENTRY_AUTH_TOKEN` secret. |
 | OTLP token | Gateway `https://otlp.biap.cc` (Traefik basic auth in front of Alloy on futura). PeetMail has its own user, `peetmail`; its header is the `PEETMAIL_OTLP_HEADERS` secret and the URL the `PEETMAIL_OTLP_ENDPOINT` variable. The route only reaches Alloy's OTLP receiver, so the credential can write and nothing else. |
 
@@ -186,6 +188,45 @@ Agreed plan, in order. The first-run privacy notice is already done (Stages 3 an
 6. **Feedback** (done): Help → Report a problem (also in the palette). The form sends a Sentry `feedback` envelope item (the Rust SDK has no type for it, so `support::feedback_envelope` writes it) through a client made just for it, so it works with crash reports off and the user's words aren't scrubbed (the form says so). It carries the install ID, release and channel, an optional reply address, and the diagnostics zip as an attachment unless unticked. It isn't tied to breadcrumbs; the install ID finds the same install's crash reports. "Prefer email?" opens a draft in PeetMail (or the default mail app with no account) to `PEETMAIL_FEEDBACK_EMAIL` with the version and install ID; builds without the variable hide it, and builds with neither say to export diagnostics and send them to whoever gave you PeetMail. E2E covers all three against the fake Sentry.
 7. **Startup health checks** (done; `src-tauri/src/health.rs`, `HealthBanner.svelte`): at startup and every 6 hours, in the background. The database's `quick_check` after a migration (its own read-only connection, so a big file doesn't stall the app), free space under 500 MB, a write probe in the data folder, the clock against Microsoft Graph's `Date` header (over 5 minutes off; offline means no verdict), and WebView2 older than 120. Each problem is a banner (red for errors, amber for warnings) saying what to do, with Help → Troubleshooting covering each one; dismissing hides it for the session ("Dismiss warnings" in the palette hides them all). Each finding counts `peetmail.health.issues` with `peetmail.health.check`. Measuring and deciding are separate: Rust tests cover the decisions and the real measurements; E2E runs the real checks (the clock against the fake Graph) and, through the debug-only `PEETMAIL_FAKE_HEALTH`, every banner and the telemetry count.
 8. **Release checklist** (done): "Is the canary ready?" in `docs/RELEASING.md`: two days on canary (a week for migrations, sign-in or sync changes), no new Sentry issues or open feedback from canary, telemetry against the last stable week, a canary self-update, the migration path from the last stable in Sandbox, and the changelog and Help read through. The smoke test also covers health banners, Help, What's new and Report a problem.
+
+## Stage 7: Linux (done)
+
+### Packaging: one AppImage
+
+Linux users get `PeetMail_<version>_amd64.AppImage`. It was picked over the alternatives because it's the only format that is one file for every mainstream distribution *and* that Tauri's updater can replace in place without root, which keeps updates working exactly like Windows (background download, signature check, "restart to update", the same Stable and Canary feeds).
+
+| Option | Why not (for now) |
+|---|---|
+| `.deb` / `.rpm` | One per distro family, and the updater installs them through `pkexec` (a root password prompt on every update). Arch needs a third (AUR). Worth adding later for people who want the package manager to own it, with updates left to a repo. |
+| Flatpak (Flathub) | Cross-distro, but updates come from Flathub on its schedule and our channels don't map onto it; the sandbox also needs portals for the keyring, tray and opening attachments. A good second channel later. |
+| Snap | Ubuntu-centric; same update-ownership problem. |
+
+The AppImage is built on Ubuntu 22.04 (the oldest supported LTS): it bundles WebKitGTK and GTK and links against 22.04's glibc, so it runs on anything from 2022 on (Debian 12, Fedora, Arch, Mint, openSUSE Tumbleweed...). It needs FUSE 2 on the host, which Ubuntu 24.04+ no longer installs by default; the help says how, and `APPIMAGE_EXTRACT_AND_RUN=1` works without it. x86_64 only for now; an aarch64 build is an `ubuntu-22.04-arm` matrix entry away.
+
+### What changed in the app
+
+- **Saved sign-ins** (`secure.rs`): DPAPI has no Linux equivalent, so tokens are sealed with ChaCha20-Poly1305 (ring, already in the tree) under a random 256-bit key kept in the Secret Service keyring (GNOME Keyring, KWallet 5.97+, KeePassXC) via the `secret-service` crate (zbus 5, also already in the tree). A locked keyring is unlocked through its own prompt; a dismissed prompt is an error that background work doesn't repeat for five minutes (signing in asks again at once), never a reason to fall back. Only a desktop with no keyring service at all (a bare window manager, a server) gets the key in `token.key` with mode 0600, like Chromium's basic store. A marker file records that the key is in the keyring, so a keyring that later won't answer is an error rather than a reason to mint a second key that orphans the saved tokens. A damaged key file is set aside so the user can sign in again. Test runs (`PEETMAIL_DATA_DIR`) never touch the real keyring.
+- **Private files**: the data folder is made 0700 (some distros' home folders are world-readable), and attachments opened with a double-click are copied to PeetMail's own cache folder (0700) rather than the shared `/tmp`. Linux launchers, scripts and packages (`.desktop`, `.sh`, `.AppImage`, `.deb`...) join the list of attachments PeetMail won't open directly.
+- **Updates** (`update.rs`): only an AppImage in a folder the user can write to updates itself (`APPIMAGE` is set by its runtime); anything else says why and never checks. After installing, the app restarts itself (NSIS does that on Windows); `AppHandle::restart` relaunches the AppImage file, not the mounted old copy, and a flag in the database makes the new version show its window even if the old one was started hidden by autostart. The manifest lists the AppImage under `linux-x86_64-appimage` and `linux-x86_64`.
+- **Platform code** behind `cfg`: the fatal-start message box (zenity or kdialog, falling back to stderr: GTK bindings directly would be an unmaintained direct dependency), free disk space (`statvfs`), memory gauge (`/proc/self/statm`), OS name in diagnostics (`/etc/os-release` and the kernel, plus desktop, session type and whether it's an AppImage), `os.type` in telemetry, and the early data dir for the crash reporter (`$XDG_DATA_HOME`). The WebView2 version check is Windows-only (WebKitGTK's version numbers aren't comparable). The scrubber removes `/home/<user>` and `/var/home/<user>` paths as it does Windows profile paths.
+- **UI**: "Start with Windows" reads "Start when you log in" on Linux. Everything else (custom title bar, tray, notifications, autostart, single instance) works through Tauri's Linux backends; tray icons need an AppIndicator-capable desktop, so the help covers plain GNOME.
+- **Debug symbols**: the Linux release build keeps line tables, and `scripts/split-debuginfo.sh` (Tauri's `beforeBundleCommand`) moves them into `peetmail.debug` before bundling. That file is uploaded to Sentry and attached to the release as a zip, the same as the Windows PDB.
+
+### CI and release
+
+- `ci.yml` has a `linux` job on Ubuntu 22.04: clippy `-D warnings`, `cargo test`, a debug AppImage build and `tests/linux/smoke.sh`. The Playwright suite stays Windows-only: it drives WebView2 over CDP, which WebKitGTK doesn't speak. `cargo deny` checks both targets.
+- `release.yml` is now `version` → `build` (matrix: windows, linux) → `publish`. Each build uploads its signed artifact, `.sig` and symbols; `publish` writes one `latest.json` with both platforms (`scripts/update-manifest.ts`), checksums, finalizes the Sentry release and creates the canary or draft stable release as before. The release AppImage is smoke-tested before upload.
+
+### Checked by hand while building it
+
+In an Ubuntu 22.04 container with Xvfb: the debug AppImage signs in against the fake Graph, syncs, renders mail and calendar, and takes keyboard shortcuts (`?`, `Ctrl+K`, `Ctrl+Shift+U`). A real self-update: a 0.1.0 AppImage found 0.1.1 on a local feed, verified it, installed it over its own file on `Ctrl+Shift+U`, and came back as 0.1.1. With GNOME Keyring unlocked, the key landed in the keyring, and a restart decrypted the saved sign-in and synced. The release AppImage (83 MB; a 21 MB stripped binary, 83 MB of split-out debug info with a matching build ID) starts on Debian 12, Ubuntu 24.04, Fedora 44 and Arch (glibc 2.36 to 2.44) as well as the Ubuntu 22.04 it was built on. Like any AppImage it takes fonts, X11/Wayland client libraries and Mesa (including `libGLESv2`, which WebKitGTK loads at run time) from the host: every desktop install has them, minimal containers don't.
+
+### Not done
+
+- No E2E suite on Linux. `tauri-driver` with WebKitWebDriver could run a subset; the harness would need a WebDriver backend next to its CDP one.
+- `.deb`/`.rpm`/Flatpak, aarch64, and an app-menu entry without a helper tool (AppImages don't install a `.desktop` file themselves).
+- The Linux jobs run on GitHub's `ubuntu-22.04` image, which goes when 22.04 leaves standard support (April 2027). Moving to an `ubuntu:22.04` container on `ubuntu-latest` keeps the same glibc floor.
+- Clicking the tray icon on Linux opens its menu rather than the window (AppIndicator has no click event); the menu's **Open PeetMail** does it.
 
 ## Suggested order
 

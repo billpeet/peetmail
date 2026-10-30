@@ -22,6 +22,7 @@ const status = (s: Partial<Status>): Status => ({
 describe("updateText", () => {
   it("says what's happening at each step", () => {
     expect(updateText(status({ state: "disabled" }))).toBe("Updates aren't available in this build.");
+    expect(updateText(status({ state: "disabled", message: "Use your package manager." }))).toBe("Use your package manager.");
     expect(updateText(status({ state: "downloading", version: "0.3.0" }))).toBe("Downloading 0.3.0…");
     expect(updateText(status({ state: "ready", version: "0.3.0" }))).toBe("0.3.0 is ready. Restart to update.");
     expect(updateText(status({ state: "upToDate" }))).toBe("Up to date.");

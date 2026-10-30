@@ -9,6 +9,12 @@ Four layers, fastest first. `pnpm verify` runs them all.
 | Unit (Rust) | `pnpm test:rust` | `#[cfg(test)]` modules: SQL queries, PKCE, sanitizer, Graph parsing |
 | E2E | `pnpm test:e2e` | The real app end to end against the fake Graph server |
 
+## Linux
+
+The E2E suite needs WebView2's DevTools protocol, which WebKitGTK doesn't have, so it runs on Windows only. On Linux, CI's `linux` job (`.github/workflows/ci.yml`) runs clippy and the Rust tests, builds a debug AppImage, and starts it with `tests/linux/smoke.sh` (Xvfb, a throwaway home folder): the window opens, the database is created, sync and the health checks run. The release build runs the same smoke test on the AppImage it ships.
+
+To check Linux code from Windows, use WSL or a container on Ubuntu 22.04 with the packages from the README; copy the repo into the Linux filesystem (not `/mnt/c`) and run `pnpm install`, `pnpm lint:rust`, `pnpm test:rust` and `pnpm tauri build --debug --bundles appimage` there. The debug AppImage honours the same `PEETMAIL_*` test knobs, so it can be pointed at the fakes (`node tests/harness/fake-graph.ts`) and driven with `xdotool` on an Xvfb display. With no `PEETMAIL_DATA_DIR`, saved sign-ins use the desktop keyring (`gnome-keyring-daemon --unlock` in a `dbus-launch` session gives one).
+
 ## How E2E works
 
 ```

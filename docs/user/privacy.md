@@ -2,11 +2,11 @@
 
 ## On your PC
 
-PeetMail keeps a copy of your recent mail and calendar on your PC, so it's fast and works offline: message details, the bodies of messages you've opened or are likely to open, and your calendar. How much is under **Settings → Storage**. It's in `%APPDATA%\com.peetsoftware.peetmail`.
+PeetMail keeps a copy of your recent mail and calendar on your PC, so it's fast and works offline: message details, the bodies of messages you've opened or are likely to open, and your calendar. How much is under **Settings → Storage**. It's in `%APPDATA%\com.peetsoftware.peetmail` on Windows and `~/.local/share/com.peetsoftware.peetmail` on Linux.
 
-Your sign-ins are stored encrypted with Windows (DPAPI), so only your Windows account on this PC can use them. PeetMail never sees your password: you sign in on Microsoft's or Google's own page.
+Your sign-ins are stored encrypted. On Windows that's done by Windows itself (DPAPI), so only your Windows account on this PC can use them. On Linux the key is kept in your desktop's keyring (GNOME Keyring, KWallet or KeePassXC), which unlocks when you log in; on a desktop without one, the key is in a file in PeetMail's data folder that only your user can read. PeetMail never sees your password: you sign in on Microsoft's or Google's own page.
 
-Uninstalling keeps your data unless you tick **Delete the application data** in the uninstaller.
+On Windows, uninstalling keeps your data unless you tick **Delete the application data** in the uninstaller. On Linux, deleting the AppImage leaves your data; delete the folder above to remove it.
 
 ## What it asks Microsoft and Google for
 

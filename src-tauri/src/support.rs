@@ -127,9 +127,11 @@ fn summary(app: &AppHandle, state: &AppState) -> Result<Value> {
             "installId": install_id,
         },
         "system": {
-            "windows": windows_version(),
-            "webview2": tauri::webview_version().unwrap_or_else(|e| format!("unknown ({e})")),
+            "os": os_version(),
+            // WebView2 on Windows, WebKitGTK on Linux.
+            "webview": tauri::webview_version().unwrap_or_else(|e| format!("unknown ({e})")),
             "arch": std::env::consts::ARCH,
+            "linux": linux_session(),
         },
         "updates": crate::update::status(app),
         "privacy": {
@@ -231,7 +233,8 @@ pub fn log_files(dir: &Path) -> Vec<(String, String)> {
 }
 
 /// "Windows 11 Pro 24H2 (26100)" from the registry.
-fn windows_version() -> String {
+#[cfg(windows)]
+fn os_version() -> String {
     let key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
     let product = reg_string(key, "ProductName").unwrap_or_else(|| "Windows".into());
     let display = reg_string(key, "DisplayVersion").unwrap_or_default();
@@ -241,6 +244,38 @@ fn windows_version() -> String {
     format!("{product} {display} ({build})").replace("  ", " ")
 }
 
+/// "Ubuntu 24.04.1 LTS (Linux 6.8.0-45-generic)" from os-release and the kernel.
+#[cfg(not(windows))]
+fn os_version() -> String {
+    let release = std::fs::read_to_string("/etc/os-release").or_else(|_| std::fs::read_to_string("/usr/lib/os-release")).unwrap_or_default();
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    describe_linux(&release, kernel.trim())
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+pub fn describe_linux(os_release: &str, kernel: &str) -> String {
+    let field = |name: &str| {
+        os_release.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix('=')).map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+    };
+    let distro = field("PRETTY_NAME").or_else(|| field("NAME")).filter(|n| !n.is_empty()).unwrap_or_else(|| "Linux".into());
+    if kernel.is_empty() { distro } else { format!("{distro} (Linux {kernel})") }
+}
+
+/// Linux only: what the desktop is and how PeetMail was installed, which explain most
+/// tray, keyring and rendering differences. None of it names the user or the PC.
+fn linux_session() -> Option<Value> {
+    if cfg!(windows) {
+        return None;
+    }
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    Some(json!({
+        "desktop": var("XDG_CURRENT_DESKTOP"),
+        "session": var("XDG_SESSION_TYPE"),
+        "appImage": std::env::var_os("APPIMAGE").is_some(),
+    }))
+}
+
+#[cfg(windows)]
 fn reg_string(key: &str, value: &str) -> Option<String> {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
@@ -338,6 +373,16 @@ pub fn feedback_envelope(f: &FeedbackInput) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_is_described_by_its_os_release() {
+        let ubuntu = "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID=ubuntu\n";
+        assert_eq!(describe_linux(ubuntu, "6.8.0-45-generic"), "Ubuntu 24.04.1 LTS (Linux 6.8.0-45-generic)");
+        assert_eq!(describe_linux("NAME='Arch Linux'\nID=arch\n", "6.11.5-arch1-1"), "Arch Linux (Linux 6.11.5-arch1-1)");
+        assert_eq!(describe_linux("", ""), "Linux");
+        // PRETTY_NAME_EXTRA isn't PRETTY_NAME.
+        assert_eq!(describe_linux("PRETTY_NAME_EXTRA=x\nNAME=Fedora Linux\n", ""), "Fedora Linux");
+    }
 
     #[test]
     fn the_database_summary_has_shape_not_content() {

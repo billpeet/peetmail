@@ -1217,6 +1217,23 @@ pub async fn download_attachment(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Where attachments are copied to be opened. Windows: the user's own temp folder. Linux:
+/// PeetMail's cache folder, kept private, since `/tmp` is shared by every user.
+fn attachments_dir(app: &AppHandle) -> Result<std::path::PathBuf> {
+    let paths = tauri::Manager::path(app);
+    if cfg!(windows) {
+        return Ok(paths.temp_dir().map_err(|e| AppError::Other(e.to_string()))?.join("PeetMail").join("attachments"));
+    }
+    let dir = paths.app_cache_dir().map_err(|e| AppError::Other(e.to_string()))?.join("attachments");
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 /// Opens an attachment in its default app (double-click), from a copy in PeetMail's temp
 /// folder. Tests (PEETMAIL_OPEN_LOG) get the copy's path logged instead of an app opening.
 #[tauri::command]
@@ -1227,7 +1244,7 @@ pub async fn open_attachment(
     attachment_id: String,
     name: String,
 ) -> Result<()> {
-    let dir = tauri::Manager::path(&app).temp_dir().map_err(|e| AppError::Other(e.to_string()))?.join("PeetMail").join("attachments");
+    let dir = attachments_dir(&app)?;
     let path = mail::attachment_for_opening(&state, message_id, &attachment_id, &name, &dir).await?;
     if let Some(log) = crate::testenv::get("PEETMAIL_OPEN_LOG") {
         use std::io::Write;
