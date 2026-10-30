@@ -1,7 +1,7 @@
 {
   "name": "peetmail",
   "version": "0.2.0",
-  "description": "Fast, keyboard-first mail and calendar for Windows",
+  "description": "Fast, keyboard-first mail and calendar for Windows and Linux",
   "author": "Peet Software",
   "private": true,
   "type": "module",

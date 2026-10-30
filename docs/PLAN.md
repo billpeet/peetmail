@@ -1,6 +1,6 @@
 # PeetMail plan
 
-A Superhuman-style mail and calendar client for Windows. Personal use, Microsoft 365 and Outlook.com first, Gmail later.
+A Superhuman-style mail and calendar client for Windows and Linux. Personal use, Microsoft 365 and Outlook.com first, Gmail later.
 
 ## Principles
 
@@ -20,7 +20,7 @@ A Superhuman-style mail and calendar client for Windows. Personal use, Microsoft
 | Token storage | DPAPI-encrypted blob in SQLite | Credential Manager caps blobs at 2.5KB, and Microsoft refresh tokens can be bigger. |
 | Message IDs | Graph immutable IDs (`Prefer: IdType="ImmutableId"`) | IDs survive folder moves, so archive and undo don't orphan cache rows. |
 | Sync | Delta queries, polled every 60s | Graph push notifications need a public webhook. Delta polls cost one request per folder when nothing changed. |
-| Platform | Windows only for now | Tauri keeps macOS open later at low cost. |
+| Platform | Windows, and Linux as an AppImage (see `docs/DISTRIBUTION.md`, Stage 7) | Tauri keeps macOS open later at low cost. |
 | IPC types | Hand-written TS types in `src/lib/api.ts` | Command count is small. Revisit `tauri-specta` once it passes ~25 commands. |
 
 ## Architecture

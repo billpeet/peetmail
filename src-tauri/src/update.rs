@@ -8,6 +8,10 @@
 //! Updates are checked in the background, downloaded and signature-checked straight away,
 //! and installed only when the user asks (footer button or `Ctrl+Shift+U`). Builds without
 //! a repo compiled in (local and dev builds) never check.
+//!
+//! On Linux only the AppImage updates itself: the new AppImage replaces the file in place
+//! (no root needed) and PeetMail relaunches. Any other install (built from source, a distro
+//! package) is left to whatever installed it.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -92,6 +96,16 @@ fn channel(app: &AppHandle) -> String {
     resolve_channel(saved.as_deref(), build_channel()).to_string()
 }
 
+/// Why this install can't update itself, if it can't. Linux needs the AppImage's own path
+/// (`APPIMAGE`, set by the AppImage runtime); the updater rewrites that file.
+pub fn not_installable(os: &str, appimage: bool) -> Option<&'static str> {
+    (os == "linux" && !appimage).then_some("PeetMail updates itself only when run as an AppImage. Update this copy the way you installed it.")
+}
+
+fn install_blocker() -> Option<&'static str> {
+    not_installable(std::env::consts::OS, std::env::var_os("APPIMAGE").is_some())
+}
+
 fn feed(channel: &str) -> Option<Url> {
     feed_url(channel, option_env!("PEETMAIL_UPDATE_REPO"), testenv::get("PEETMAIL_UPDATE_URL").as_deref())
 }
@@ -119,9 +133,12 @@ pub fn status(app: &AppHandle) -> UpdateStatus {
 pub fn init(app: &AppHandle) {
     app.manage(Updates::default());
     let channel = channel(app);
-    let enabled = feed(&channel).is_some();
+    let has_feed = feed(&channel).is_some();
+    let blocker = if has_feed { install_blocker() } else { None };
+    let enabled = has_feed && blocker.is_none();
     set(app, |s| {
         s.state = if enabled { "idle" } else { "disabled" };
+        s.message = blocker.map(String::from);
         s.channel = channel;
         s.current_version = app.package_info().version.to_string();
     });
@@ -151,6 +168,12 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
         let Some(url) = feed(&channel) else {
             return set(app, |s| s.state = "disabled");
         };
+        if let Some(why) = install_blocker() {
+            return set(app, |s| {
+                s.state = "disabled";
+                s.message = Some(why.into());
+            });
+        }
         if updates.ready.lock().unwrap().as_ref().is_some_and(|r| r.channel == channel) {
             return status(app);
         }
@@ -242,7 +265,7 @@ pub fn set_channel(app: &AppHandle, channel: &str) -> Result<UpdateStatus> {
         }
         ready.is_some()
     };
-    let enabled = feed(channel).is_some();
+    let enabled = feed(channel).is_some() && install_blocker().is_none();
     let out = set(app, |s| {
         s.channel = channel.to_string();
         if !keep_ready {
@@ -261,8 +284,9 @@ pub fn set_channel(app: &AppHandle, channel: &str) -> Result<UpdateStatus> {
 }
 
 /// Installs the downloaded update: PeetMail closes, the installer runs without asking, and
-/// the new version starts. Refused while a message is inside its undo-send window, so
-/// nobody loses the chance to take it back.
+/// the new version starts. (On Windows the NSIS installer relaunches it; on Linux the
+/// AppImage is replaced and PeetMail restarts itself.) Refused while a message is inside
+/// its undo-send window, so nobody loses the chance to take it back.
 pub fn install(app: &AppHandle) -> Result<()> {
     let sending = app.state::<AppState>().db.with(|c| outbox::sends_in_progress(c))?;
     if sending > 0 {
@@ -280,7 +304,17 @@ pub fn install(app: &AppHandle) -> Result<()> {
         std::fs::write(path, record.to_string())?;
         return Ok(());
     }
-    ready.update.install(&ready.bytes).map_err(|e| AppError::Other(format!("couldn't start the installer: {e}")))
+    ready.update.install(&ready.bytes).map_err(|e| AppError::Other(format!("couldn't start the installer: {e}")))?;
+    if cfg!(target_os = "linux") {
+        // The AppImage on disk is now the new version; run it. `restart` relaunches the
+        // AppImage file itself, not the mounted copy of the old one.
+        log::info!("update installed; restarting");
+        log::logger().flush();
+        crate::telemetry::shutdown();
+        crate::crash::flush();
+        app.restart();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -317,6 +351,13 @@ mod tests {
         assert!(v("0.2.1-canary.9") < v("0.2.1-canary.10"), "run numbers compare as numbers");
         assert!(v("0.2.1-canary.10") < v("0.2.1"), "the next stable is newer than its canaries");
         assert!(v("0.3.0-beta.1") < v("0.3.0-canary.7"), "a canary of a beta sorts after the beta");
+    }
+
+    #[test]
+    fn linux_updates_only_an_appimage() {
+        assert!(not_installable("windows", false).is_none());
+        assert!(not_installable("linux", true).is_none());
+        assert!(not_installable("linux", false).is_some_and(|m| m.contains("AppImage")));
     }
 
     #[test]

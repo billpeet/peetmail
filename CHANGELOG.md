@@ -12,6 +12,8 @@ Unreleased into that version's section when cutting a stable release.
 
 ## Unreleased
 
+- PeetMail runs on Linux: download the AppImage from the releases page, and it works on Ubuntu, Debian, Fedora, Arch and other mainstream distributions, and updates itself like the Windows version. Saved sign-ins are kept encrypted with your desktop's keyring. See Help → Getting started.
+
 ## 0.2.0 — 2026-10-30
 
 - **Signatures**: set one for each account in **Settings → Mail**. It goes under new messages, and under replies and forwards if you choose. Change it for one message in the composer, or take it off with **Ctrl+Shift+S**. If your organisation adds signatures itself (CodeTwo, Exclaimer), tick that option and PeetMail won't add a second one.

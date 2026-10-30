@@ -1,12 +1,24 @@
 # Getting started
 
-PeetMail is a fast, keyboard-first mail and calendar app for Windows. It works with Microsoft 365, Outlook.com and Gmail, and puts all your accounts in one inbox.
+PeetMail is a fast, keyboard-first mail and calendar app for Windows and Linux. It works with Microsoft 365, Outlook.com and Gmail, and puts all your accounts in one inbox.
 
 ## Install
+
+### Windows
 
 1. Download `PeetMail_<version>_x64-setup.exe` from the [releases page](https://github.com/billpeet/peetmail/releases).
 2. Run it. It installs for you only, without needing an administrator.
 3. Windows may say **"Windows protected your PC"**, because the installer isn't signed yet. Choose **More info → Run anyway**.
+
+### Linux
+
+PeetMail for Linux is one file, an AppImage, that runs on any mainstream 64-bit distribution from 2022 on: Ubuntu 22.04 and later, Debian 12 and later, Fedora, Arch, Linux Mint, openSUSE and others. Nothing is installed system-wide and you don't need root.
+
+1. Download `PeetMail_<version>_amd64.AppImage` from the same [download page on GitHub](https://github.com/billpeet/peetmail/releases).
+2. Put it somewhere it can stay, such as `~/Applications`, and make it executable: right-click → **Properties → Allow executing file as program**, or `chmod +x PeetMail_*.AppImage` in a terminal.
+3. Double-click it, or run it from a terminal.
+
+If it doesn't start, see [Troubleshooting](troubleshooting.md). To get PeetMail in your app menu, use a tool such as Gear Lever or AppImageLauncher, or turn on **Start when you log in** (below).
 
 PeetMail keeps itself up to date after that; see [Updates](updates.md).
 
@@ -55,10 +67,12 @@ Format as you write: **Ctrl+B**, **Ctrl+I** and **Ctrl+U** for bold, italic and 
 
 **Ctrl+Shift+C** and **Ctrl+Shift+B** add Cc and Bcc. People in Bcc get the message, but no one else sees their addresses.
 
-To attach files, press **Ctrl+Shift+A** (or the paperclip) to pick them, drag them from Explorer onto the message, or paste them, a screenshot included. A message can carry up to 25 MB of attachments. A forward lists the original's attachments; remove any you don't want to pass on with its **×**.
+To attach files, press **Ctrl+Shift+A** (or the paperclip) to pick them, drag them from Explorer (or your file manager) onto the message, or paste them, a screenshot included. A message can carry up to 25 MB of attachments. A forward lists the original's attachments; remove any you don't want to pass on with its **×**.
 
 ## Your mail on this PC
 
 PeetMail keeps recent mail on your PC, so it opens instantly and you can read it offline. How much it keeps is under **Settings → Storage**. Pictures in messages are blocked until you press **i**, so senders can't tell when you've read their mail. A message's attachments are listed under it: click one to save it to your Downloads folder, or double-click it to open it. PeetMail won't open files that can run programs (such as `.exe` or `.js`) with a double-click; save them instead, and only open them if you trust the sender.
 
-Closing the window keeps PeetMail running in the tray, so you still get new-mail notifications. **Ctrl+Q** quits. **Settings → Notifications & startup** changes both, and can start PeetMail with Windows.
+Closing the window keeps PeetMail running in the tray, so you still get new-mail notifications. **Ctrl+Q** quits. **Settings → Notifications & startup** changes both, and can start PeetMail when you sign in to your computer.
+
+On Linux the tray icon needs a desktop that shows tray icons: KDE, Cinnamon, Xfce and Ubuntu's GNOME do; plain GNOME (Fedora, Debian) needs the *AppIndicator and KStatusNotifierItem Support* extension. Without a tray, open PeetMail again from wherever you started it and the running window comes back.

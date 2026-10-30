@@ -74,13 +74,36 @@ fn fatal_startup_error(message: &str) -> ! {
     log::error!("cannot start: {message}");
     log::logger().flush();
     if !testenv::flag("PEETMAIL_HEADLESS") {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let (text, caption) = (wide(message), wide("PeetMail can't start"));
-        // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
-        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+        show_error_box("PeetMail can't start", message);
     }
     std::process::exit(1);
+}
+
+#[cfg(windows)]
+fn show_error_box(caption: &str, message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text, caption) = (wide(message), wide(caption));
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call.
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+/// Linux has no system message box API; the desktop's dialog tools do the job (zenity on
+/// GNOME and most others, kdialog on KDE). Without either the reason is only in the log
+/// and on stderr.
+#[cfg(not(windows))]
+fn show_error_box(caption: &str, message: &str) {
+    use std::process::Command;
+    eprintln!("{caption}: {message}");
+    let tries: [(&str, Vec<&str>); 2] = [
+        ("zenity", vec!["--error", "--title", caption, "--text", message, "--no-markup"]),
+        ("kdialog", vec!["--title", caption, "--error", message]),
+    ];
+    for (tool, args) in tries {
+        if Command::new(tool).args(args).status().is_ok_and(|s| s.success()) {
+            return;
+        }
+    }
 }
 
 /// Brings the main window back (tray click, second launch, tray menu).
@@ -138,7 +161,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     let headless = testenv::flag("PEETMAIL_HEADLESS");
-    // Started with Windows: wait in the tray.
+    // Started at sign-in (autostart): wait in the tray.
     let minimized = std::env::args().any(|a| a == "--minimized");
     let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
         .title("PeetMail")
@@ -175,7 +198,7 @@ pub fn run() {
     let data_dir_override = testenv::get("PEETMAIL_DATA_DIR").map(std::path::PathBuf::from);
     // First, before Tauri: crash reporting covers startup, and the crash reporter process
     // (this binary run again) stops inside here.
-    let roaming_dir = data_dir_override.clone().or_else(|| std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join(datadir::IDENTIFIER)));
+    let roaming_dir = data_dir_override.clone().or_else(datadir::app_data_dir);
     if let Some(dir) = &roaming_dir {
         crash::init_early(&dir.join("peetmail.db"));
     }
@@ -236,6 +259,7 @@ pub fn run() {
                 }
             };
             std::fs::create_dir_all(&dir)?;
+            secure::init(&dir, !is_test);
             let db = match db::Db::open(&dir.join("peetmail.db")) {
                 Ok(db) => db,
                 Err(e) => fatal_startup_error(&e.to_string()),

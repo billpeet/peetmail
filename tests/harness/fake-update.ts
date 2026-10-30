@@ -43,7 +43,7 @@ export async function startFakeUpdates() {
       // The updater reads 204 as "no update".
       if (!release) return void res.writeHead(204).end();
       const url = `${origin}/${release.tampered ? "tampered" : "payload"}.bin`;
-      const body = JSON.stringify(manifest({ version: release.version, url, signature, notes: release.notes }));
+      const body = JSON.stringify(manifest({ version: release.version, windows: { url, signature }, linux: { url, signature }, notes: release.notes }));
       return void setTimeout(() => res.writeHead(200, { "content-type": "application/json" }).end(body), release.delayMs ?? 0);
     }
     if (path === "/payload.bin" || path === "/tampered.bin") {
