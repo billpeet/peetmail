@@ -140,7 +140,8 @@ jobs:
         run: pnpm tauri build --debug --bundles appimage
 
       - name: Smoke-test the AppImage
-        run: sh tests/linux/smoke.sh src-tauri/target/debug/bundle/appimage/PeetMail_*_amd64.AppImage
+        # Offline, as the release build's smoke test runs: this checks that works on the runner.
+        run: SMOKE_OFFLINE=1 sh tests/linux/smoke.sh src-tauri/target/debug/bundle/appimage/PeetMail_*_amd64.AppImage
 
   audit:
     name: Dependency audit

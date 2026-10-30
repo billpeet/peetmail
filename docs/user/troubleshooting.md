@@ -28,8 +28,8 @@
 - **"error while loading shared libraries"** (for example `libfontconfig.so.1` or `libGLESv2.so.2`): PeetMail brings most of what it needs, but takes fonts and graphics drivers from your system, as every app does. A normal desktop install has them; on a minimal one, install GTK 3 and Mesa (on Debian and Ubuntu: `sudo apt install libgtk-3-0 libgl1 libegl1 libgles2 libgbm1`).
 - **The window opens but stays blank or flickers**: usually the graphics driver (often NVIDIA, or a virtual machine). Start PeetMail with `WEBKIT_DISABLE_DMABUF_RENDERER=1 ./PeetMail_*.AppImage`; if that fixes it, put the same variable in the launcher you use.
 - **There's no tray icon**: your desktop doesn't show tray icons; see [Getting started](getting-started.md). Open PeetMail again to bring the window back, or turn off **Keep running in the tray** under **Settings → Notifications & startup**.
-- **Your keyring asks for a password when PeetMail starts**: PeetMail keeps the key to your saved sign-ins in your desktop's keyring, and the keyring was locked (common with automatic login). Unlock it, or give the keyring your login password so it unlocks when you log in. If you dismiss it, accounts can't sync until PeetMail next starts.
-- **An update won't install**: the AppImage has to be somewhere you can write to; move it into your home folder and run it from there.
+- **Your keyring asks for a password when PeetMail starts**: PeetMail keeps the key to your saved sign-ins in your desktop's keyring, and the keyring was locked (common with automatic login). Unlock it, or give the keyring your login password so it unlocks when you log in. If you dismiss it, PeetMail asks again in a few minutes, or straight away when you sign in to an account.
+- **"PeetMail can't update itself from this folder"**: the AppImage has to be somewhere you can write to; move it into your home folder and run it from there.
 
 ## Warnings at the top of the window
 

@@ -42,9 +42,10 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // Windows profile paths carry the user name, which can contain spaces: take
         // everything up to the next separator, quote or line end.
         rule(r"(?i)\b([A-Z]:[\\/]+Users[\\/]+)[^\\/\x22'\r\n]+", "${1}[user]"),
-        // Linux home folders (/home/ann, Fedora Atomic's /var/home/ann), the same way. Only
-        // at the start of a path, so a route like /api/home/feed is left alone.
-        rule(r#"(^|[\s"'=:(\[])(/(?:var/)?home/)[^/"'\r\n]+"#, "${1}${2}[user]"),
+        // Linux home folders (/home/ann, Fedora Atomic's /var/home/ann) and removable drives
+        // (/media/ann, /run/media/ann), the same way, also as file:// URIs. Only at the start
+        // of a path, so a route like /api/home/feed is left alone.
+        rule(r#"(^|[\s"'=:(\[]|file://)(/(?:var/)?home/|/(?:run/)?media/)[^/"'\r\n]+"#, "${1}${2}[user]"),
         // Provider message, thread and event IDs and other long opaque strings.
         rule(r"[A-Za-z0-9+/_=-]{40,}", "[id]"),
     ]
@@ -120,6 +121,9 @@ mod tests {
         assert_eq!(scrub(r#"path="/var/home/sam/Downloads/q4.pdf""#), r#"path="/var/home/[user]/Downloads/q4.pdf""#);
         assert_eq!(scrub("/home/marti"), "/home/[user]");
         assert_eq!(scrub("GET /api/home/feed"), "GET /api/home/feed");
+        assert_eq!(scrub("can't open file:///home/ann/Documents/x.pdf"), "can't open file:///home/[user]/Documents/x.pdf");
+        assert_eq!(scrub("copy to /run/media/ann/USB/a.pdf"), "copy to /run/media/[user]/USB/a.pdf");
+        assert_eq!(scrub("copy to /media/ann/USB/a.pdf"), "copy to /media/[user]/USB/a.pdf");
         assert_eq!(
             scrub("message AAMkADAwATM3ZmYAZS1hNjAwLTRjNDctODdlYS1iMjQ5MTYyYzQ2ZDAARgAAA not found"),
             "message [id] not found"

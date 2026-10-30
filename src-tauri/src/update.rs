@@ -97,13 +97,55 @@ fn channel(app: &AppHandle) -> String {
 }
 
 /// Why this install can't update itself, if it can't. Linux needs the AppImage's own path
-/// (`APPIMAGE`, set by the AppImage runtime); the updater rewrites that file.
-pub fn not_installable(os: &str, appimage: bool) -> Option<&'static str> {
-    (os == "linux" && !appimage).then_some("PeetMail updates itself only when run as an AppImage. Update this copy the way you installed it.")
+/// (`APPIMAGE`, set by the AppImage runtime) in a folder it can write to: the updater
+/// replaces that file.
+pub fn not_installable(os: &str, appimage: bool, folder_writable: bool) -> Option<&'static str> {
+    if os != "linux" {
+        None
+    } else if !appimage {
+        Some("PeetMail updates itself only when run as an AppImage. Update this copy the way you installed it.")
+    } else if !folder_writable {
+        Some("PeetMail can't update itself from this folder. Move the AppImage somewhere you can write to, such as your home folder.")
+    } else {
+        None
+    }
 }
 
 fn install_blocker() -> Option<&'static str> {
-    not_installable(std::env::consts::OS, std::env::var_os("APPIMAGE").is_some())
+    let appimage = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from);
+    not_installable(std::env::consts::OS, appimage.is_some(), appimage.as_deref().is_some_and(folder_writable))
+}
+
+#[cfg(target_os = "linux")]
+fn folder_writable(file: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(dir) = file.parent() else { return false };
+    let Ok(dir) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a NUL-terminated path.
+    unsafe { libc::access(dir.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn folder_writable(_: &std::path::Path) -> bool {
+    true
+}
+
+/// Set just before restarting into an update, read (and cleared) by the next start.
+const KEY_RESTART_TO_UPDATE: &str = "restarted_to_update";
+
+/// Whether this start is the restart after installing an update.
+pub fn take_restart_flag(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<AppState>() else { return false };
+    state
+        .db
+        .with(|c| {
+            let set = db::get_setting(c, KEY_RESTART_TO_UPDATE)?.as_deref() == Some("1");
+            if set {
+                db::set_setting(c, KEY_RESTART_TO_UPDATE, "0")?;
+            }
+            Ok(set)
+        })
+        .unwrap_or(false)
 }
 
 fn feed(channel: &str) -> Option<Url> {
@@ -309,6 +351,11 @@ pub fn install(app: &AppHandle) -> Result<()> {
         // The AppImage on disk is now the new version; run it. `restart` relaunches the
         // AppImage file itself, not the mounted copy of the old one.
         log::info!("update installed; restarting");
+        // `restart` reuses this run's arguments; a `--minimized` autostart would come back
+        // hidden. The flag makes the new version show its window.
+        if let Err(e) = app.state::<AppState>().db.with(|c| db::set_setting(c, KEY_RESTART_TO_UPDATE, "1")) {
+            log::warn!("couldn't note the restart: {e}");
+        }
         log::logger().flush();
         crate::telemetry::shutdown();
         crate::crash::flush();
@@ -355,9 +402,10 @@ mod tests {
 
     #[test]
     fn linux_updates_only_an_appimage() {
-        assert!(not_installable("windows", false).is_none());
-        assert!(not_installable("linux", true).is_none());
-        assert!(not_installable("linux", false).is_some_and(|m| m.contains("AppImage")));
+        assert!(not_installable("windows", false, false).is_none());
+        assert!(not_installable("linux", true, true).is_none());
+        assert!(not_installable("linux", false, true).is_some_and(|m| m.contains("AppImage")));
+        assert!(not_installable("linux", true, false).is_some_and(|m| m.contains("write to")));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Releasing PeetMail
 
-PeetMail ships on two update channels, both built by `.github/workflows/release.yml` after the full CI passes. Every release has a Windows installer (NSIS, built on `windows-latest`) and a Linux AppImage (built on `ubuntu-22.04`, so it runs on that glibc and anything newer); a `publish` job then writes one `latest.json` listing both and creates the release:
+PeetMail ships on two update channels, both built by `.github/workflows/release.yml` after the full CI passes. Every release has a Windows installer (NSIS, built on `windows-latest`) and a Linux AppImage (built on `ubuntu-22.04`, so it runs on that glibc and anything newer); a `publish` job then writes one `latest.json` listing both and creates the release. Both builds must pass: if either fails, nothing is published for that run (one platform without the other would leave the feed half-updated):
 
 | Channel | Built from | Version | Published |
 |---|---|---|---|

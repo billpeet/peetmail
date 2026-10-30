@@ -139,18 +139,17 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           OS: ${{ matrix.os }}
         run: |
-          # Both builds embed the same frontend; one upload covers them.
-          if ($env:OS -eq 'windows') {
-            if ($env:SENTRY_AUTH_TOKEN) {
-              pnpm dlx $env:SENTRY_CLI releases new $env:RELEASE
-              if ($LASTEXITCODE -ne 0) { throw "creating the Sentry release failed" }
-              # Webview stack frames look like http://tauri.localhost/_app/immutable/... on
-              # Windows and tauri://localhost/_app/... on Linux; "~" matches any scheme and host.
-              pnpm dlx $env:SENTRY_CLI sourcemaps upload build/_app --url-prefix '~/_app' --release $env:RELEASE --validate --wait
-              if ($LASTEXITCODE -ne 0) { throw "source map upload failed" }
-            } else {
-              "::warning::SENTRY_AUTH_TOKEN isn't set: webview stack traces in Sentry won't be readable for this build."
-            }
+          # Each build makes its own bundle (chunk names differ between them), so each uploads
+          # its maps under its webview's origin: http://tauri.localhost on Windows,
+          # tauri://localhost on Linux. `releases new` is fine to run twice.
+          if ($env:SENTRY_AUTH_TOKEN) {
+            $prefix = if ($env:OS -eq 'windows') { 'http://tauri.localhost/_app' } else { 'tauri://localhost/_app' }
+            pnpm dlx $env:SENTRY_CLI releases new $env:RELEASE
+            if ($LASTEXITCODE -ne 0) { throw "creating the Sentry release failed" }
+            pnpm dlx $env:SENTRY_CLI sourcemaps upload build/_app --url-prefix $prefix --release $env:RELEASE --validate --wait
+            if ($LASTEXITCODE -ne 0) { throw "source map upload failed" }
+          } else {
+            "::warning::SENTRY_AUTH_TOKEN isn't set: webview stack traces in Sentry won't be readable for this build."
           }
           # Not shipped: the binary embeds everything in build/.
           Get-ChildItem build -Recurse -Filter *.map | Remove-Item
@@ -193,7 +192,8 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get install -y --no-install-recommends xvfb dbus-x11
-          sh tests/linux/smoke.sh "src-tauri/target/release/bundle/appimage/PeetMail_${VERSION}_amd64.AppImage"
+          # Offline: this build has the production Sentry DSN and telemetry endpoint in it.
+          SMOKE_OFFLINE=1 sh tests/linux/smoke.sh "src-tauri/target/release/bundle/appimage/PeetMail_${VERSION}_amd64.AppImage"
 
       - name: Upload debug symbols to Sentry
         shell: pwsh

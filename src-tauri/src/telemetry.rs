@@ -259,7 +259,13 @@ pub fn enabled() -> bool {
 
 /// First 8 hex chars of SHA-256 of the lowercased host name: tells PCs apart without naming them.
 fn machine_id() -> String {
-    let host = std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase();
+    // Windows sets COMPUTERNAME; Linux has no such variable, so read the kernel's host name.
+    let host = std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
     Sha256::digest(host.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
